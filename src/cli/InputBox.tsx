@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { TextAttributes } from '@opentui/core';
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
@@ -37,35 +37,19 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), 140);
+    const id = setInterval(() => setTick(n => n + 1), 530);
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    if (process.stdin.isTTY) {
-      process.stdout.write('\x1b[?2004h');
-    }
-    const onPaste = (data: Buffer) => {
-      if (disabled) return;
-      const str = data.toString();
-      const m = str.match(/\x1b\[200~([\s\S]*?)\x1b\[201~/);
-      if (m) {
-        const pasted = m[1];
-        setValue(prev => {
-          const c = cursor;
-          return prev.slice(0, c) + pasted + prev.slice(c);
-        });
-        setCursor(prev => prev + pasted.length);
-      }
-    };
-    process.stdin.on('data', onPaste);
-    return () => {
-      process.stdin.off('data', onPaste);
-      if (process.stdin.isTTY) {
-        process.stdout.write('\x1b[?2004l');
-      }
-    };
-  }, [disabled, cursor]);
+  usePaste((pasted) => {
+    if (disabled) return;
+    const text = typeof pasted === 'string' ? pasted : String(pasted);
+    setValue(prev => {
+      const c = cursor;
+      return prev.slice(0, c) + text + prev.slice(c);
+    });
+    setCursor(prev => prev + text.length);
+  });
 
   const frame = () => {
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -194,7 +178,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       return;
     }
     if (name.length === 1 && !evt.ctrl && !evt.meta) {
-      const input = name;
+      const input = evt.shift ? name.toUpperCase() : name;
       setValue(value.slice(0, cursor) + input + value.slice(cursor));
       setCursor(cursor + input.length);
     }

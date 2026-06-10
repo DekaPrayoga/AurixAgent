@@ -47,6 +47,9 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [sessionName, setSessionName] = useState('New session');
   const sessionNameRef = React.useRef('New session');
   const [showLogin, setShowLogin] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<'ask' | 'bypass'>(
+    registry.getPermissionMode() === 'bypass' ? 'bypass' : 'ask'
+  );
   const agentRef = React.useRef<AgentLoop | null>(null);
 
   const doExit = useCallback(() => {
@@ -413,6 +416,7 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         return;
       } else if (commandName === 'yolo') {
         registry.setPermissionMode('bypass');
+        setPermissionMode('bypass');
         addAssistant('YOLO mode ON — all tool calls auto-approved. Use /permissions mode ask to revert.');
         return;
       } else if (commandName === 'image') {
@@ -658,6 +662,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
           const mode = args.slice(5).trim();
           if (mode === 'ask' || mode === 'bypass' || mode === 'deny') {
             registry.setPermissionMode(mode);
+            setPermissionMode(mode === 'deny' ? 'ask' : mode);
             addAssistant(`Permission mode set to: ${mode}`);
             return;
           }
@@ -889,12 +894,12 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
   const isHome = showBanner && messages.length === 0 && !isProcessing;
   const ctxStats = agent.getContextStats();
   const tokenStats = agent.getTokenStats();
-  const mode: 'auto' | 'ask' =
-    registry.getPermissionMode() === 'bypass' ? 'auto' : 'ask';
+  const mode: 'auto' | 'ask' = permissionMode === 'bypass' ? 'auto' : 'ask';
   const cycleMode = useCallback(() => {
     const current = registry.getPermissionMode();
     const next = current === 'bypass' ? 'ask' : 'bypass';
     registry.setPermissionMode(next);
+    setPermissionMode(next);
   }, [registry]);
 
   return (

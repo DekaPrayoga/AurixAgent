@@ -64,11 +64,11 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
   const fg = baseFg || theme.text;
 
   return (
-    <box flexDirection="row" flexWrap="wrap">
+    <box flexDirection="row" flexWrap="wrap" flexGrow={1} flexShrink={1}>
       {segments.map((seg, i) => {
         if (seg.code) {
           return (
-            <text key={i} fg={theme.info} bg={theme.bgElement} attributes={TextAttributes.NONE}>
+            <text key={i} fg={theme.info} bg={theme.bgElement} attributes={TextAttributes.NONE} flexShrink={1}>
               {` ${seg.text} `}
             </text>
           );
@@ -79,7 +79,7 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
         else if (seg.italic) attrs = TextAttributes.ITALIC;
         else if (seg.strikethrough) attrs = TextAttributes.STRIKETHROUGH;
         const color = seg.bold ? theme.textBright : fg;
-        return <text key={i} fg={color} attributes={attrs} wrapMode="word">{seg.text}</text>;
+        return <text key={i} fg={color} attributes={attrs} wrapMode="word" flexShrink={1}>{seg.text}</text>;
       })}
     </box>
   );
@@ -259,7 +259,7 @@ function MarkdownText({ content }: { content: string }) {
 
     // Regular text with inline markdown
     elements.push(
-      <box key={`p-${i}`}>
+      <box key={`p-${i}`} flexGrow={1}>
         <InlineText text={line} />
       </box>
     );
@@ -336,7 +336,7 @@ function truncateOutput(content: string, maxLines: number = 14): string {
 
 function UserMessage({ msg }: { msg: ChatMessage }) {
   return (
-    <box flexDirection="column" paddingX={2}>
+    <box flexDirection="column" paddingX={2} flexGrow={1}>
       <box
         border={["left"]}
         borderColor={theme.primary}
@@ -345,6 +345,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
+        flexGrow={1}
       >
         <text fg={theme.text} wrapMode="word">{msg.content}</text>
       </box>
@@ -355,7 +356,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
 function AssistantMessage({ msg }: { msg: ChatMessage }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingX={2}>
+    <box flexDirection="column" paddingX={2} flexGrow={1}>
       <box
         border={["left"]}
         borderColor={theme.secondary}
@@ -364,6 +365,7 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
+        flexGrow={1}
       >
         <MarkdownText content={msg.content} />
       </box>

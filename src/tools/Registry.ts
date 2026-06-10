@@ -23,7 +23,7 @@ export type PermissionHandler = (request: ToolPermissionRequest) => Promise<Perm
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private allowedTools = new Set<string>();
-  private permissionMode: PermissionMode = 'ask';
+  private permissionMode: PermissionMode = 'bypass';
   private permissionHandler?: PermissionHandler;
 
   register(tool: Tool): void {
