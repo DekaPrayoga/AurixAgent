@@ -1,9 +1,36 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
+import { execFile } from 'node:child_process';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
+
+function readClipboard(): Promise<string | undefined> {
+  const tryCmd = (cmd: string, args: string[]): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile(cmd, args, { timeout: 2000 }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+
+  return (async () => {
+    if (process.env.WAYLAND_DISPLAY) {
+      try { const t = await tryCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
+    }
+    try { const t = await tryCmd('xclip', ['-selection', 'clipboard', '-o']); if (t) return t; } catch {}
+    try { const t = await tryCmd('pbpaste', []); if (t) return t; } catch {}
+    try {
+      const t = await tryCmd('powershell.exe', [
+        '-NoProfile', '-command',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard',
+      ]);
+      if (t) return t.replace(/\r\n/g, '\n');
+    } catch {}
+    return undefined;
+  })();
+}
 
 interface InputBoxProps {
   onSubmit: (value: string) => void;
@@ -41,14 +68,23 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (process.stdin.isTTY) {
+      process.stdout.write('\x1b[?2004h');
+    }
+    return () => {
+      if (process.stdin.isTTY) {
+        process.stdout.write('\x1b[?2004l');
+      }
+    };
+  }, []);
+
   usePaste((pasted) => {
     if (disabled) return;
     const text = typeof pasted === 'string' ? pasted : String(pasted);
-    setValue(prev => {
-      const c = cursor;
-      return prev.slice(0, c) + text + prev.slice(c);
-    });
-    setCursor(prev => prev + text.length);
+    const insertAt = cursor;
+    setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    setCursor(insertAt + text.length);
   });
 
   const frame = () => {
@@ -117,6 +153,23 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       return;
     }
     if (evt.ctrl && name === 'c') {
+      if (value) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        const seq = `\x1b]52;c;${Buffer.from(value).toString('base64')}\x07`;
+        process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
+      }
+      return;
+    }
+    if (evt.ctrl && name === 'v') {
+      evt.preventDefault();
+      const insertAt = cursor;
+      readClipboard().then((text) => {
+        if (!text) return;
+        const clean = text.replace(/\r\n/g, '\n').trimEnd();
+        setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+        setCursor(insertAt + clean.length);
+      }).catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {

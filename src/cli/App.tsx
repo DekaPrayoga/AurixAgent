@@ -129,6 +129,34 @@ export function App({ config, registry, resumeId }: AppProps) {
       return;
     }
 
+    if (evt.ctrl && name === 'y') {
+      evt.preventDefault();
+      const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant');
+      if (lastAssistant) {
+        const text = lastAssistant.content;
+        const b64 = Buffer.from(text).toString('base64');
+        const seq = `\x1b]52;c;${b64}\x07`;
+        process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
+        import('node:child_process').then(({ spawn }) => {
+          const tools: [string, string[]][] = [
+            ['wl-copy', []],
+            ['xclip', ['-selection', 'clipboard']],
+            ['xsel', ['--clipboard', '--input']],
+            ['pbcopy', []],
+          ];
+          for (const [cmd, args] of tools) {
+            try {
+              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+              child.stdin?.end(text);
+              child.on('error', () => {});
+            } catch {}
+          }
+        }).catch(() => {});
+        addAssistant('Last response copied to clipboard.');
+      }
+      return;
+    }
+
     if (name === 'up' && !isProcessing) {
       evt.preventDefault();
       setScrollOffset(prev => Math.min(prev + 5, Math.max(0, messages.length - 10)));
@@ -446,16 +474,22 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           return;
         }
         const text = assistantMsgs.map(m => m.content).join('\n\n');
-        // OSC 52 clipboard escape sequence (works in kitty, alacritty, iterm2, etc.)
         const b64 = Buffer.from(text).toString('base64');
-        process.stdout.write(`\x1b]52;c;${b64}\x07`);
-        // Also try system clipboard tools
+        const seq = `\x1b]52;c;${b64}\x07`;
+        process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
         try {
-          const { execSync } = await import('child_process');
-          const tools = ['wl-copy', 'xclip -selection clipboard', 'xsel --clipboard --input', 'pbcopy'];
-          for (const tool of tools) {
+          const { spawn } = await import('node:child_process');
+          const tools: [string, string[]][] = [
+            ['wl-copy', []],
+            ['xclip', ['-selection', 'clipboard']],
+            ['xsel', ['--clipboard', '--input']],
+            ['pbcopy', []],
+          ];
+          for (const [cmd, args] of tools) {
             try {
-              execSync(`echo ${JSON.stringify(text)} | ${tool}`, { stdio: 'pipe', timeout: 3000 });
+              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+              child.stdin?.end(text);
+              child.on('error', () => {});
               break;
             } catch {}
           }
