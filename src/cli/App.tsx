@@ -81,7 +81,8 @@ export function App({ config, registry, resumeId }: AppProps) {
 
   const doExit = useCallback(() => {
     const name = sessionNameRef.current !== 'New session' ? sessionNameRef.current : undefined;
-    const sessionId = agentRef.current?.saveSession(name) || '';
+    const saveId = resumeSessionIdRef.current || name;
+    const sessionId = agentRef.current?.saveSession(saveId) || '';
     renderer.destroy();
     if (sessionId) {
       console.log(`\n  \x1b[90msession ended\x1b[0m`);
@@ -95,10 +96,12 @@ export function App({ config, registry, resumeId }: AppProps) {
   }
 
   const resumedRef = React.useRef(false);
+  const resumeSessionIdRef = React.useRef<string | undefined>(resumeId);
   if (resumeId && !resumedRef.current) {
     resumedRef.current = true;
     const count = agentRef.current.loadSession(resumeId);
     if (count > 0) {
+      resumeSessionIdRef.current = resumeId;
       const loaded = agentRef.current.getMessages();
       setMessages(loaded.map(m => ({
         role: m.role as 'user' | 'assistant' | 'tool' | 'system',
@@ -186,13 +189,13 @@ export function App({ config, registry, resumeId }: AppProps) {
 
     if (name === 'up' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset(prev => Math.min(prev + 3, Math.max(0, messages.length - 5)));
+      setScrollOffset(prev => Math.min(prev + 1, Math.max(0, messages.length - 1)));
       return;
     }
 
     if (name === 'down' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset(prev => Math.max(0, prev - 3));
+      setScrollOffset(prev => Math.max(0, prev - 1));
       return;
     }
 
@@ -501,6 +504,7 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           const name = slash.args.trim();
           setSessionName(name);
           sessionNameRef.current = name;
+          resumeSessionIdRef.current = name;
           agent.saveSession(name);
           addAssistant(`Session renamed to: ${name}`);
         } else {
