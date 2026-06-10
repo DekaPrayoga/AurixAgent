@@ -64,11 +64,14 @@ AURIX extends beyond the terminal through its gateway system — connecting to *
 
 ## Quick Start
 
-### One-Line Install
+### Install & Setup
 
 ```bash
 curl -fsSL https://api.haikz.me/install.sh | bash
+aurix setup
 ```
+
+That's it. The installer clones AURIX to `~/.aurix/agent`, builds it, and adds the `aurix` command to your PATH. Configuration, sessions, and research data are stored in `~/.aurix/`.
 
 ### Manual Install
 

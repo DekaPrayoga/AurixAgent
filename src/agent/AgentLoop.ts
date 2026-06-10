@@ -19,7 +19,7 @@ export class AgentLoop {
   private registry: ToolRegistry;
   private config: AurixConfig;
   private messages: Message[] = [];
-  private maxIterations = 20;
+  private maxIterations = 30;
   private multiAgentMode = false;
   private multiAgent?: MultiAgentSystem;
   private contextManager: ContextManager;

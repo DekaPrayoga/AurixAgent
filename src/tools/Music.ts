@@ -68,19 +68,20 @@ export const musicTool: Tool = {
 async function searchMusic(query: string, source: string): Promise<string> {
   if (!query) return 'Error: provide a search query';
 
-  const searchPrefix = getSourcePrefix(source);
-  const searchQuery = `${searchPrefix}${query}`;
+  const searchQuery = source === 'soundcloud'
+    ? `scsearch8:${query}`
+    : `ytsearch8:${query}`;
 
   try {
     const result = await runYtdlp([
       '--flat-playlist',
       '--print', '%(title)s ||| %(url)s ||| %(duration_string)s ||| %(channel)s',
       '--playlist-items', '1:8',
-      `${searchPrefix}search_query:${query}`,
-    ], 15000);
+      searchQuery,
+    ], 20000);
 
     if (!result.trim()) {
-      return tryAltSearch(query);
+      return `No results found for "${query}"`;
     }
 
     const tracks = result.trim().split('\n').filter(Boolean).map((line, i) => {
@@ -88,31 +89,9 @@ async function searchMusic(query: string, source: string): Promise<string> {
       return `${i + 1}. ${title || 'Unknown'}\n   Artist: ${channel || 'Unknown'} · Duration: ${duration || '?'}\n   URL: ${url || ''}`;
     });
 
-    return `Search results for "${query}":\n\n${tracks.join('\n\n')}`;
+    return `Search results for "${query}" (YouTube):\n\n${tracks.join('\n\n')}`;
   } catch (e: any) {
     return `Search error: ${e.message}`;
-  }
-}
-
-async function tryAltSearch(query: string): Promise<string> {
-  try {
-    const result = await runYtdlp([
-      '--flat-playlist',
-      '--print', '%(title)s ||| %(id)s ||| %(duration_string)s ||| %(uploader)s',
-      '--playlist-items', '1:8',
-      `ytsearch8:${query}`,
-    ], 15000);
-
-    if (!result.trim()) return `No results found for "${query}"`;
-
-    const tracks = result.trim().split('\n').filter(Boolean).map((line, i) => {
-      const [title, id, duration, uploader] = line.split(' ||| ');
-      return `${i + 1}. ${title}\n   By: ${uploader || 'Unknown'} · Duration: ${duration || '?'}\n   ID: ${id || ''}`;
-    });
-
-    return `Results for "${query}":\n\n${tracks.join('\n\n')}`;
-  } catch (e: any) {
-    return `Search failed: ${e.message}`;
   }
 }
 
@@ -264,14 +243,6 @@ function listDownloads(): string {
       const sizeMB = (stat.size / 1048576).toFixed(1);
       return `  ${i + 1}. ${f} (${sizeMB}MB)`;
     }).join('\n');
-}
-
-function getSourcePrefix(source: string): string {
-  switch (source) {
-    case 'soundcloud': return 'sc';
-    case 'bandcamp': return '';
-    default: return '';
-  }
 }
 
 async function resolveUrl(query: string, source: string): Promise<string | null> {
