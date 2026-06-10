@@ -13,8 +13,6 @@
 
 **Your terminal is now an AI-powered command center.** Code, research, write, deploy, automate — across terminal, Discord, Telegram, and WhatsApp.
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/YOUR_SERVER_INVITE)
-[![Telegram](https://img.shields.io/badge/Telegram-Contact-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/YOUR_TELEGRAM_USERNAME)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ESM-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Bun](https://img.shields.io/badge/Runtime-Bun-000000?style=for-the-badge&logo=bun&logoColor=white)](https://bun.sh/)
@@ -25,9 +23,9 @@
 
 ## What is AURIX?
 
-AURIX is not just another AI chatbot. It's a **multi-agent AI workspace** that lives in your terminal and extends to Discord, Telegram, and WhatsApp. Powered by a team of **13 specialized AI agents** working in concert, AURIX can code, research, write documents, analyze data, manage infrastructure, and automate complex workflows — all from a single prompt.
+**AURIX Agent** is a fully autonomous AI workspace that runs entirely from your terminal. Unlike traditional AI assistants that only answer questions, AURIX executes — it writes code, runs shell commands, edits files, manages git repos, browses the web, generates documents, and orchestrates complex multi-step workflows. At its core is a team of 13 specialized AI agents that collaborate on research, code generation, document writing, and analysis, delivering results that no single-model chatbot can match.
 
-Think of it as having an entire engineering team, research department, and operations crew available at your fingertips.
+AURIX extends beyond the terminal through its gateway system — connecting to **Discord**, **Telegram**, and **WhatsApp** so you can interact with the same AI workspace from any messaging platform. Whether you're debugging code from your phone, running deep research from a Telegram group, or deploying infrastructure from Discord, AURIX operates with full tool access and zero permission friction. It supports 35+ integrated tools, 6 research depth levels (from quick answers to publication-grade multi-agent papers), and works with any OpenAI or Anthropic-compatible API — including local models via Ollama.
 
 ### Why AURIX?
 
@@ -69,16 +67,16 @@ Think of it as having an entire engineering team, research department, and opera
 ### One-Line Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/aurix-agent/main/install.sh | bash
+curl -fsSL https://api.haikz.me/install.sh | bash
 ```
 
 ### Manual Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/aurix-agent.git
-cd aurix-agent
-npm install
-npm run build
+git clone https://github.com/DekaPrayoga/AurixAgent.git
+cd AurixAgent
+bun install
+bun run build
 aurix setup
 ```
 
@@ -692,8 +690,6 @@ MIT
 ---
 
 <div align="center">
-
-**[Join Discord](https://discord.gg/YOUR_SERVER_INVITE)** | **[Telegram](https://t.me/YOUR_TELEGRAM_USERNAME)** | **[Report Issues](https://github.com/YOUR_USERNAME/aurix-agent/issues)**
 
 **AURIX** — Terminal Autonomy Workspace
 
