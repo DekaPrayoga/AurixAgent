@@ -234,6 +234,13 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
+    name: 'deep-research',
+    argumentHint: '<topic>',
+    description: 'Run comprehensive multi-agent research pipeline on a topic',
+    group: 'model',
+    source: 'aurix',
+  },
+  {
     name: 'init',
     description: 'Generate AURIX.md project context file',
     group: 'session',

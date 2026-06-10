@@ -3,6 +3,7 @@ import React from 'react';
 import { createRoot } from '@opentui/react';
 import { createCliRenderer } from '@opentui/core';
 import { App } from './cli/App.js';
+import { installMouseFilter } from './cli/MouseFilter.js';
 import { applyTheme } from './cli/theme.js';
 import { loadConfig } from './agent/Config.js';
 import { runSetup } from './agent/Setup.js';
@@ -181,6 +182,8 @@ async function main() {
     clearInterval(consolidateTimer);
     try { bgMemory.consolidate(); } catch {}
   });
+
+  installMouseFilter();
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,

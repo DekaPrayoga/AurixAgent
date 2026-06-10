@@ -1,54 +1,36 @@
-export function disableMouseReporting(): void {
-  if (!process.stdout.isTTY) return;
-  process.stdout.write('\x1b[?1000l');
-  process.stdout.write('\x1b[?1002l');
-  process.stdout.write('\x1b[?1003l');
-  process.stdout.write('\x1b[?1006l');
-  process.stdout.write('\x1b[?1015l');
-}
+const MOUSE_ENABLE_RE = /\x1b\[\?(?:1000|1002|1003|1006|1015)h/g;
 
-export function enableMouseReporting(): void {
-  if (!process.stdout.isTTY) return;
-  process.stdout.write('\x1b[?1000h');
-  process.stdout.write('\x1b[?1002h');
-}
-
-export function filterMouseSequences(data: Buffer | string): string {
-  const str = typeof data === 'string' ? data : data.toString('utf8');
-  return str
-    .replace(/\x1b\[M[ -~]{0,3}/g, '')
-    .replace(/\x1b\[<[\d;]+[mM]/g, '')
-    .replace(/\x1b\[[\d;]+[mM]/g, '')
-    .replace(/\x1b\[>[\d;]+[mM]/g, '')
-    .replace(/\x1b\[\\[\d;]+[mM]/g, '')
-    .replace(/\[<[\d;]+[mM]/g, '')
-    .replace(/\[<[\d;]+[mM][\s\S]{0,20}?\]/g, '');
-}
+let patched = false;
 
 export function installMouseFilter(): void {
-  disableMouseReporting();
+  if (patched || !process.stdout.isTTY) return;
+  patched = true;
 
-  if (process.stdin.isTTY) {
-    const origOn = process.stdin.on.bind(process.stdin);
-    process.stdin.on = ((event: string, listener: (...args: any[]) => void) => {
-      if (event === 'data') {
-        const wrappedListener = (chunk: Buffer | string) => {
-          const filtered = filterMouseSequences(chunk);
-          if (filtered.length > 0) {
-            listener(filtered);
-          }
-        };
-        return origOn(event, wrappedListener);
-      }
-      return origOn(event, listener);
-    }) as any;
-  }
-
-  const cleanup = () => {
-    enableMouseReporting();
+  const origWrite = process.stdout.write.bind(process.stdout);
+  (process.stdout as any).write = (
+    chunk: string | Uint8Array,
+    encodingOrCb?: BufferEncoding | ((err?: Error) => void),
+    cb?: (err?: Error) => void,
+  ): boolean => {
+    if (typeof chunk === 'string') {
+      const filtered = chunk.replace(MOUSE_ENABLE_RE, '');
+      return origWrite(filtered, encodingOrCb as any, cb as any);
+    }
+    if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
+      const str = Buffer.from(chunk).toString('utf8');
+      const filtered = str.replace(MOUSE_ENABLE_RE, '');
+      return origWrite(filtered, encodingOrCb as any, cb as any);
+    }
+    return origWrite(chunk, encodingOrCb as any, cb as any);
   };
 
-  process.on('exit', cleanup);
-  process.on('SIGINT', () => { cleanup(); process.exit(130); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  origWrite('\x1b[?1000l');
+  origWrite('\x1b[?1002l');
+  origWrite('\x1b[?1003l');
+  origWrite('\x1b[?1006l');
+  origWrite('\x1b[?1015l');
+
+  process.on('exit', () => {
+    origWrite('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l');
+  });
 }

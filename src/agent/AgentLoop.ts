@@ -6,9 +6,11 @@ import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
 import { ContextManager } from './ContextManager.js';
 import { MemoryEngine } from './MemoryEngine.js';
+import { ResearchPipeline } from './ResearchPipeline.js';
+import type { ResearchDepth } from './research/types.js';
 
 export interface AgentEvent {
-  type: 'text' | 'tool_start' | 'tool_end' | 'error' | 'done' | 'route' | 'compact';
+  type: 'text' | 'tool_start' | 'tool_end' | 'error' | 'done' | 'route' | 'compact' | 'research';
   data: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
@@ -24,6 +26,7 @@ export class AgentLoop {
   private multiAgent?: MultiAgentSystem;
   private contextManager: ContextManager;
   private memoryEngine: MemoryEngine;
+  private researchPipeline?: ResearchPipeline;
   private interrupted = false;
   private _inputTokens = 0;
   private _outputTokens = 0;
@@ -183,6 +186,42 @@ export class AgentLoop {
       yield { type: 'done', data: '' };
     } catch (e: any) {
       yield { type: 'error', data: `Multi-agent error: ${e.message}` };
+    }
+  }
+
+  getResearchMode(): ResearchDepth {
+    return (this.config.researchMode as ResearchDepth) || 'low';
+  }
+
+  async *runResearch(query: string): AsyncGenerator<AgentEvent> {
+    this.interrupted = false;
+
+    if (!this.researchPipeline) {
+      this.researchPipeline = new ResearchPipeline(this.config);
+    }
+
+    const mode = this.getResearchMode();
+    yield { type: 'research', data: `Starting deep research pipeline (depth: ${mode})...` };
+
+    try {
+      for await (const event of this.researchPipeline.run(query, mode)) {
+        if (this.interrupted) {
+          this.interrupted = false;
+          yield { type: 'error', data: 'Research interrupted.' };
+          return;
+        }
+
+        if (event.type === 'text') {
+          this.messages.push({ role: 'user', content: query });
+          this.messages.push({ role: 'assistant', content: event.data });
+          yield { type: 'text', data: event.data };
+        } else {
+          yield { type: 'research', data: `[${event.agent}] ${event.data}` };
+        }
+      }
+      yield { type: 'done', data: '' };
+    } catch (e: any) {
+      yield { type: 'error', data: `Research pipeline error: ${e.message}` };
     }
   }
 

@@ -379,6 +379,45 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         return;
       }
 
+      if (commandName === 'deep-research') {
+        const researchQuery = slash.args?.trim();
+        if (!researchQuery) {
+          addAssistant('Usage: /deep-research <topic>\n\nRuns a comprehensive multi-agent research pipeline: request analysis, planning, web research, claim extraction, debate, citation verification, and final review.\n\nCurrent depth: ' + researchMode + '\nTip: Use /deep first to set depth to ultra for maximum research quality.');
+          return;
+        }
+        outboundText = '';
+        setIsProcessing(true);
+        addAssistant(`Starting deep research: "${researchQuery}"\nDepth: ${researchMode}\n\nThis may take a moment as multiple specialist agents analyze the topic...`);
+
+        (async () => {
+          try {
+            for await (const event of agent.runResearch(researchQuery)) {
+              if (event.type === 'research') {
+                setMessages(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.role === 'system' && last.content.startsWith('Research progress:')) {
+                    return [...prev.slice(0, -1), { ...last, content: `Research progress: ${event.data}` }];
+                  }
+                  return [...prev, { role: 'system' as const, content: `Research progress: ${event.data}`, timestamp: new Date() }];
+                });
+              } else if (event.type === 'text') {
+                setMessages(prev => {
+                  const next = prev.filter(m => !(m.role === 'system' && m.content.startsWith('Research progress:')));
+                  return [...next, { role: 'assistant' as const, content: event.data, timestamp: new Date() }];
+                });
+              } else if (event.type === 'error') {
+                addAssistant(`Research error: ${event.data}`);
+              }
+            }
+          } catch (e: any) {
+            addAssistant(`Deep research failed: ${e.message}`);
+          } finally {
+            setIsProcessing(false);
+          }
+        })();
+        return;
+      }
+
       if (commandName === 'export') {
         const exportPath = path.join(os.homedir(), '.aurix', 'exports', `session-${Date.now()}.md`);
         const dir = path.dirname(exportPath);

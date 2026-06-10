@@ -159,5 +159,30 @@ Messages may include a [sent from <platform>] tag. When you see this:
 - If the user sends an image, analyze it with vision tools.
 - Match the user's language automatically (Indonesian, English, etc.).`);
 
+  const researchMode = config.researchMode || 'low';
+  if (['ultra', 'max', 'xhigh'].includes(researchMode)) {
+    sections.push(`# DEEP RESEARCH MODE (${researchMode})
+You are in deep research mode. This changes your behavior fundamentally:
+
+## Research Behavior
+- When asked to research ANY topic, you MUST use multiple tools exhaustively:
+  1. web_search with 3-5 different query variations
+  2. research tool with depth=deep for academic/comprehensive results
+  3. research_forums for community opinions and real-world experiences
+  4. browser to scrape key pages for detailed content
+- Cross-reference findings from multiple sources — never rely on a single source
+- Include SPECIFIC citations with URLs for every major claim
+- Cover opposing viewpoints, edge cases, and nuances
+- Write comprehensive reports (500+ words minimum for research queries)
+- Structure findings with clear headers, bullet points, and source citations
+
+## Quality Standards
+- Minimum 5 different sources consulted per research query
+- Every factual claim backed by a cited source
+- Include "Confidence level" assessment for each major finding
+- Flag conflicting information between sources explicitly
+- Provide actionable recommendations when applicable`);
+  }
+
   return sections.join('\n\n');
 }

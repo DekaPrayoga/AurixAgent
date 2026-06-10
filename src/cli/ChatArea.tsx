@@ -104,10 +104,10 @@ function MarkdownText({ content }: { content: string }) {
       }
       i++; // skip closing ```
       elements.push(
-        <box key={`code-${i}`} flexDirection="column" backgroundColor={theme.bgElement} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} marginTop={1} marginBottom={1}>
+        <box key={`code-${i}`} flexDirection="column" backgroundColor={theme.bgElement} border={["left"]} borderColor={theme.accent} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} marginTop={1} marginBottom={1} flexShrink={0} minWidth={0}>
           {lang && <text fg={theme.textMuted} attributes={TextAttributes.DIM}>{lang}</text>}
           {codeLines.map((cl, j) => (
-            <text key={j} fg={theme.info} wrapMode="word">{cl}</text>
+            <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>{cl}</text>
           ))}
         </box>
       );
@@ -202,8 +202,8 @@ function MarkdownText({ content }: { content: string }) {
     if (line.trimStart().startsWith('>')) {
       const quoteText = line.replace(/^\s*>\s?/, '');
       elements.push(
-        <box key={`q-${i}`} paddingLeft={2} border={["left"]} borderColor={theme.accent}>
-          <text fg={theme.textMuted} attributes={TextAttributes.ITALIC} wrapMode="word">{quoteText}</text>
+        <box key={`q-${i}`} paddingLeft={2} border={["left"]} borderColor={theme.accent} flexShrink={0} minWidth={0}>
+          <text fg={theme.textMuted} attributes={TextAttributes.ITALIC} wrapMode="word" minWidth={0}>{quoteText}</text>
         </box>
       );
       i++;
@@ -259,7 +259,7 @@ function MarkdownText({ content }: { content: string }) {
 
     // Regular text with inline markdown
     elements.push(
-      <box key={`p-${i}`} flexGrow={1}>
+      <box key={`p-${i}`} flexShrink={0}>
         <InlineText text={line} />
       </box>
     );
@@ -336,7 +336,7 @@ function truncateOutput(content: string, maxLines: number = 14): string {
 
 function UserMessage({ msg }: { msg: ChatMessage }) {
   return (
-    <box flexDirection="column" paddingX={2} flexGrow={1} flexShrink={0}>
+    <box flexDirection="column" paddingX={2} flexShrink={0}>
       <box
         border={["left"]}
         borderColor={theme.primary}
@@ -345,10 +345,10 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
-        flexGrow={1}
         flexShrink={0}
+        minWidth={0}
       >
-        <text fg={theme.text} wrapMode="word">{msg.content}</text>
+        <text fg={theme.text} wrapMode="word" minWidth={0}>{msg.content}</text>
       </box>
     </box>
   );
@@ -357,7 +357,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
 function AssistantMessage({ msg }: { msg: ChatMessage }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingX={2} flexGrow={1} flexShrink={0}>
+    <box flexDirection="column" paddingX={2} flexShrink={0}>
       <box
         border={["left"]}
         borderColor={theme.secondary}
@@ -366,8 +366,8 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
         paddingBottom={1}
         paddingLeft={2}
         paddingRight={2}
-        flexGrow={1}
         flexShrink={0}
+        minWidth={0}
       >
         <MarkdownText content={msg.content} />
       </box>
