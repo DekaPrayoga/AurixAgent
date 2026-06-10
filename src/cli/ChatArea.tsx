@@ -266,7 +266,7 @@ function MarkdownText({ content }: { content: string }) {
     i++;
   }
 
-  return <box flexDirection="column">{elements}</box>;
+  return <box flexDirection="column" flexShrink={0}>{elements}</box>;
 }
 
 export interface ChatMessage {
@@ -336,7 +336,7 @@ function truncateOutput(content: string, maxLines: number = 14): string {
 
 function UserMessage({ msg }: { msg: ChatMessage }) {
   return (
-    <box flexDirection="column" paddingX={2} flexGrow={1}>
+    <box flexDirection="column" paddingX={2} flexGrow={1} flexShrink={0}>
       <box
         border={["left"]}
         borderColor={theme.primary}
@@ -346,6 +346,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
         paddingLeft={2}
         paddingRight={2}
         flexGrow={1}
+        flexShrink={0}
       >
         <text fg={theme.text} wrapMode="word">{msg.content}</text>
       </box>
@@ -356,7 +357,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
 function AssistantMessage({ msg }: { msg: ChatMessage }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingX={2} flexGrow={1}>
+    <box flexDirection="column" paddingX={2} flexGrow={1} flexShrink={0}>
       <box
         border={["left"]}
         borderColor={theme.secondary}
@@ -366,6 +367,7 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
         paddingLeft={2}
         paddingRight={2}
         flexGrow={1}
+        flexShrink={0}
       >
         <MarkdownText content={msg.content} />
       </box>
@@ -377,7 +379,7 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
   const diff = parseToolEditOutput(msg.content);
   if (diff) {
     return (
-      <box flexDirection="column">
+      <box flexDirection="column" flexShrink={0}>
         <box paddingLeft={4} paddingRight={2}>
           <text fg={theme.tool}>▸ </text>
           <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
@@ -387,7 +389,7 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
     );
   }
   return (
-    <box flexDirection="column" paddingLeft={4} paddingRight={2}>
+    <box flexDirection="column" paddingLeft={4} paddingRight={2} flexShrink={0}>
       <box>
         <text fg={theme.tool}>▸ </text>
         <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
@@ -401,7 +403,7 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
 
 function SystemMessage({ msg }: { msg: ChatMessage }) {
   return (
-    <box paddingLeft={4} paddingRight={2}>
+    <box paddingLeft={4} paddingRight={2} flexShrink={0}>
       <text fg={theme.warn} wrapMode="word">{msg.content}</text>
     </box>
   );
