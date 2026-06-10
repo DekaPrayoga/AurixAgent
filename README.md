@@ -99,8 +99,9 @@ aurix --help       # Show all CLI options
 1. Run `aurix setup` to configure your AI provider and API key
 2. Type anything — AURIX just works. No ceremony needed
 3. Use `/help` to discover 70+ slash commands
-4. Try `/research <topic>` for deep multi-agent research
-5. Use `/depth ultra` for publication-grade output
+4. Try `/deep-research <topic>` for full 13-agent research pipeline
+5. Use `/deep` to toggle deep research mode (ultra depth + multi-agent)
+6. Use `/depth ultra` for publication-grade output
 
 ---
 
@@ -114,11 +115,26 @@ Full-featured terminal UI with dark theme, gray box message panels, autocomplete
 
 **Key features:**
 - Bracketed paste mode with image detection
+- Native text selection and copy/paste (mouse mode disabled)
 - 70+ slash commands with fuzzy autocomplete
 - Permission prompt system (allow once / always / deny)
 - Real-time tool execution display
 - Session save/resume with UUID-based IDs
 - Multiple themes (aurix, amber, violet, mono, opencode)
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+V` | Paste from system clipboard |
+| `Ctrl+C` | Copy input text to clipboard (or exit if empty) |
+| `Ctrl+Y` | Copy last assistant response to clipboard |
+| `Ctrl+P` | Toggle slash command prefix |
+| `Ctrl+L` | Clear session |
+| `Shift+Tab` | Cycle permission mode (Auto/Ask) |
+| `Up/Down` | Scroll chat history / navigate command history |
+| `Escape` | Clear input / interrupt processing |
+| `Tab` | Autocomplete slash commands |
 
 ### Discord
 
@@ -319,7 +335,8 @@ International standards from the **Codex Alimentarius** (FAO/WHO) provide maximu
 | `/depth <level>` | Set research depth (low/medium/high/xhigh/max/ultra) |
 | `/effort <level>` | Alias for depth |
 | `/fast` | Quick switch to low effort mode |
-| `/deep` | Toggle deep research mode |
+| `/deep` | Toggle deep research mode (ultra + multi-agent) |
+| `/deep-research <topic>` | Run full 13-agent research pipeline on a topic |
 | `/reasoning <level>` | Adjust reasoning depth (low/medium/high) |
 | `/variant` | Select model variant |
 
