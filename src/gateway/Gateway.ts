@@ -107,7 +107,7 @@ const WA_COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   !ai xlsx <topic> — Generate Excel
 
 💡 Just type your question after !ai
-Example: !ai bikinin script python looping`;
+Example: !ai make a python loop script`;
 
 const MINI_GUIDE = `Hi! I'm AURIX Agent ⏳
 Type /start for all commands, or just ask me anything.
@@ -115,7 +115,7 @@ Research: /depth low|medium|high|xhigh|max|ultra`;
 
 const WA_MINI_GUIDE = `Hi! I'm AURIX Agent ⏳
 Type !ai start for all commands.
-Example: !ai bikinin gw script python`;
+Example: !ai make me a python script`;
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 

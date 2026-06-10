@@ -9,6 +9,8 @@ import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
+import { ConnectModal } from './ConnectModal.js';
+import { WhatsAppModal } from './WhatsAppModal.js';
 import { theme } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
@@ -47,6 +49,12 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [sessionName, setSessionName] = useState('New session');
   const sessionNameRef = React.useRef('New session');
   const [showLogin, setShowLogin] = useState(false);
+  const [connectModal, setConnectModal] = useState<'discord' | 'telegram' | null>(null);
+  const [whatsappQR, setWhatsappQR] = useState<string | null>(null);
+  const [whatsappStatus, setWhatsappStatus] = useState<'initializing' | 'waiting' | 'connected' | 'error'>('initializing');
+  const [whatsappError, setWhatsappError] = useState<string | undefined>();
+  const [showWhatsApp, setShowWhatsApp] = useState(false);
+  const gatewayRef = React.useRef<any>(null);
   const [permissionMode, setPermissionMode] = useState<'ask' | 'bypass'>(
     registry.getPermissionMode() === 'bypass' ? 'bypass' : 'ask'
   );
@@ -356,6 +364,47 @@ Supervisor auto-routes tasks to the right specialist(s).`);
 
       if (commandName === 'login') {
         setShowLogin(true);
+        return;
+      }
+
+      if (commandName === 'discord') {
+        setConnectModal('discord');
+        return;
+      }
+
+      if (commandName === 'telegram') {
+        setConnectModal('telegram');
+        return;
+      }
+
+      if (commandName === 'whatsapp') {
+        setShowWhatsApp(true);
+        setWhatsappQR(null);
+        setWhatsappStatus('initializing');
+        setWhatsappError(undefined);
+        (async () => {
+          try {
+            const { WhatsAppPlatform } = await import('../gateway/WhatsApp.js');
+            const wa = new WhatsAppPlatform({
+              onQR: (qr: string) => {
+                setWhatsappQR(qr);
+                setWhatsappStatus('waiting');
+              },
+              onConnected: () => {
+                setWhatsappStatus('connected');
+              },
+            });
+            await wa.connect();
+            if (!gatewayRef.current) {
+              const { Gateway } = await import('../gateway/Gateway.js');
+              gatewayRef.current = new Gateway(config, registry);
+            }
+            gatewayRef.current.register(wa);
+          } catch (e: any) {
+            setWhatsappStatus('error');
+            setWhatsappError(e.message);
+          }
+        })();
         return;
       }
 
@@ -1142,9 +1191,82 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                     onCancel={() => setShowLogin(false)}
                   />
                 )}
+                {connectModal && (
+                  <ConnectModal
+                    platform={connectModal}
+                    onSubmit={async (token) => {
+                      const platform = connectModal;
+                      setConnectModal(null);
+                      try {
+                        if (platform === 'discord') {
+                          const { DiscordPlatform } = await import('../gateway/Discord.js');
+                          const dp = new DiscordPlatform(token);
+                          await dp.connect();
+                          if (!gatewayRef.current) {
+                            const { Gateway } = await import('../gateway/Gateway.js');
+                            gatewayRef.current = new Gateway(config, registry);
+                          }
+                          gatewayRef.current.register(dp);
+                          if (!config.gateway) config.gateway = {};
+                          config.gateway.discord = { enabled: true, token };
+                          saveConfig(config);
+                          setMessages(prev => [...prev, {
+                            role: 'assistant',
+                            content: `Discord bot connected! Token: ${token.slice(0, 8)}...`,
+                            timestamp: new Date(),
+                          }]);
+                        } else if (platform === 'telegram') {
+                          const { TelegramPlatform } = await import('../gateway/Telegram.js');
+                          const tp = new TelegramPlatform(token);
+                          await tp.connect();
+                          if (!gatewayRef.current) {
+                            const { Gateway } = await import('../gateway/Gateway.js');
+                            gatewayRef.current = new Gateway(config, registry);
+                          }
+                          gatewayRef.current.register(tp);
+                          if (!config.gateway) config.gateway = {};
+                          config.gateway.telegram = { enabled: true, token };
+                          saveConfig(config);
+                          setMessages(prev => [...prev, {
+                            role: 'assistant',
+                            content: `Telegram bot connected! Token: ${token.slice(0, 8)}...`,
+                            timestamp: new Date(),
+                          }]);
+                        }
+                      } catch (e: any) {
+                        setMessages(prev => [...prev, {
+                          role: 'assistant',
+                          content: `Failed to connect ${platform}: ${e.message}`,
+                          timestamp: new Date(),
+                        }]);
+                      }
+                    }}
+                    onCancel={() => setConnectModal(null)}
+                  />
+                )}
+                {showWhatsApp && (
+                  <WhatsAppModal
+                    qrData={whatsappQR}
+                    status={whatsappStatus}
+                    errorMsg={whatsappError}
+                    onClose={() => {
+                      setShowWhatsApp(false);
+                      if (whatsappStatus === 'connected') {
+                        if (!config.gateway) config.gateway = {};
+                        config.gateway.whatsapp = { enabled: true };
+                        saveConfig(config);
+                        setMessages(prev => [...prev, {
+                          role: 'assistant',
+                          content: 'WhatsApp connected and saved!',
+                          timestamp: new Date(),
+                        }]);
+                      }
+                    }}
+                  />
+                )}
                 <InputBox
                   onSubmit={handleSubmit}
-                  disabled={isProcessing || !!permissionPrompt || showLogin}
+                  disabled={isProcessing || !!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
                   commands={commands}
                   model={agent.getModel()}
                   contextPct={ctxStats.estimatedPct}

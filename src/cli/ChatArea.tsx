@@ -1,8 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { TextAttributes, LinearScrollAccel } from '@opentui/core';
+import { TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
+
+class SlowScrollAccel implements ScrollAcceleration {
+  tick(_now?: number): number {
+    return 0.3;
+  }
+  reset(): void {}
+}
+
+const slowScroll = new SlowScrollAccel();
 
 interface TextSegment {
   text: string;
@@ -409,8 +418,6 @@ function SystemMessage({ msg }: { msg: ChatMessage }) {
   );
 }
 
-const linearScroll = new LinearScrollAccel();
-
 export function ChatArea({ messages, isProcessing, activeTool, scrollOffset }: ChatAreaProps) {
   const maxVisible = 100;
   const end = Math.max(0, messages.length - scrollOffset);
@@ -423,7 +430,7 @@ export function ChatArea({ messages, isProcessing, activeTool, scrollOffset }: C
         stickyScroll={true}
         stickyStart="bottom"
         flexGrow={1}
-        scrollAcceleration={linearScroll}
+        scrollAcceleration={slowScroll}
         verticalScrollbarOptions={{ visible: false }}
       >
         <box flexDirection="column" gap={1}>

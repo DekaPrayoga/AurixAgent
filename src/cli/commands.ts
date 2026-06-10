@@ -141,6 +141,24 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
+    name: 'discord',
+    description: 'Connect Discord bot with token input',
+    group: 'connect',
+    source: 'aurix',
+  },
+  {
+    name: 'telegram',
+    description: 'Connect Telegram bot with token input',
+    group: 'connect',
+    source: 'aurix',
+  },
+  {
+    name: 'whatsapp',
+    description: 'Connect WhatsApp via QR code scan',
+    group: 'connect',
+    source: 'aurix',
+  },
+  {
     name: 'setup',
     description: 'Re-run interactive setup wizard',
     group: 'config',

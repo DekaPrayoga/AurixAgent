@@ -8,10 +8,14 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
   name = 'whatsapp';
   private socket: any;
   private dbPath: string;
+  private onQR?: (qr: string) => void;
+  private onConnected?: () => void;
 
-  constructor(dbPath?: string) {
+  constructor(options?: { dbPath?: string; onQR?: (qr: string) => void; onConnected?: () => void }) {
     super();
-    this.dbPath = dbPath || path.join(os.homedir(), '.aurix', 'wa-session.db');
+    this.dbPath = options?.dbPath || path.join(os.homedir(), '.aurix', 'wa-session.db');
+    this.onQR = options?.onQR;
+    this.onConnected = options?.onConnected;
   }
 
   async connect(): Promise<void> {
@@ -24,16 +28,21 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
       this.socket = makeWASocket({
         auth: state as any,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
+        printQRInTerminal: !this.onQR,
       });
 
       this.socket.ev.on('creds.update', saveCreds);
 
       this.socket.ev.on('connection.update', (update: any) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr && this.onQR) {
+          this.onQR(qr);
+        }
 
         if (connection === 'open') {
           console.log(`  WhatsApp: connected`);
+          if (this.onConnected) this.onConnected();
         }
 
         if (connection === 'close') {

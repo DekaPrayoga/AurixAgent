@@ -1,12 +1,42 @@
 {
   "name": "aurix-agent",
   "version": "0.1.0",
-  "description": "AURIX Agent - AI-Powered Universal Assistant",
+  "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "aurix": "bin/aurix"
   },
+  "keywords": [
+    "ai",
+    "agent",
+    "terminal",
+    "cli",
+    "typescript",
+    "bun",
+    "openai",
+    "anthropic",
+    "automation",
+    "research",
+    "productivity",
+    "devtools",
+    "browser-automation",
+    "multi-agent",
+    "llm",
+    "developer-tools",
+    "discord-bot",
+    "telegram-bot",
+    "whatsapp-bot"
+  ],
+  "homepage": "https://github.com/DekaPrayoga/AurixAgent",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DekaPrayoga/AurixAgent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DekaPrayoga/AurixAgent/issues"
+  },
+  "license": "MIT",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.tsx",
@@ -26,14 +56,17 @@
     "js-yaml": "^4.1.0",
     "langsmith": "^0.7.5",
     "openai": "^4.70.0",
+    "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-reconciler": "^0.33.0",
     "systeminformation": "^5.23.0"
   },
   "devDependencies": {
+    "2": "^3.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
