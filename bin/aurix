@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# AURIX Agent — modern CLI launcher
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+DIST="$SCRIPT_DIR/dist/index.js"
+VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/package.json" 2>/dev/null || echo "0.1.0")
+
+export AURIX_HOME="$SCRIPT_DIR"
+export PATH="$HOME/.bun/bin:$PATH"
+
+# --- runtime detection (OpenTUI requires bun) ---
+RUNTIME=""
+if [ -x "$HOME/.bun/bin/bun" ]; then
+  RUNTIME="$HOME/.bun/bin/bun"
+elif command -v bun &>/dev/null; then
+  RUNTIME="bun"
+else
+  echo -e "\033[38;2;224;108;117merror\033[0m: bun is required (OpenTUI needs bun runtime)"
+  echo "  install bun: curl -fsSL https://bun.sh/install | bash"
+  exit 1
+fi
+
+# --- auto-build if dist missing ---
+if [ ! -f "$DIST" ]; then
+  echo -e "\033[90mbuilding...\033[0m"
+  cd "$SCRIPT_DIR" && npx tsc >/dev/null 2>&1
+fi
+
+# --- help ---
+show_help() {
+  echo ""
+  echo -e "  \033[38;2;250;178;131mAURIX\033[0m v${VERSION} — agentic ai terminal workspace"
+  echo ""
+  echo -e "  \033[1mUsage:\033[0m aurix [command] [options]"
+  echo ""
+  echo -e "  \033[1mCommands:\033[0m"
+  echo -e "    \033[38;2;250;178;131m(default)\033[0m      Start interactive session"
+  echo -e "    \033[38;2;250;178;131msetup\033[0m          Configure provider, API key, model"
+  echo -e "    \033[38;2;250;178;131mgateway\033[0m        Start messaging gateway (Telegram, Discord, etc.)"
+  echo -e "    \033[38;2;250;178;131mupdate\033[0m         Update AURIX to latest version"
+  echo -e "    \033[38;2;250;178;131msessions\033[0m       List saved sessions"
+  echo ""
+  echo -e "  \033[1mOptions:\033[0m"
+  echo -e "    --resume <id>   Resume a previous session"
+  echo -e "    --continue      Continue last session"
+  echo -e "    --setup         Force setup wizard"
+  echo -e "    --no-kitty      Skip kitty terminal detection"
+  echo -e "    -v, --version   Show version"
+  echo -e "    -h, --help      Show this help"
+  echo ""
+  echo -e "  \033[90mExamples:\033[0m"
+  echo -e "    aurix"
+  echo -e "    aurix setup"
+  echo -e "    aurix --resume abc123"
+  echo -e "    aurix gateway"
+  echo ""
+}
+
+# --- version ---
+show_version() {
+  echo "aurix v${VERSION}"
+}
+
+# --- list sessions ---
+list_sessions() {
+  local sessions_dir="$HOME/.aurix/memories/sessions"
+  if [ ! -d "$sessions_dir" ] || [ -z "$(ls -A "$sessions_dir"/*.md 2>/dev/null)" ]; then
+    echo -e "  \033[90mno saved sessions found\033[0m"
+    return
+  fi
+  echo ""
+  echo -e "  \033[38;2;250;178;131mSaved sessions:\033[0m"
+  echo ""
+  for f in "$sessions_dir"/*.md; do
+    local name=$(basename "$f" .md)
+    local lines=$(wc -l < "$f" | tr -d ' ')
+    echo -e "    \033[38;2;92;156;245m${name}\033[0m  \033[90m(${lines} lines)\033[0m"
+  done
+  echo ""
+  echo -e "  \033[90mresume with:\033[0m aurix --resume <id>"
+  echo ""
+}
+
+# --- update ---
+do_update() {
+  echo -e "  \033[38;2;250;178;131mUpdating AURIX...\033[0m"
+  cd "$SCRIPT_DIR"
+  if [ -f "package.json" ]; then
+    $RUNTIME install 2>/dev/null || npm install 2>/dev/null
+    npx tsc >/dev/null 2>&1
+    echo -e "  \033[38;2;127;216;143m✓\033[0m updated to latest"
+  else
+    echo -e "  \033[38;2;224;108;117merror\033[0m: not a valid aurix installation"
+    exit 1
+  fi
+}
+
+# --- run with optional kitty ---
+run_aurix() {
+  if [ "${AURIX_KITTY:-}" = "1" ] && command -v kitty &>/dev/null && [ -z "${KITTY_WINDOW_ID:-}" ]; then
+    exec kitty \
+      --override background='#0a0a0a' \
+      --override foreground='#eeeeee' \
+      --override cursor='#fab283' \
+      --override cursor_text_color='#0a0a0a' \
+      --override selection_background='#282828' \
+      --override selection_foreground='#eeeeee' \
+      --override tab_bar_background='#0a0a0a' \
+      --override active_tab_background='#1e1e1e' \
+      --override active_tab_foreground='#fab283' \
+      --override inactive_tab_background='#0a0a0a' \
+      --override inactive_tab_foreground='#808080' \
+      --override hide_window_decorations='yes' \
+      --title 'AURIX Agent' \
+      $RUNTIME "$DIST" "$@"
+  else
+    exec $RUNTIME "$DIST" "$@"
+  fi
+}
+
+# --- parse args ---
+case "${1:-}" in
+  -h|--help|help)
+    show_help
+    exit 0
+    ;;
+  -v|--version|version)
+    show_version
+    exit 0
+    ;;
+  setup)
+    shift
+    run_aurix --setup "$@"
+    ;;
+  gateway)
+    shift
+    run_aurix gateway "$@"
+    ;;
+  update)
+    do_update
+    exit 0
+    ;;
+  sessions|session|ls)
+    list_sessions
+    exit 0
+    ;;
+  --no-kitty)
+    shift
+    export AURIX_NO_KITTY=1
+    run_aurix "$@"
+    ;;
+  "")
+    run_aurix
+    ;;
+  *)
+    run_aurix "$@"
+    ;;
+esac
