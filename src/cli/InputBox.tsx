@@ -198,12 +198,14 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   if (disabled) {
     return (
-      <box flexDirection="column" paddingX={2} backgroundColor={theme.bg}>
+      <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
         <box
           backgroundColor={theme.bgElement}
           paddingX={2}
           paddingTop={1}
           paddingBottom={1}
+          minHeight={3}
+          height={3}
         >
           <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
           <text fg={theme.textMuted}>{'  '}{frame()} thinking...</text>
@@ -233,6 +235,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
             paddingX={2}
             paddingTop={1}
             paddingBottom={1}
+            minHeight={3}
+            height={3}
           >
             <box>
               <text fg={value ? theme.text : theme.textMuted}>
@@ -267,7 +271,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   }
 
   return (
-    <box flexDirection="column" paddingX={2} backgroundColor={theme.bg}>
+    <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
       <box flexDirection="column" border={suggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
         {suggestionsVisible && (
           <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
@@ -276,6 +280,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           paddingX={2}
           paddingTop={1}
           paddingBottom={1}
+          minHeight={3}
+          height={3}
         >
           <box>
             <text fg={value ? theme.text : theme.textMuted}>

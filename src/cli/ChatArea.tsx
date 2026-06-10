@@ -64,7 +64,7 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
   const fg = baseFg || theme.text;
 
   return (
-    <box flexDirection="row" flexWrap="wrap" flexGrow={1} flexShrink={1}>
+    <box flexDirection="row" flexWrap="wrap" flexGrow={1} flexShrink={1} minWidth={0}>
       {segments.map((seg, i) => {
         if (seg.code) {
           return (
@@ -211,7 +211,7 @@ function MarkdownText({ content }: { content: string }) {
     }
 
     // Unordered list: - item, * item, + item
-    const bulletMatch = line.match(/^(\s*)[-*+]\s+(.*)/);
+    const bulletMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX]\])(.*)/);
     if (bulletMatch) {
       const indent = Math.floor((bulletMatch[1]?.length || 0) / 2);
       elements.push(
