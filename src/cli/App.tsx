@@ -186,13 +186,25 @@ export function App({ config, registry, resumeId }: AppProps) {
 
     if (name === 'up' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset(prev => Math.min(prev + 5, Math.max(0, messages.length - 10)));
+      setScrollOffset(prev => Math.min(prev + 3, Math.max(0, messages.length - 5)));
       return;
     }
 
     if (name === 'down' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset(prev => Math.max(0, prev - 5));
+      setScrollOffset(prev => Math.max(0, prev - 3));
+      return;
+    }
+
+    if (name === 'pageup' && !isProcessing) {
+      evt.preventDefault();
+      setScrollOffset(prev => Math.min(prev + 20, Math.max(0, messages.length - 5)));
+      return;
+    }
+
+    if (name === 'pagedown' && !isProcessing) {
+      evt.preventDefault();
+      setScrollOffset(prev => Math.max(0, prev - 20));
       return;
     }
   });

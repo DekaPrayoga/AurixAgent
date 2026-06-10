@@ -203,9 +203,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       return;
     }
     if (!suggestionsVisible && name === 'up') {
+      if (history.length === 0 || (historyIdx < 0 && value === '')) return;
       evt.preventDefault();
       evt.stopPropagation();
-      if (history.length === 0) return;
       const nextIdx = historyIdx < 0 ? history.length - 1 : Math.max(0, historyIdx - 1);
       setHistoryIdx(nextIdx);
       setValue(history[nextIdx] || '');
@@ -213,9 +213,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       return;
     }
     if (!suggestionsVisible && name === 'down') {
+      if (historyIdx < 0) return;
       evt.preventDefault();
       evt.stopPropagation();
-      if (historyIdx < 0) return;
       const nextIdx = historyIdx + 1;
       if (nextIdx >= history.length) { setHistoryIdx(-1); setValue(''); setCursor(0); return; }
       setHistoryIdx(nextIdx);
