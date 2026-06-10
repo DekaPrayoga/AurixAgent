@@ -79,12 +79,30 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     };
   }, []);
 
-  usePaste((pasted) => {
+  usePaste((event) => {
     if (disabled) return;
-    const text = typeof pasted === 'string' ? pasted : String(pasted);
-    const insertAt = cursor;
-    setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
-    setCursor(insertAt + text.length);
+    if (event?.metadata?.kind === 'binary') {
+      const mime = event.metadata.mimeType || 'unknown';
+      if (mime.startsWith('image/')) {
+        setValue(prev => prev + `[image pasted: ${mime}]`);
+        setCursor(prev => prev + `[image pasted: ${mime}]`.length);
+        return;
+      }
+      return;
+    }
+    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    if (!text) return;
+    const lines = text.split('\n');
+    if (lines.length >= 3) {
+      const summary = `[pasted ${lines.length} lines]`;
+      const insertAt = cursor;
+      setValue(prev => prev.slice(0, insertAt) + summary + prev.slice(insertAt));
+      setCursor(insertAt + summary.length);
+    } else {
+      const insertAt = cursor;
+      setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+      setCursor(insertAt + text.length);
+    }
   });
 
   const frame = () => {
