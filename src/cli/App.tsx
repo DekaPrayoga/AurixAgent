@@ -1,14 +1,13 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, useRenderer } from '@opentui/react';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { Banner } from './Banner.js';
 import { ChatArea, type ChatMessage } from './ChatArea.js';
 import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
-import { SessionPanel } from './SessionPanel.js';
 import { LoginModal } from './LoginModal.js';
 import { theme } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
@@ -18,6 +17,7 @@ import { CONFIG_PATH, saveConfig } from '../agent/Config.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
+import { logoLines } from '../utils/ascii-logo.js';
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 type ResearchDepth = typeof VALID_DEPTHS[number];
@@ -51,6 +51,33 @@ export function App({ config, registry, resumeId }: AppProps) {
     registry.getPermissionMode() === 'bypass' ? 'bypass' : 'ask'
   );
   const agentRef = React.useRef<AgentLoop | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  useEffect(() => {
+    if (!renderer?.console) return;
+    (renderer.console as any).onCopySelection = async (text: string) => {
+      if (!text || text.length === 0) return;
+      const b64 = Buffer.from(text).toString('base64');
+      const seq = `\x1b]52;c;${b64}\x07`;
+      process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
+      try {
+        const { spawn } = await import('node:child_process');
+        const tools: [string, string[]][] = [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['pbcopy', []]];
+        for (const [cmd, args] of tools) {
+          try { const c = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] }); c.stdin?.end(text); c.on('error', () => {}); break; } catch {}
+        }
+      } catch {}
+      showToast(`Copied ${text.length > 50 ? text.length + ' chars' : '"' + text.slice(0, 50) + '"'} to clipboard`);
+      if (typeof (renderer as any).clearSelection === 'function') (renderer as any).clearSelection();
+    };
+  }, [renderer, showToast]);
 
   const doExit = useCallback(() => {
     const name = sessionNameRef.current !== 'New session' ? sessionNameRef.current : undefined;
@@ -152,7 +179,7 @@ export function App({ config, registry, resumeId }: AppProps) {
             } catch {}
           }
         }).catch(() => {});
-        addAssistant('Last response copied to clipboard.');
+        setMessages(prev => [...prev, { role: 'assistant' as const, content: 'Last response copied to clipboard.', timestamp: new Date() }]);
       }
       return;
     }
@@ -975,28 +1002,62 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
     setPermissionMode(next);
   }, [registry]);
 
+  const fmtTok = (n: number) => n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1_000 ? (n / 1_000).toFixed(1) + 'k' : String(n);
+  const barW = 10;
+  const barFill = Math.round((tokenStats.pct / 100) * barW);
+  const barColor = tokenStats.pct > 75 ? theme.error : tokenStats.pct > 50 ? theme.warn : theme.ok;
+  const barStr = Array.from({ length: barW }).map((_, i) => i < barFill ? '█' : '░').join('');
+  const promptW = Math.max(60, Math.min(80, termWidth - 8));
+
   return (
-    <box flexDirection="row" width={termWidth} height={termHeight} backgroundColor={theme.bg}>
-      <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+    <box
+      width={termWidth}
+      height={termHeight}
+      flexDirection="column"
+      backgroundColor={theme.bg}
+      onMouseUp={() => {
+        try {
+          const sel = (renderer as any).getSelection?.();
+          if (!sel) return;
+          const text = sel.getSelectedText?.();
+          if (!text || text.length === 0) return;
+          const b64 = Buffer.from(text).toString('base64');
+          const seq = `\x1b]52;c;${b64}\x07`;
+          process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
+          import('node:child_process').then(({ spawn }) => {
+            const tools: [string, string[]][] = [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['pbcopy', []]];
+            for (const [cmd, args] of tools) {
+              try { const c = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] }); c.stdin?.end(text); c.on('error', () => {}); break; } catch {}
+            }
+          }).catch(() => {});
+          showToast(`Copied ${text.length > 50 ? text.length + ' chars' : '"' + text.slice(0, 50) + '"'} to clipboard`);
+          (renderer as any).clearSelection?.();
+        } catch {}
+      }}
+    >
+      <box flexGrow={1} minHeight={0} flexDirection="column">
         {isHome ? (
-          <>
-            <box flexDirection="column" flexShrink={0}>
-              <Banner
-                model={agent.getModel()}
-                provider={agent.getProviderName()}
-                toolCount={toolCount}
-                skillCount={skillCount}
-                researchMode={researchMode}
-                compact
-              />
+          <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2} flexDirection="column">
+            <box flexGrow={1} minHeight={0} />
+            <box flexShrink={0} flexDirection="column" alignItems="center">
+              <text fg={theme.primary}>{logoLines().join('\n')}</text>
+              <box marginTop={1}>
+                <text fg={theme.primary} attributes={TextAttributes.BOLD}>AURIX</text>
+                <text fg={theme.text}> AGENTIC AI</text>
+                <text fg={theme.accent}>{'  ::  '}</text>
+                <text fg={theme.textMuted}>terminal autonomy workspace</text>
+              </box>
+              <box marginTop={1}>
+                <text fg={theme.textMuted}>{toolCount} tools</text>
+                <text fg={theme.border}>{'  ·  '}</text>
+                <text fg={theme.textMuted}>{skillCount} skills</text>
+                <text fg={theme.border}>{'  ·  '}</text>
+                <text fg={theme.textMuted}>model </text>
+                <text fg={theme.text}>{agent.getModel().slice(0, 22)}</text>
+              </box>
             </box>
-            <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-              <ChatArea
-                messages={messages}
-                isProcessing={isProcessing}
-                activeTool={activeTool}
-                scrollOffset={scrollOffset}
-              />
+            <box height={1} minHeight={0} flexShrink={1} />
+            <box width="100%" maxWidth={promptW} paddingTop={1} flexShrink={0}>
               <InputBox
                 onSubmit={handleSubmit}
                 disabled={false}
@@ -1009,100 +1070,152 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 onModeCycle={cycleMode}
               />
             </box>
-            <box flexShrink={0}>
-              <StatusBar
-                model={agent.getModel()}
-                provider={agent.getProviderName()}
-                researchMode={researchMode}
-                cwd={process.cwd()}
-              />
+            <box flexGrow={1} minHeight={0} />
+            <box width="100%" flexShrink={0}>
+              <StatusBar model={agent.getModel()} provider={agent.getProviderName()} researchMode={researchMode} cwd={process.cwd()} />
             </box>
-          </>
+          </box>
         ) : (
-          <>
+          <box flexDirection="row" flexGrow={1} minHeight={0}>
             <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-              <ChatArea
-                messages={messages}
-                isProcessing={isProcessing}
-                activeTool={activeTool}
-                scrollOffset={scrollOffset}
-              />
-              {permissionPrompt && (
-                <PermissionPrompt
-                  request={permissionPrompt.request}
-                  onResolve={(reply) => {
-                    const resolve = permissionPrompt.resolve;
-                    setPermissionPrompt(null);
-                    resolve(reply);
-                  }}
+              <box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+                <ChatArea
+                  messages={messages}
+                  isProcessing={isProcessing}
+                  activeTool={activeTool}
+                  scrollOffset={scrollOffset}
                 />
-              )}
-              {showLogin && (
-                <LoginModal
-                  currentBaseUrl={config.baseUrl}
-                  currentModel={config.model}
-                  onSubmit={(newBaseUrl, newApiKey, newModel) => {
-                    if (newBaseUrl) {
-                      config.baseUrl = newBaseUrl;
-                      setBaseUrl(newBaseUrl);
-                    }
-                    if (newApiKey) {
-                      config.apiKey = newApiKey;
-                    }
-                    if (newModel) {
-                      config.model = newModel;
-                    }
-                    agent.setProvider({
-                      baseUrl: newBaseUrl || undefined,
-                      apiKey: newApiKey || undefined,
-                      model: newModel || undefined,
-                    });
-                    saveConfig(config);
-                    setShowLogin(false);
-                    setMessages(prev => [...prev, {
-                      role: 'assistant',
-                      content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? newApiKey.slice(0, 8) + '...' : '(unchanged)'}\n  Model: ${newModel || agent.getModel()}`,
-                      timestamp: new Date(),
-                    }]);
-                  }}
-                  onCancel={() => setShowLogin(false)}
+                {permissionPrompt && (
+                  <PermissionPrompt
+                    request={permissionPrompt.request}
+                    onResolve={(reply) => {
+                      const resolve = permissionPrompt.resolve;
+                      setPermissionPrompt(null);
+                      resolve(reply);
+                    }}
+                  />
+                )}
+                {showLogin && (
+                  <LoginModal
+                    currentBaseUrl={config.baseUrl}
+                    currentModel={config.model}
+                    onSubmit={(newBaseUrl, newApiKey, newModel) => {
+                      if (newBaseUrl) {
+                        config.baseUrl = newBaseUrl;
+                        setBaseUrl(newBaseUrl);
+                      }
+                      if (newApiKey) {
+                        config.apiKey = newApiKey;
+                      }
+                      if (newModel) {
+                        config.model = newModel;
+                      }
+                      agent.setProvider({
+                        baseUrl: newBaseUrl || undefined,
+                        apiKey: newApiKey || undefined,
+                        model: newModel || undefined,
+                      });
+                      saveConfig(config);
+                      setShowLogin(false);
+                      setMessages(prev => [...prev, {
+                        role: 'assistant',
+                        content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? newApiKey.slice(0, 8) + '...' : '(unchanged)'}\n  Model: ${newModel || agent.getModel()}`,
+                        timestamp: new Date(),
+                      }]);
+                    }}
+                    onCancel={() => setShowLogin(false)}
+                  />
+                )}
+                <InputBox
+                  onSubmit={handleSubmit}
+                  disabled={isProcessing || !!permissionPrompt || showLogin}
+                  commands={commands}
+                  model={agent.getModel()}
+                  contextPct={ctxStats.estimatedPct}
+                  cwd={process.cwd()}
+                  mode={mode}
+                  onModeCycle={cycleMode}
                 />
-              )}
-              <InputBox
-                onSubmit={handleSubmit}
-                disabled={isProcessing || !!permissionPrompt || showLogin}
-                commands={commands}
-                model={agent.getModel()}
-                contextPct={ctxStats.estimatedPct}
-                cwd={process.cwd()}
-                mode={mode}
-                onModeCycle={cycleMode}
-              />
+              </box>
+              <box flexShrink={0}>
+                <StatusBar
+                  model={agent.getModel()}
+                  provider={agent.getProviderName()}
+                  researchMode={researchMode}
+                  cwd={process.cwd()}
+                />
+              </box>
             </box>
-            <box flexShrink={0}>
-              <StatusBar
-                model={agent.getModel()}
-                provider={agent.getProviderName()}
-                researchMode={researchMode}
-                cwd={process.cwd()}
-              />
+            <box
+              flexDirection="column"
+              width={28}
+              backgroundColor={theme.bgPanel}
+              border={["left"]}
+              borderColor={theme.border}
+              paddingX={1}
+              paddingY={1}
+              flexShrink={0}
+            >
+              <box flexDirection="column">
+                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>context</text>
+                <box marginTop={1}>
+                  <text fg={barColor}>{barStr}</text>
+                  <text fg={theme.textMuted}>{' '}{tokenStats.pct}%</text>
+                </box>
+                <box>
+                  <text fg={theme.textMuted}>{fmtTok(tokenStats.total)} tokens</text>
+                </box>
+              </box>
+
+              <box flexDirection="column" marginTop={1}>
+                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>tokens</text>
+                <box marginTop={1}>
+                  <text fg={theme.secondary}>↑ </text>
+                  <text fg={theme.text}>{fmtTok(tokenStats.input)}</text>
+                </box>
+                <box>
+                  <text fg={theme.primary}>↓ </text>
+                  <text fg={theme.text}>{fmtTok(tokenStats.output)}</text>
+                </box>
+              </box>
+
+              <box flexDirection="column" marginTop={1}>
+                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>model</text>
+                <box marginTop={1}>
+                  <text fg={theme.text}>{agent.getModel()}</text>
+                </box>
+              </box>
+
+              <box flexDirection="column" marginTop={1}>
+                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>info</text>
+                <box marginTop={1}>
+                  <text fg={theme.textMuted}>provider </text>
+                  <text fg={theme.text}>{agent.getProviderName()}</text>
+                </box>
+                <box>
+                  <text fg={theme.textMuted}>depth    </text>
+                  <text fg={researchMode === 'ultra' || researchMode === 'max' ? theme.accent : theme.text}>{researchMode}</text>
+                </box>
+                <box>
+                  <text fg={theme.textMuted}>messages </text>
+                  <text fg={theme.text}>{ctxStats.messageCount}</text>
+                </box>
+                <box>
+                  <text fg={theme.textMuted}>tools    </text>
+                  <text fg={theme.text}>{toolCount}</text>
+                </box>
+              </box>
             </box>
-          </>
+          </box>
         )}
       </box>
-      <box flexShrink={0}>
-        <SessionPanel
-          sessionName={sessionName}
-          model={agent.getModel()}
-          provider={agent.getProviderName()}
-          inputTokens={tokenStats.input}
-          outputTokens={tokenStats.output}
-          totalTokens={tokenStats.total}
-          contextPct={tokenStats.pct}
-          messageCount={ctxStats.messageCount}
-          researchMode={researchMode}
-        />
-      </box>
+      {toast && (
+        <box position="absolute" bottom={2} left={Math.max(0, Math.floor((termWidth - toast.length - 4) / 2))} zIndex={100}>
+          <box backgroundColor={theme.bgElement} paddingX={2} paddingY={0} border={["top", "bottom", "left", "right"]} borderColor={theme.border}>
+            <text fg={theme.ok}>{toast}</text>
+          </box>
+        </box>
+      )}
     </box>
   );
 }

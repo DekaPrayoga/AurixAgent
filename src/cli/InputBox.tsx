@@ -258,7 +258,6 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           paddingTop={1}
           paddingBottom={1}
           minHeight={3}
-          height={3}
         >
           <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
           <text fg={theme.textMuted}>{'  '}{frame()} thinking...</text>
@@ -289,21 +288,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
             paddingTop={1}
             paddingBottom={1}
             minHeight={3}
-            height={3}
           >
-            <box>
-              <text fg={value ? theme.text : theme.textMuted}>
-                {value ? '' : 'Ask anything...'}
+            {value ? (
+              <text fg={theme.text} wrapMode="word">
+                <span style={{ fg: theme.text }}>{before}</span>
+                <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
+                <span style={{ fg: theme.text }}>{after}</span>
               </text>
-              {value && (
-                <>
-                  <text fg={theme.text}>{before}</text>
-                  <text bg={theme.cursor} fg={theme.bg}>{cursorChar}</text>
-                  <text fg={theme.text}>{after}</text>
-                </>
-              )}
-              {!value && <text> </text>}
-            </box>
+            ) : (
+              <text fg={theme.textMuted}>Ask anything...</text>
+            )}
           </box>
         </box>
         <box marginTop={1} paddingX={1} width={boxWidth} flexDirection="row" justifyContent="space-between">
@@ -334,21 +328,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           paddingTop={1}
           paddingBottom={1}
           minHeight={3}
-          height={3}
         >
-          <box>
-            <text fg={value ? theme.text : theme.textMuted}>
-              {value ? '' : 'Ask anything...'}
+          {value ? (
+            <text fg={theme.text} wrapMode="word">
+              <span style={{ fg: theme.text }}>{before}</span>
+              <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
+              <span style={{ fg: theme.text }}>{after}</span>
             </text>
-            {value && (
-              <>
-                <text fg={theme.text}>{before}</text>
-                <text bg={theme.cursor} fg={theme.bg}>{cursorChar}</text>
-                <text fg={theme.text}>{after}</text>
-              </>
-            )}
-            {!value && <text> </text>}
-          </box>
+          ) : (
+            <text fg={theme.textMuted}>Ask anything...</text>
+          )}
         </box>
       </box>
       <box paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
