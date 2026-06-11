@@ -30,6 +30,14 @@ export class ToolRegistry {
     this.tools.set(tool.name, tool);
   }
 
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
+  has(name: string): boolean {
+    return this.tools.has(name);
+  }
+
   get(name: string): Tool | undefined {
     return this.tools.get(name);
   }

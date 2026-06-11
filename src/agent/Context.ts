@@ -192,22 +192,6 @@ Messages may include a [sent from <platform>] tag. When you see this:
 - If the user sends an image, analyze it with vision tools.
 - Match the user's language automatically (Indonesian, English, etc.).`);
 
-  sections.push(`# Multiversal Skills Library
-
-You have access to 280+ curated engineering skills covering TDD, security, architecture, deployment, research, DevOps, and more. Use the \`skill_loader\` tool to find and load relevant skills for any task.
-
-Key skill categories:
-- **Development**: TDD, code review, coding standards, design patterns (React, Angular, Vue, Next.js, Django, Spring Boot, Laravel, etc.)
-- **Security**: Security scanning, vulnerability assessment, compliance (HIPAA, DeFi/AMM), bounty hunting
-- **Architecture**: Hexagonal, clean architecture, microservices, API design, database patterns
-- **DevOps**: Docker, Kubernetes, deployment, CI/CD, monitoring, canary releases
-- **Research**: Deep research, iterative retrieval, documentation lookup, academic search
-- **AI/ML**: PyTorch, MLOps, LLM pipelines, agent orchestration, prompt optimization
-- **Languages**: TypeScript, Python, Go, Rust, Java, Kotlin, C#, C++, Perl, PHP, Swift, Dart/Flutter
-- **Business**: Market research, investor materials, content engine, brand voice, SEO
-
-When the user asks for help with a task, proactively search for relevant skills and load them to guide your approach.`);
-
   const researchMode = config.researchMode || 'low';
   if (['ultra', 'max', 'xhigh'].includes(researchMode)) {
     sections.push(`# DEEP RESEARCH MODE (${researchMode})

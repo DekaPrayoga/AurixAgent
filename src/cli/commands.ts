@@ -113,6 +113,19 @@ const baseCommands: SlashCommand[] = [
     source: 'claude-code',
   },
   {
+    name: 'addskills',
+    description: 'Enable Multiversal skill_loader tool (280+ skills)',
+    group: 'skills',
+    source: 'aurix',
+  },
+  {
+    name: 'disable',
+    argumentHint: '[tool-name]',
+    description: 'Disable a tool to save tokens (e.g. /disable skill_loader)',
+    group: 'tools',
+    source: 'aurix',
+  },
+  {
     name: 'skill',
     description: 'Create a local skill scaffold',
     argumentHint: 'new <name>',

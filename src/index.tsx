@@ -44,7 +44,6 @@ import { humanizerTool } from './tools/Humanizer.js';
 import { mapsTool } from './tools/Maps.js';
 import { notifierTool } from './tools/Notifier.js';
 import { diagramTool } from './tools/Diagram.js';
-import { skillLoaderTool } from './tools/SkillLoader.js';
 
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
@@ -65,7 +64,6 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(visionTool);
   registry.register(musicTool);
   registry.register(memoryTool);
-  registry.register(skillLoaderTool);
 
   const f = features || [];
   const all = f.length === 0;

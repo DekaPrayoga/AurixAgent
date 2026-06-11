@@ -839,6 +839,33 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         return;
       }
 
+      if (commandName === 'addskills') {
+        if (registry.has('skill_loader')) {
+          addAssistant('skill_loader is already enabled. Use /disable skill_loader to remove it.');
+          return;
+        }
+        const { skillLoaderTool } = await import('../tools/SkillLoader.js');
+        registry.register(skillLoaderTool);
+        addAssistant(`Multiversal skill_loader enabled — 280+ skills available.\n\nUse: ask me to "search for TDD skills" or "load the security-review skill"\nDisable: /disable skill_loader\n\nThe tool will appear in /tools list and the AI can now search and load skills on demand.`);
+        return;
+      }
+
+      if (commandName === 'disable') {
+        const toolName = slash.args?.trim();
+        if (!toolName) {
+          const toolList = registry.list().map(t => `  ${t.name}`).join('\n');
+          addAssistant(`Usage: /disable <tool-name>\n\nEnabled tools:\n${toolList}`);
+          return;
+        }
+        if (!registry.has(toolName)) {
+          addAssistant(`Tool "${toolName}" is not currently enabled.`);
+          return;
+        }
+        registry.unregister(toolName);
+        addAssistant(`Tool "${toolName}" disabled. It won't be sent to the AI anymore, saving tokens.\nRe-enable with the appropriate command or restart AURIX.`);
+        return;
+      }
+
       if (commandName === 'skills') {
         const q = slash.args.toLowerCase();
         const filtered = q
