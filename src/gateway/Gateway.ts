@@ -10,6 +10,8 @@ export interface IncomingMessage {
   channelId: string;
   content: string;
   replyTo?: string;
+  forwardedFrom?: string;
+  attachments?: { type: string; url?: string; filename?: string }[];
 }
 
 export interface Platform {
@@ -17,6 +19,7 @@ export interface Platform {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   send(content: string, channelId: string, replyTo?: string): Promise<void>;
+  sendFile?(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void>;
   edit?(content: string, channelId: string, messageId: string): Promise<void>;
   on(event: 'message', handler: (msg: IncomingMessage) => void): this;
 }
@@ -217,6 +220,7 @@ export class Gateway extends EventEmitter {
   private userDepths = new Map<string, string>();
   private startTime: number;
   private activeProcessing = new Set<string>();
+  private lastContext = new Map<string, { platform: string; channelId: string; replyTo?: string }>();
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     super();
@@ -277,6 +281,12 @@ export class Gateway extends EventEmitter {
     const platform = this.platforms.get(msg.platform);
 
     if (!platform) return;
+
+    this.lastContext.set(agentKey, {
+      platform: msg.platform,
+      channelId: msg.channelId,
+      replyTo: msg.replyTo,
+    });
 
     if (this.activeProcessing.has(agentKey)) {
       await platform.send('⏳ Still processing your previous request...', msg.channelId, msg.replyTo);
@@ -434,7 +444,11 @@ export class Gateway extends EventEmitter {
     if (!userPrompt || cmd === '') return;
 
     const platformTag = `[sent from ${msg.platform}]`;
-    const taggedPrompt = `${platformTag} ${userPrompt}`;
+    const forwardTag = msg.forwardedFrom ? ` [forwarded from ${msg.forwardedFrom}]` : '';
+    const attachTag = msg.attachments?.length
+      ? ' ' + msg.attachments.map(a => `[image: ${a.filename || a.url || 'attached'}]`).join(' ')
+      : '';
+    const taggedPrompt = `${platformTag}${forwardTag}${attachTag} ${userPrompt}`;
 
     const agent = this.getAgent(agentKey);
     this.activeProcessing.add(agentKey);
@@ -508,6 +522,45 @@ export class Gateway extends EventEmitter {
 
   getPlatforms(): string[] {
     return Array.from(this.platforms.keys());
+  }
+
+  getLastContext(userKey: string): { platform: string; channelId: string; replyTo?: string } | undefined {
+    return this.lastContext.get(userKey);
+  }
+
+  getMostRecentContext(): { userKey: string; platform: string; channelId: string; replyTo?: string } | null {
+    let latest: { userKey: string; platform: string; channelId: string; replyTo?: string } | null = null;
+    for (const [userKey, ctx] of this.lastContext) {
+      latest = { userKey, ...ctx };
+    }
+    return latest;
+  }
+
+  getAllContexts(): Array<{ userKey: string; platform: string; channelId: string; replyTo?: string }> {
+    return Array.from(this.lastContext.entries()).map(([userKey, ctx]) => ({
+      userKey,
+      ...ctx,
+    }));
+  }
+
+  getPlatform(name: string): Platform | undefined {
+    return this.platforms.get(name);
+  }
+
+  async sendFileToUser(userKey: string, filePath: string, caption?: string): Promise<string> {
+    const ctx = this.lastContext.get(userKey);
+    if (!ctx) return 'No active conversation context found. The user needs to send a message first.';
+
+    const platform = this.platforms.get(ctx.platform);
+    if (!platform) return `Platform "${ctx.platform}" not found.`;
+    if (!platform.sendFile) return `Platform "${ctx.platform}" does not support file sending.`;
+
+    try {
+      await platform.sendFile(filePath, ctx.channelId, caption, ctx.replyTo);
+      return `File sent: ${filePath}`;
+    } catch (e: any) {
+      return `Failed to send file: ${e.message}`;
+    }
   }
 }
 

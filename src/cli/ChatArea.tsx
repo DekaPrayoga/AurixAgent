@@ -4,14 +4,15 @@ import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 
-class SlowScrollAccel implements ScrollAcceleration {
+class CustomSpeedScroll implements ScrollAcceleration {
+  constructor(private speed: number) {}
   tick(_now?: number): number {
-    return 0.3;
+    return this.speed;
   }
   reset(): void {}
 }
 
-const slowScroll = new SlowScrollAccel();
+const scrollAcceleration = new CustomSpeedScroll(3);
 
 interface TextSegment {
   text: string;
@@ -430,9 +431,10 @@ export function ChatArea({ messages, isProcessing, activeTool, scrollOffset }: C
         stickyScroll={true}
         stickyStart="bottom"
         flexGrow={1}
-        scrollAcceleration={slowScroll}
+        scrollAcceleration={scrollAcceleration}
         verticalScrollbarOptions={{ visible: false }}
       >
+        <box height={1} />
         <box flexDirection="column" gap={1}>
           {visible.length === 0 ? (
             <box justifyContent="center" paddingY={2}>

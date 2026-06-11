@@ -72,9 +72,67 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (process.stdin.isTTY) {
       process.stdout.write('\x1b[?2004h');
     }
+
+    let pasteBuffer = '';
+    let pasting = false;
+
+    const onData = (chunk: Buffer) => {
+      const str = chunk.toString('utf8');
+      if (!pasting) {
+        const startIdx = str.indexOf('\x1b[200~');
+        if (startIdx !== -1) {
+          pasting = true;
+          pasteBuffer = str.slice(startIdx + 6);
+          const endIdx = pasteBuffer.indexOf('\x1b[201~');
+          if (endIdx !== -1) {
+            const text = pasteBuffer.slice(0, endIdx).replace(/\r\n/g, '\n').trimEnd();
+            pasting = false;
+            pasteBuffer = '';
+            if (text) {
+              const lines = text.split('\n');
+              if (lines.length >= 3) {
+                const summary = `[pasted ${lines.length} lines]`;
+                setValue(prev => prev + summary);
+                setCursor(prev => prev + summary.length);
+              } else {
+                setValue(prev => prev + text);
+                setCursor(prev => prev + text.length);
+              }
+            }
+          }
+          return;
+        }
+      } else {
+        pasteBuffer += str;
+        const endIdx = pasteBuffer.indexOf('\x1b[201~');
+        if (endIdx !== -1) {
+          const text = pasteBuffer.slice(0, endIdx).replace(/\r\n/g, '\n').trimEnd();
+          pasting = false;
+          pasteBuffer = '';
+          if (text) {
+            const lines = text.split('\n');
+            if (lines.length >= 3) {
+              const summary = `[pasted ${lines.length} lines]`;
+              setValue(prev => prev + summary);
+              setCursor(prev => prev + summary.length);
+            } else {
+              setValue(prev => prev + text);
+              setCursor(prev => prev + text.length);
+            }
+          }
+        }
+        return;
+      }
+    };
+
+    if (process.stdin.isTTY) {
+      process.stdin.on('data', onData);
+    }
+
     return () => {
       if (process.stdin.isTTY) {
         process.stdout.write('\x1b[?2004l');
+        process.stdin.removeListener('data', onData);
       }
     };
   }, []);

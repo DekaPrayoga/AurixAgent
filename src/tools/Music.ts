@@ -106,48 +106,61 @@ async function playMusic(query: string, source: string): Promise<string> {
     url = searchResult;
   }
 
-  return new Promise<string>((resolve) => {
-    stopCurrentPlayer();
+  stopCurrentPlayer();
 
-    const ytdlp = spawn('yt-dlp', [
+  const tmpId = Date.now();
+  const tmpPattern = path.join(os.tmpdir(), `aurix-${tmpId}.%(ext)s`);
+
+  let trackTitle = url;
+  try {
+    const title = await runYtdlp(['--print', '%(title)s - %(uploader)s', '--no-playlist', url], 5000);
+    if (title.trim()) trackTitle = title.trim();
+  } catch {}
+
+  try {
+    await runYtdlp([
       '--no-playlist',
-      '-f', 'bestaudio[ext=m4a]/bestaudio',
+      '-f', 'bestaudio',
+      '-x',
+      '--audio-format', 'mp3',
       '--no-warnings',
-      '-o', '-',
+      '-o', tmpPattern,
       url,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ], 60000);
+  } catch (e: any) {
+    return `Download error: ${e.message}`;
+  }
 
-    const mpv = spawn('mpv', [
-      '--no-video',
-      '--no-terminal',
-      '--really-quiet',
-      '--input-ipc-server=/tmp/aurix-mpv-socket',
-      '-',
-    ], { stdio: ['pipe', 'ignore', 'pipe'] });
+  const audioFile = path.join(os.tmpdir(), `aurix-${tmpId}.mp3`);
+  if (!fs.existsSync(audioFile)) {
+    const found = fs.readdirSync(os.tmpdir()).filter(f => f.startsWith(`aurix-${tmpId}`));
+    if (found.length === 0) return 'Error: downloaded file not found';
+    var audioPath = path.join(os.tmpdir(), found[0]);
+  } else {
+    var audioPath = audioFile;
+  }
 
-    ytdlp.stdout.pipe(mpv.stdin);
-    currentPlayer = mpv;
+  const audioEnv = {
+    ...process.env,
+    PIPEWIRE_RUNTIME_DIR: `/run/user/${process.getuid?.() ?? 0}`,
+  };
 
-    let trackTitle = url;
+  const mpv = spawn('mpv', [
+    '--no-video',
+    '--no-terminal',
+    '--really-quiet',
+    '--input-ipc-server=/tmp/aurix-mpv-socket',
+    audioPath,
+  ], { stdio: ['ignore', 'ignore', 'ignore'], env: audioEnv });
 
-    runYtdlp(['--print', '%(title)s - %(uploader)s', '--no-playlist', url], 5000)
-      .then(title => { if (title.trim()) trackTitle = title.trim(); })
-      .catch(() => {});
+  currentPlayer = mpv;
 
-    mpv.on('close', () => {
-      currentPlayer = null;
-    });
-
-    ytdlp.on('error', (err) => {
-      resolve(`Playback error: ${err.message}`);
-    });
-
-    mpv.on('error', (err) => {
-      resolve(`Player error: ${err.message}`);
-    });
-
-    setTimeout(() => resolve(`Now playing: ${trackTitle}\nUse "stop" to stop, "now_playing" for info`), 1500);
+  mpv.on('close', () => {
+    currentPlayer = null;
+    try { fs.unlinkSync(audioPath); } catch {}
   });
+
+  return `Now playing: ${trackTitle}\nUse "stop" to stop, "now_playing" for info`;
 }
 
 async function downloadMusic(query: string, source: string): Promise<string> {
@@ -246,17 +259,22 @@ function listDownloads(): string {
 }
 
 async function resolveUrl(query: string, source: string): Promise<string | null> {
-  try {
-    const result = await runYtdlp([
-      '--print', '%(url)s',
-      '--no-playlist',
-      '--playlist-items', '1',
-      `ytsearch1:${query}`,
-    ], 10000);
-    return result.trim() || null;
-  } catch {
-    return null;
+  const sources = source === 'soundcloud'
+    ? [`scsearch1:${query}`]
+    : [`ytsearch1:${query}`, `scsearch1:${query}`];
+
+  for (const searchQuery of sources) {
+    try {
+      const result = await runYtdlp([
+        '--print', '%(webpage_url)s',
+        '--no-playlist',
+        '--playlist-items', '1',
+        searchQuery,
+      ], 10000);
+      if (result.trim()) return result.trim();
+    } catch {}
   }
+  return null;
 }
 
 function stopCurrentPlayer() {

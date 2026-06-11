@@ -48,6 +48,9 @@ export async function startGateway(registry: ToolRegistry) {
     process.exit(1);
   }
 
+  const { createSendFileTool } = await import('./tools/SendFile.js');
+  registry.register(createSendFileTool(gateway));
+
   process.on('SIGINT', async () => {
     console.log('\nShutting down gateway...');
     await gateway.stop();

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
 
 interface LoginModalProps {
@@ -29,6 +29,14 @@ export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }:
   useEffect(() => {
     setCursor(current.value.length);
   }, [step]);
+
+  usePaste((event) => {
+    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    if (!text) return;
+    const insertAt = cursor;
+    current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    setCursor(insertAt + text.length);
+  });
 
   useKeyboard((evt) => {
     const name = evt.name;

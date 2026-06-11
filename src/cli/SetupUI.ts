@@ -52,7 +52,6 @@ export function drawInputScreen(opts: {
     if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
     stdin.setEncoding('utf8');
-    process.stdout.write('\x1b[?2004h');
 
     function render() {
       const display = opts.masked ? '●'.repeat(buf.length) : buf;
@@ -61,24 +60,10 @@ export function drawInputScreen(opts: {
     render();
 
     function onData(ch: string) {
-      const pasteMatch = ch.match(/\x1b\[200~([\s\S]*)\x1b\[201~/);
-      if (pasteMatch) {
-        buf += pasteMatch[1].replace(/\r\n/g, '\n').trimEnd();
-        render();
-        return;
-      }
-
-      if (ch.startsWith('\x1b[200~')) {
-        buf += ch.slice(6).replace(/\r\n/g, '\n');
-        render();
-        return;
-      }
-
       const c = ch.charCodeAt(0);
 
       if (c === 13 || c === 10) {
         stdin.removeListener('data', onData);
-        process.stdout.write('\x1b[?2004l');
         if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
         process.stdout.write('\n');
         resolve(buf);
@@ -87,7 +72,6 @@ export function drawInputScreen(opts: {
 
       if (c === 27) {
         stdin.removeListener('data', onData);
-        process.stdout.write('\x1b[?2004l');
         if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
         process.stdout.write('\n');
         resolve('__back__');

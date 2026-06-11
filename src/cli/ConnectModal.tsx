@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
 
 interface ConnectModalProps {
@@ -27,6 +27,14 @@ export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps
   const [cursor, setCursor] = useState(0);
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const cfg = platformConfig[platform];
+
+  usePaste((event) => {
+    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    if (!text) return;
+    const insertAt = cursor;
+    setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    setCursor(insertAt + text.length);
+  });
 
   useKeyboard((evt) => {
     const name = evt.name;

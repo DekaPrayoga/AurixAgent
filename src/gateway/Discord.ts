@@ -55,15 +55,36 @@ export class DiscordPlatform extends EventEmitter implements Platform {
         .replace(new RegExp(`<@!?${this.client.user.id}>`, 'g'), '')
         .trim();
 
-      if (!content) return;
+      const attachments: { type: string; url?: string; filename?: string }[] = [];
+
+      if (message.attachments?.size > 0) {
+        for (const [, att] of message.attachments) {
+          if (att.contentType?.startsWith('image/') || att.name?.match(/\.(jpg|jpeg|png|gif|webp|bmp)$/i)) {
+            try {
+              const fs = await import('fs');
+              const res = await fetch(att.url);
+              if (res.ok) {
+                const buffer = Buffer.from(await res.arrayBuffer());
+                const ext = att.name?.match(/\.\w+$/)?.[0] || '.jpg';
+                const localPath = `/tmp/aurix-discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
+                fs.writeFileSync(localPath, buffer);
+                attachments.push({ type: 'image', url: localPath, filename: att.name || localPath });
+              }
+            } catch {}
+          }
+        }
+      }
+
+      if (!content && attachments.length === 0) return;
 
       this.emit('message', {
         platform: 'discord',
         authorId: message.author.id,
         authorName: message.author.username,
         channelId: message.channel.id,
-        content,
+        content: content || (attachments.length ? 'Check this image' : ''),
         replyTo: message.id,
+        attachments: attachments.length > 0 ? attachments : undefined,
       } as IncomingMessage);
     });
 
@@ -109,5 +130,25 @@ export class DiscordPlatform extends EventEmitter implements Platform {
     } catch (e: any) {
       console.error(`  Discord send error: ${e.message}`);
     }
+  }
+
+  async sendFile(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void> {
+    if (!this.client) throw new Error('Discord client not connected');
+
+    const fs = await import('fs');
+    if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
+
+    const discord = await (Function('return import("discord.js")')() as Promise<any>);
+    const { AttachmentBuilder } = discord;
+
+    const channel = await this.client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) throw new Error('Channel not found or not text-based');
+
+    const attachment = new AttachmentBuilder(filePath);
+    const options: any = { files: [attachment] };
+    if (caption) options.content = caption;
+    if (replyTo) options.messageReference = { messageId: replyTo };
+
+    await channel.send(options);
   }
 }
