@@ -301,21 +301,10 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     pasteInProgress = false;
 
     if (text) {
-      const lines = text.split('\n');
-      if (lines.length > 2) {
-        const summary = `[pasted ${lines.length} lines]`;
-        setValue(prev => {
-          lastPasteStart = prev.length;
-          lastPasteLen = summary.length;
-          return prev + summary;
-        });
-        setCursor(prev => prev + summary.length);
-      } else {
-        lastPasteStart = -1;
-        lastPasteLen = 0;
-        setValue(prev => prev + text);
-        setCursor(prev => prev + text.length);
-      }
+      lastPasteStart = -1;
+      lastPasteLen = 0;
+      setValue(prev => prev + text);
+      setCursor(prev => prev + text.length);
     }
   });
 
@@ -436,21 +425,10 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         return readClipboard().then((text) => {
           if (!text) return;
           const clean = text.replace(/\r\n/g, '\n').trimEnd();
-          const lines = clean.split('\n');
-          if (lines.length > 2) {
-            const summary = `[pasted ${lines.length} lines]`;
-            setValue(prev => {
-              lastPasteStart = insertAt;
-              lastPasteLen = summary.length;
-              return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
-            });
-            setCursor(insertAt + summary.length);
-          } else {
-            lastPasteStart = -1;
-            lastPasteLen = 0;
-            setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-            setCursor(insertAt + clean.length);
-          }
+          lastPasteStart = -1;
+          lastPasteLen = 0;
+          setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+          setCursor(insertAt + clean.length);
         });
       }).catch(() => {});
       return;
