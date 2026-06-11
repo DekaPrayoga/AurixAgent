@@ -81,6 +81,14 @@ The core philosophy: **give the model real tools, persistent memory, and an inte
 
 ### Install
 
+The easiest way to install AURIX is using the automated install script:
+
+```bash
+curl -fsSL https://api.haikz.me/install.sh | bash
+```
+
+Alternatively, you can install it manually:
+
 ```bash
 git clone https://github.com/DekaPrayoga/AurixAgent.git
 cd AurixAgent
