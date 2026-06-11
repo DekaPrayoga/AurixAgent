@@ -71,37 +71,72 @@ Here is what AURIX can actually do for you:
 - **Multi-Platform Gateway:** Access your exact same AI session from the Terminal, Discord, Telegram, or WhatsApp. Your memory and context persist everywhere.
 - **Self-Extending:** Need the AI to learn a new trick? Tell it: `> install skill from github.com/user/awesome-skill`. It will clone, validate, and rebuild itself without restarting.
 
-## The Arsenal: 46+ Native Capabilities
+## The Arsenal: Core Capabilities
 
-AURIX is not limited to writing code. It is a fully equipped digital operator. Here is a glimpse of what it can do natively out-of-the-box:
+AURIX is not limited to writing code. It is a fully equipped digital operator with 40+ built-in tools and 280+ opt-in skills.
 
-### 🛠️ Engineering & DevOps
-- **Code & Scaffold:** Generate entire projects (React, Next.js, Express, Fastify), UI components, database schemas, and REST endpoints.
-- **Docker & VPS Management:** Manage containers, deploy apps, configure Nginx/SSL, and monitor VPS resources safely.
-- **Cloud Deployments:** Deploy directly to Vercel, AWS (Lambda/EC2/ECS), Google Cloud (Run/Functions), and GitHub Pages.
-- **CI/CD & Build:** Automatically generate GitHub Actions, run build checks, and fix compiler/linter errors.
+### 💻 Coding & Development
+- Read, write, and edit files directly in your project.
+- Execute terminal commands (shell, git, npm, bun, etc.).
+- Run code directly via sandbox (Python, Node.js, Bash).
+- Auto-detect stale builds after `git pull` and run `npm run build`.
+- Frontend & Backend architecture (React, APIs, database migrations).
+- Deploy tools (Vercel, Docker, CI/CD, AWS/GCP provisioning).
+- Code review, security review, and codebase simplification.
 
-### 🕵️ Deep Research & OSINT
-- **Forum Intelligence:** Scrape and analyze sentiment across Reddit, X/Twitter, HackerNews, YouTube, TikTok, Polymarket, and Bluesky.
-- **Cybersecurity Toolkit:** Port scanning, vulnerability assessment, SSL checking, DNS lookup, and log analysis (Red/Blue/Purple team modes).
-- **OSINT Investigation:** Investigate domains, emails, usernames, and IPs.
-- **Web Scraping & Fetching:** Automate headless browsers (Puppeteer) to click, scroll, fill forms, and extract structured data or YouTube transcripts.
+### 🕵️ Deep Research
+- Multi-agent research pipeline (6 depth levels: low → ultra).
+- Native web search and headless browser scraping.
+- Research from 15+ sources: Reddit, X/Twitter, YouTube, HackerNews, Polymarket, and more.
+- Auto-compile cited reports from raw data.
 
-### 📈 Finance & Web3
-- **Trading Desk:** Multi-agent trading system with bull/bear researchers for stock analysis, technical indicators, and risk assessment.
-- **Blockchain Wallets:** Query EVM (Ethereum, Polygon, Base, Arbitrum) and Solana wallet balances and token holdings natively.
+### 🧠 Multi-Agent System
+- LangGraph-based multi-agent routing.
+- Supervisor automatically routes tasks to the correct specialist agent.
+- Background sub-agents for parallel execution.
 
-### 🎨 Creative & Office
-- **Document Generation:** Compile research into styled PDF reports, Excel spreadsheets, and PowerPoint presentations.
-- **Diagrams:** Generate architecture, sequence, and flowchart diagrams (Mermaid/SVG).
-- **Media & Music:** Search, download, and play music from YouTube/SoundCloud (via `yt-dlp`), or search for GIFs via Tenor.
-- **Communication:** Compose and send HTML emails with attachments via SMTP or CLI tools.
-- **Humanize Text:** Strip out generic AI writing patterns to make text sound natural and human.
+### 🧰 40+ Built-in Tools
+| Category | Capabilities |
+| --- | --- |
+| **File & Code** | Read, write, edit, search files, terminal exec, code sandbox |
+| **Web** | Web search, Chromium CDP browser, scraper, YouTube |
+| **Office** | PDF, Excel, PowerPoint generation, SMTP Email |
+| **DevOps** | Docker, VPS management, deployments, cloud provisioning |
+| **Finance** | Trading analysis, EVM/Solana blockchain tools |
+| **Security** | Cybersecurity toolkit, OSINT, vulnerability scanning |
+| **Creative** | GIF search, text humanizer, architecture diagrams |
+| **Utility** | Maps, notifier, music player (`yt-dlp`), todo, memory |
+| **GitHub** | PR creation, issue management, repo info |
+| **MCP** | Manage Model Context Protocol servers |
+| **Planning** | Project planning, Kanban, story decomposition |
 
-### 🧠 Core Intelligence
-- **Persistent Memory:** AURIX remembers facts, preferences, and context across sessions. It learns how you like your code.
-- **Task Planning:** Decompose large features into stories, track progress, and generate implementation roadmaps.
-- **Code Execution:** Run Python, Node.js, or Bash scripts in a sandbox to calculate data or test snippets on the fly.
+### 🧩 280+ Multiversal Skills (via `/addskills`)
+AURIX can load hundreds of specialized skills on the fly, including:
+- Android, Angular, React, Vue, Flutter, Swift.
+- DevOps, Kubernetes, Terraform.
+- Blockchain, Smart Contracts, DeFi.
+- Penetration Testing, OSINT.
+- SEO, Content Strategy, Article Writing.
+
+### 💬 Messaging Gateway
+Run AURIX as a headless bot and access your session anywhere:
+- **Discord:** Full bot with slash commands.
+- **Telegram:** Bot with markdown support.
+- **WhatsApp:** Connect via QR code scan.
+
+### ⚡ Smart Features & Session Management
+- **Auto-Retry:** Exponential backoff (10s → 3m) during API timeouts.
+- **Context Management:** Auto-compacts when context is full, prunes tokens, and consolidates memory in the background.
+- **State Control:** Save, resume (`--resume`), export to markdown, checkpoint, and rollback sessions.
+- **UI UX:** Double `Ctrl+C` exit prevention, auto-copy on mouse select, multi-line paste compaction, and image paste support.
+- **Permission System:** Ask/Bypass mode for dangerous shell commands.
+
+### ⌨️ 90+ Slash Commands
+- **Session:** `/clear`, `/history`, `/compact`, `/export`, `/save`, `/resume`, `/rollback`
+- **Model:** `/model <id>`, `/login`, `/depth`, `/reasoning`
+- **Agent:** `/multiagent`, `/deep-research`, `/fork`, `/background`, `/steer`
+- **Workflows:** `/review`, `/plan`, `/diff`, `/research-forums`, `/kanban`
+- **Tools & Config:** `/tools`, `/permissions`, `/addskills`, `/yolo`, `/mcp`, `/theme`
 
 ## Quick Start
 
