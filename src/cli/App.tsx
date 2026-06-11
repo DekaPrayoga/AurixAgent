@@ -5,7 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ChatArea, type ChatMessage } from './ChatArea.js';
-import { InputBox } from './InputBox.js';
+import { InputBox, writeClipboard } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
@@ -72,16 +72,7 @@ export function App({ config, registry, resumeId }: AppProps) {
     if (!renderer?.console) return;
     (renderer.console as any).onCopySelection = async (text: string) => {
       if (!text || text.length === 0) return;
-      const b64 = Buffer.from(text).toString('base64');
-      const seq = `\x1b]52;c;${b64}\x07`;
-      process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
-      try {
-        const { spawn } = await import('node:child_process');
-        const tools: [string, string[]][] = [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['pbcopy', []]];
-        for (const [cmd, args] of tools) {
-          try { const c = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] }); c.stdin?.end(text); c.on('error', () => {}); break; } catch {}
-        }
-      } catch {}
+      writeClipboard(text);
       showToast(`Copied ${text.length > 50 ? text.length + ' chars' : '"' + text.slice(0, 50) + '"'} to clipboard`);
       if (typeof (renderer as any).clearSelection === 'function') (renderer as any).clearSelection();
     };
@@ -1129,15 +1120,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
           if (!sel) return;
           const text = sel.getSelectedText?.();
           if (!text || text.length === 0) return;
-          const b64 = Buffer.from(text).toString('base64');
-          const seq = `\x1b]52;c;${b64}\x07`;
-          process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
-          import('node:child_process').then(({ spawn }) => {
-            const tools: [string, string[]][] = [['wl-copy', []], ['xclip', ['-selection', 'clipboard']], ['pbcopy', []]];
-            for (const [cmd, args] of tools) {
-              try { const c = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] }); c.stdin?.end(text); c.on('error', () => {}); break; } catch {}
-            }
-          }).catch(() => {});
+          writeClipboard(text);
           showToast(`Copied ${text.length > 50 ? text.length + ' chars' : '"' + text.slice(0, 50) + '"'} to clipboard`);
           (renderer as any).clearSelection?.();
         } catch {}

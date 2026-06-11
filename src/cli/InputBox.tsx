@@ -106,7 +106,7 @@ function readClipboard(): Promise<string | undefined> {
   })();
 }
 
-function writeClipboard(text: string): void {
+export function writeClipboard(text: string): void {
   const fs = require('node:fs');
   const logFile = '/tmp/aurix-copy-debug.log';
   const log = (msg: string) => {
