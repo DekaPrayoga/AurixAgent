@@ -74,7 +74,6 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
 
 💡 *TIPS:*
   Just type your question to start.
-  Attach images for vision analysis.
   Use /depth to control thoroughness.
   Journal/scientific answers include sources.`;
 
@@ -187,10 +186,6 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
   if (toolName === 'browser') {
     const url = args?.url ? String(args.url).slice(0, 60) : '';
     return `🌐 Browsing: ${url}...`;
-  }
-
-  if (toolName === 'vision') {
-    return `👁️ Analyzing image...`;
   }
 
   if (toolName === 'read_file' || toolName === 'write_file') {

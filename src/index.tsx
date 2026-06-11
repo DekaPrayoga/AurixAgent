@@ -17,7 +17,6 @@ import { browserTool } from './tools/Browser.js';
 import { codeExecTool } from './tools/CodeExec.js';
 import { webSearchTool } from './tools/WebSearch.js';
 import { todoTool } from './tools/Todo.js';
-import { visionTool } from './tools/Vision.js';
 import { musicTool } from './tools/Music.js';
 import { memoryTool } from './tools/Memory.js';
 import { pdfTool } from './tools/Pdf.js';
@@ -61,7 +60,6 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(codeExecTool);
   registry.register(webSearchTool);
   registry.register(todoTool);
-  registry.register(visionTool);
   registry.register(musicTool);
   registry.register(memoryTool);
 

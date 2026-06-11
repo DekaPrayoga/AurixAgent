@@ -189,7 +189,7 @@ Messages may include a [sent from <platform>] tag. When you see this:
   - **whatsapp**: NO markdown tables. Use *bold*, _italic_, plain text. Keep it concise. Use bullet points instead of tables.
 - If the user asks for a file (Excel, PDF, PPTX), generate it and provide the file path.
 - If the user asks for research with links, include full URLs.
-- If the user sends an image, analyze it with vision tools.
+- If the user sends an image, analyze it directly in your response.
 - Match the user's language automatically (Indonesian, English, etc.).`);
 
   const researchMode = config.researchMode || 'low';
