@@ -1,5 +1,5 @@
 {
-  "name": "aurix-agent",
+  "name": "@dekaprayoga/aurix-agent",
   "version": "0.1.0",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
@@ -42,7 +42,9 @@
     "build": "tsc",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
-    "postinstall": "node scripts/postinstall.mjs"
+    "postinstall": "node scripts/postinstall.mjs",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write src/**/*.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",
@@ -68,7 +70,14 @@
     "@types/node": "^22.0.0",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.61.0",
+    "@typescript-eslint/parser": "^8.61.0",
+    "eslint": "^10.4.1",
+    "prettier": "^3.8.4",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
   }
 }
