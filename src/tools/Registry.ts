@@ -25,6 +25,7 @@ export class ToolRegistry {
   private allowedTools = new Set<string>();
   private permissionMode: PermissionMode = 'bypass';
   private permissionHandler?: PermissionHandler;
+  private readFiles = new Set<string>();
 
   register(tool: Tool): void {
     this.tools.set(tool.name, tool);
@@ -62,6 +63,10 @@ export class ToolRegistry {
     this.allowedTools.clear();
   }
 
+  clearReadFiles(): void {
+    this.readFiles.clear();
+  }
+
   listPermissionRules(): string[] {
     return Array.from(this.allowedTools.values()).sort();
   }
@@ -80,6 +85,19 @@ export class ToolRegistry {
   async execute(name: string, args: Record<string, unknown>): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Error: Unknown tool "${name}"`;
+
+    const filePath = (args.file_path || args.path) as string | undefined;
+
+    if (name === 'read_file' && filePath) {
+      this.readFiles.add(filePath);
+    }
+
+    if ((name === 'file_edit' || name === 'write_file') && filePath) {
+      const isNewFile = name === 'file_edit' && args.old_string === '';
+      if (!isNewFile && !this.readFiles.has(filePath)) {
+        return `Error: File "${filePath}" has not been read yet. You MUST use read_file to read it first before editing. No exceptions.`;
+      }
+    }
 
     const permission = this.getPermissionRequest(tool, args);
     if (permission && !this.allowedTools.has(name)) {

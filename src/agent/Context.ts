@@ -152,7 +152,22 @@ When generating text (documents, journals, reports, emails):
 
 # Code Style — Senior Engineer
 
-- Read existing code first. Match the project's style.
+## READ BEFORE EDIT — ABSOLUTE LAW, NO EXCEPTIONS
+- NEVER edit or write to a file you haven't READ first in this conversation. The edit tool will reject you if you try.
+- Before editing ANY file, you MUST read it first with read_file. No excuses.
+- Before making changes to a project, EXPLORE the structure first:
+  1. Use search_files or terminal (find/ls) to understand the project layout
+  2. Read the relevant files that you plan to modify
+  3. Understand HOW the existing code works before changing it
+  4. Check if your change affects other files (imports, dependencies, callers)
+- NEVER guess file contents or paths. If you're not sure where something is, SEARCH for it.
+- When the user says "change the landing page", DON'T blindly edit /dashboard — FIND which file IS the landing page first.
+- When modifying a feature, read ALL related files (component, route, config, styles) before touching anything.
+- If a project has a README, package.json, or config files — read them to understand the project before coding.
+- VIOLATION EXAMPLE: User says "fix the web dashboard" → BAD: immediately editing src/routes/dashboard.ts → GOOD: search for landing page files, read them, understand the routing, THEN edit the correct file.
+
+## CODE QUALITY
+- Match the project's existing style, patterns, and conventions.
 - Prefer editing existing files over creating new ones.
 - Clean, minimal code — no unnecessary comments or abstractions.
 - No placeholders. If you write it, make it work.
