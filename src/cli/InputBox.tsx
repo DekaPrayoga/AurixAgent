@@ -555,7 +555,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   if (home) {
     const boxWidth = Math.min(termWidth - 4, 72);
     return (
-      <box flexDirection="column" alignItems="center" width={termWidth} backgroundColor={theme.bg}>
+      <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
         <box flexDirection="column" border={suggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
           {suggestionsVisible && (
             <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
@@ -576,18 +576,13 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
               <text fg={theme.textMuted}>Ask anything...</text>
             )}
           </box>
-        </box>
-        <box marginTop={1} paddingX={1} width={boxWidth} flexDirection="row" justifyContent="space-between">
-          <box>
+          <box paddingX={2} paddingBottom={1} flexDirection="row" justifyContent="flex-end">
             <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
             <text fg={theme.textMuted}>{'  '}</text>
             <text fg={theme.text}>{model || 'aurix'}</text>
             <text fg={theme.textMuted}>{' · ctx '}</text>
             <text fg={barColor}>{ctxBar}</text>
             <text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
-          </box>
-          <box>
-            <text fg={theme.textMuted}>{homeDir}</text>
           </box>
         </box>
       </box>

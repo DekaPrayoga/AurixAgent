@@ -1132,12 +1132,6 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
             <box flexGrow={1} minHeight={0} />
             <box flexShrink={0} flexDirection="column" alignItems="center">
               <text fg={theme.primary}>{logoLines().join('\n')}</text>
-              <box marginTop={1}>
-                <text fg={theme.primary} attributes={TextAttributes.BOLD}>AURIX</text>
-                <text fg={theme.text}> AGENTIC AI</text>
-                <text fg={theme.accent}>{'  ::  '}</text>
-                <text fg={theme.textMuted}>terminal autonomy workspace</text>
-              </box>
             </box>
             <box height={1} minHeight={0} flexShrink={1} />
             <box width="100%" maxWidth={promptW} paddingTop={1} flexShrink={0}>
