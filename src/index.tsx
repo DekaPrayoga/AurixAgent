@@ -142,6 +142,18 @@ export { createRegistry };
 async function main() {
   const args = process.argv.slice(2);
 
+  const cleanupTerminal = () => {
+    try {
+      process.stdout.write(
+        '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l'
+      );
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    } catch {}
+  };
+  process.on('SIGINT', () => { cleanupTerminal(); process.exit(0); });
+  process.on('SIGTERM', () => { cleanupTerminal(); process.exit(0); });
+  process.on('uncaughtException', (err) => { cleanupTerminal(); console.error(err); process.exit(1); });
+
   if (process.platform === 'linux' && !process.env.DISPLAY) {
     try {
       const fs = await import('fs');

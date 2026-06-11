@@ -92,6 +92,21 @@ export function App({ config, registry, resumeId }: AppProps) {
     const saveId = resumeSessionIdRef.current || name;
     const sessionId = agentRef.current?.saveSession(saveId) || '';
     renderer.destroy();
+
+    process.stdout.write(
+      '\x1b[?1000l' +
+      '\x1b[?1002l' +
+      '\x1b[?1003l' +
+      '\x1b[?1006l' +
+      '\x1b[?2004l' +
+      '\x1b[?25h' +
+      '\x1b[0m' +
+      '\x1b[?1049l'
+    );
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+
     if (sessionId) {
       console.log(`\n  \x1b[90msession ended\x1b[0m`);
       console.log(`  \x1b[38;2;250;178;131mcontinue with:\x1b[0m aurix --resume ${sessionId}\n`);
