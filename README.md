@@ -37,11 +37,13 @@ Current AI tools are like smart consultants who sit on the couch giving advice, 
 
 AURIX is an **Autonomous Multi-Agent AI Workspace**. It is not a chat wrapper; it is an AI that has hands, eyes, and memory.
 
-Instead of just generating text, AURIX operates directly inside your environment to close the execution loop:
-1. **It Reads:** It navigates your folders, reads your codebase, and searches the web.
+Instead of just generating text, AURIX operates directly inside your environment to close the execution loop. It comes packed with **46+ built-in capabilities** ranging from deep codebase refactoring to media processing.
+
+1. **It Reads & Browses:** It navigates your folders, reads your codebase, searches the web, and automates headless browsers (Puppeteer) to scrape data.
 2. **It Thinks:** It delegates complex tasks to a swarm of sub-agents (e.g., a "Planner Agent" breaks down the task, a "Skeptic Agent" double-checks the logic).
-3. **It Acts:** It writes files, runs shell commands, creates Git commits, and manages Docker containers.
+3. **It Acts:** It writes files, runs shell commands, creates Git commits, manages Docker containers, and queries databases.
 4. **It Verifies:** If a test fails or a build crashes, AURIX reads the error log and fixes the code autonomously.
+5. **It Entertains & Creates:** It can search and play music from the internet (via `yt-dlp` and `mpv`), render diagrams, and generate styled PDF reports.
 
 ## Real-World Use Cases
 
@@ -52,12 +54,16 @@ Here is what AURIX can actually do for you:
 > **AURIX:** Reads the file, edits the code using regex/AST, runs `bun test`, sees an error, fixes the typo, runs it again, and executes `git push`.
 
 ### 🕵️ The Deep Researcher
-> **You:** *"Write a 5-page PDF report on how Vercel alternatives are perceived on Reddit and HackerNews."*
-> **AURIX:** Spawns 13 research agents. It scrapes forums, debates the validity of claims to prevent hallucinations, compiles the data into markdown, and converts it to a styled PDF using LaTeX/HTML.
+> **You:** *"Write a 5-page PDF report on how Vercel alternatives are perceived on Reddit, HackerNews, and X/Twitter."*
+> **AURIX:** Spawns a 13-agent research pipeline. It scrapes social forums, debates the validity of claims to prevent hallucinations, compiles the data into markdown, and converts it to a styled PDF using LaTeX/HTML.
 
 ### 📱 The "DevOps on a Train"
 > **You (via WhatsApp):** *"Is the production server down? Check the PM2 logs on the VPS."*
 > **AURIX:** Connects via its Gateway, SSHs into your server, runs `pm2 logs`, and replies to your WhatsApp with a summary of the crash and a button to restart it.
+
+### 🎵 The Terminal DJ & Creator
+> **You:** *"Play some lo-fi coding beats, then generate a system architecture diagram for our new microservice."*
+> **AURIX:** Scrapes and streams audio directly in your terminal, then writes Mermaid syntax and renders a beautiful SVG architecture diagram for your docs.
 
 ## Key Features
 
