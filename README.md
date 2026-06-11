@@ -1,79 +1,83 @@
 # AURIX
 
 <p align="center">
-  <b>Open-source terminal AI agent that can code, research, and execute real tasks.</b>
-</p>
-
-<p align="center">
-  AURIX is a developer-first AI workspace for the terminal. It can inspect repositories, edit files, run shell commands, perform cited research, automate browser tasks, generate documents, and work across Terminal, Discord, Telegram, and WhatsApp.
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT" />
   <img src="https://img.shields.io/badge/runtime-Bun-black?style=for-the-badge&logo=bun" alt="Bun" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/interface-Terminal%20%2B%20Chat-7c3aed?style=for-the-badge" alt="Interface" />
 </p>
 
+<p align="center">
+  <b>Open-source terminal AI agent that codes, researches, and executes real tasks.</b>
+</p>
+
+<p align="center">
+  AURIX is a developer-first AI workspace that lives in your terminal.<br/>
+  It inspects repos, edits files, runs commands, performs cited research, automates browsers,<br/>
+  generates documents — and stays accessible from Discord, Telegram, and WhatsApp.
+</p>
+
 ---
 
-## What AURIX is
+<!--
+  TODO: Add terminal demo GIF here
+  Record with: asciinema rec demo.cast && agg demo.cast demo.gif
+  Or use: terminalizer record demo && terminalizer render demo
+-->
 
-AURIX is not just another chat wrapper.
+![AURIX Demo](docs/assets/aurix-demo.png)
 
-It is a **tool-using AI workspace** built for people who want an AI that can actually do work:
+## What is AURIX
 
-- read and modify real files
-- run commands in a real environment
-- research topics with citations
-- automate browser and system tasks
-- generate outputs like reports, PDFs, spreadsheets, and presentations
-- stay accessible from both terminal and messaging apps
+AURIX is not another chat wrapper. It is a **tool-using AI workspace** built for people who want an AI that can actually do work:
 
-The core idea is simple: **give the model tools, memory, workflows, and an interface that fits how technical users actually work.**
+- Read, write, and refactor real files in your project
+- Execute shell commands in a real environment
+- Research topics with multi-source citations
+- Automate browser and system tasks
+- Generate PDFs, spreadsheets, and presentations
+- Accessible from terminal, Discord, Telegram, and WhatsApp
 
-## Why this repo is interesting
+The core philosophy: **give the model real tools, persistent memory, and an interface that fits how technical users actually work.**
 
-- **Execution, not just conversation** — AURIX can act on your workspace
-- **Terminal-native** — built for repo work, shell workflows, and power users
-- **Research built in** — useful for technical, academic, and market research
-- **Multi-platform access** — same agent from terminal, Discord, Telegram, and WhatsApp
-- **Extensible architecture** — tools, skills, providers, and workflows can grow with the project
+## Features
 
-## What you can do with AURIX
+### Code & Repo Work
+- Full repository inspection and navigation
+- Intelligent file editing and refactoring
+- Command execution with context awareness
+- Implementation support beyond just snippets
 
-### Coding and repo work
-- inspect repositories
-- edit and refactor files
-- run commands
-- help with implementation and debugging
-- support real code workflows instead of only suggesting snippets
-
-### Deep research
-- gather multi-source information
-- summarize and structure findings
-- produce cited output
-- support long-form research tasks
+### Deep Research
+- Multi-source information gathering (web, arXiv, Wikipedia, forums)
+- Citation-verified output
+- Structured reports with configurable depth
+- 13-agent research pipeline for deep analysis
 
 ### Automation
-- shell automation
-- browser automation
-- file operations
-- workflow chaining
+- Shell command automation
+- Browser automation (headless Chrome)
+- Workflow chaining across tools
+- File operations at scale
 
-### Documents and deliverables
-- generate PDFs
-- generate spreadsheets and presentations
-- create structured written outputs
+### Document Generation
+- PDF reports
+- Excel spreadsheets
+- PowerPoint presentations
+- Structured markdown output
 
-### Chat gateway access
-- use the same workspace from:
-  - terminal
-  - Discord
-  - Telegram
-  - WhatsApp
+### Multi-Platform Gateway
+- Same workspace from terminal, Discord, Telegram, and WhatsApp
+- Session persistence across platforms
+- QR code login for messaging apps
 
-## Quick start
+## Quick Start
+
+### Requirements
+
+- [Bun](https://bun.sh) v1.0+ or Node.js 18+
+- API key for at least one LLM provider (OpenAI, Anthropic, or others)
+- Python 3.12+ (optional, for research-forums skill)
 
 ### Install
 
@@ -84,101 +88,95 @@ bun install
 bun run build
 ```
 
+### Setup
+
+```bash
+./bin/aurix setup
+```
+
+This will guide you through configuring your API keys and preferences.
+
 ### Run
 
 ```bash
 ./bin/aurix
 ```
 
-### Setup
+## Usage
+
+### Terminal Commands
 
 ```bash
-aurix setup
+aurix              # Start interactive session
+aurix setup        # Configure API keys and settings
+aurix gateway      # Start Discord/Telegram/WhatsApp bridge
+aurix sessions     # List previous sessions
+aurix --resume ID  # Resume a session
 ```
 
-## Example commands
-
-```bash
-aurix
-aurix setup
-aurix gateway
-aurix sessions
-aurix --resume <session-id>
-```
-
-Inside AURIX:
+### Inside AURIX
 
 ```text
 /deep-research open-source terminal ai agents
-/research-forums what developers think about digitalocean alternatives
-/pdf generate a report from this markdown
+/research-forums what developers think about vercel alternatives
+/pdf generate a report from research findings
+/diagram create architecture overview
+/deploy push to production
 ```
 
-## Why people may star this project
-
-AURIX combines several things that are usually split across separate tools:
-
-- terminal AI assistant
-- repo-aware execution
-- document generation
-- multi-agent research
-- chat platform integration
-- extensible tool surface
-
-That combination makes it more than a single-purpose CLI. It is closer to an **AI operating workspace** for technical users.
-
-## Project structure
+## Architecture
 
 ```text
 src/
-  tools/       Tool implementations
-  agent/       Core agent loop, context, memory
-  cli/         Terminal UI
+  agent/       Core agent loop, context, memory management
+  tools/       46+ tool implementations (Research, Browser, Docker, Git, etc.)
+  cli/         Terminal UI built with OpenTUI React
   gateway/     Discord / Telegram / WhatsApp integration
-  providers/   LLM providers
-  skills/      Skill registry
-skills/        Installed skills and scripts
-dist/          Compiled output
+  providers/   LLM providers (OpenAI, Anthropic, LangChain)
+  skills/      Skill registry and loader
+
+skills/          Installed skill definitions
+  research/    Research skills (deep-research, forums, citations)
+  core/        Fundamental agent behaviors
+  cybersec/    Security scanning
+  devops/      Deployment and infrastructure
+  media/       Audio, video, image processing
+  office/      Documents, spreadsheets
+  planning/    Project management
+  trading/     Financial analysis
 ```
 
-## Best fit users
+## Self-Extension
 
-AURIX is best suited for:
+AURIX can install new skills from any GitHub repository at runtime:
 
-- developers
-- researchers
-- operators
-- technical power users
-- people who want an AI that can use tools instead of only chatting
+```text
+> install skill from github.com/user/awesome-skill
+```
 
-## Repository metadata to use on GitHub
+It will clone, validate, register, and rebuild automatically. No restart needed.
 
-### Description
-Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.
+## Supported LLM Providers
 
-### Topics
-ai, agent, terminal, cli, typescript, bun, llm, automation, research, developer-tools, productivity, browser-automation, multi-agent, openai, anthropic, discord-bot, telegram-bot, whatsapp-bot
+- OpenAI (GPT-4, GPT-4o, etc.)
+- Anthropic (Claude 3.5, Claude 4)
+- Any OpenAI-compatible endpoint
+- LangChain integrations
 
-## What would make this repo even stronger
+## Environment Variables
 
-If you want this repo to attract significantly more attention, the next high-impact additions are:
+Copy `.env.example` to `.env` and configure:
 
-- a GIF demo near the top of the README
-- screenshots of the terminal UI
-- one killer use-case walkthrough
-- a short architecture diagram
-- launch posts on Reddit, X, and Hacker News
+```bash
+cp .env.example .env
+```
 
-## Contributing
-
-Helpful contributions include:
-
-- docs improvements
-- screenshots and demos
-- tool additions
-- gateway improvements
-- UI polish
-- workflow examples
+Key variables:
+- `OPENAI_API_KEY` — OpenAI access
+- `ANTHROPIC_API_KEY` — Anthropic access
+- `DISCORD_TOKEN` — Discord bot gateway
+- `TELEGRAM_BOT_TOKEN` — Telegram gateway
+- `BRAVE_API_KEY` — Enhanced web search (optional)
 
 ## License
 
