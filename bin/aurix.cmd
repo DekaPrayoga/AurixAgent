@@ -8,6 +8,11 @@ for /f "tokens=*" %%i in ('node -e "console.log(require('%SCRIPT_DIR%\package.js
 
 set "AURIX_HOME=%SCRIPT_DIR%"
 
+if not exist "%DIST%" (
+    echo building...
+    pushd "%SCRIPT_DIR%" && npx tsc >nul 2>nul && popd
+)
+
 where bun >nul 2>nul
 if %errorlevel% equ 0 (
     bun "%DIST%" %*

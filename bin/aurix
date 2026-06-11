@@ -21,8 +21,18 @@ else
   exit 1
 fi
 
-# --- auto-build if dist missing ---
+# --- auto-build if dist missing or stale ---
+NEED_BUILD=0
 if [ ! -f "$DIST" ]; then
+  NEED_BUILD=1
+else
+  SRC_NEWEST=$(find "$SCRIPT_DIR/src" -name '*.ts' -o -name '*.tsx' 2>/dev/null | xargs stat -c '%Y' 2>/dev/null | sort -rn | head -1)
+  DIST_TIME=$(stat -c '%Y' "$DIST" 2>/dev/null || echo 0)
+  if [ -n "$SRC_NEWEST" ] && [ "$SRC_NEWEST" -gt "$DIST_TIME" ]; then
+    NEED_BUILD=1
+  fi
+fi
+if [ "$NEED_BUILD" -eq 1 ]; then
   echo -e "\033[90mbuilding...\033[0m"
   cd "$SCRIPT_DIR" && npx tsc >/dev/null 2>&1
 fi
