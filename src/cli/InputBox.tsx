@@ -264,6 +264,7 @@ let pasteInProgress = false;
 let lastPasteStart = -1;
 let lastPasteLen = 0;
 let lastCtrlCEmpty = 0;
+const pastedBlocks = new Map<string, string>();
 
 export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
@@ -301,10 +302,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     pasteInProgress = false;
 
     if (text) {
-      lastPasteStart = -1;
-      lastPasteLen = 0;
-      setValue(prev => prev + text);
-      setCursor(prev => prev + text.length);
+      const lines = text.split('\n');
+      if (lines.length > 2) {
+        const placeholder = `[pasted ${lines.length} lines]`;
+        pastedBlocks.set(placeholder, text);
+        setValue(prev => prev + placeholder);
+        setCursor(prev => prev + placeholder.length);
+      } else {
+        setValue(prev => prev + text);
+        setCursor(prev => prev + text.length);
+      }
     }
   });
 
@@ -355,7 +362,12 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       if (suggestionsVisible) { applyCommandCompletion(); return; }
       const trimmed = value.trim();
       if (trimmed) {
-        onSubmit(trimmed);
+        let expanded = trimmed;
+        for (const [placeholder, fullText] of pastedBlocks) {
+          expanded = expanded.split(placeholder).join(fullText);
+        }
+        pastedBlocks.clear();
+        onSubmit(expanded);
         setHistory(prev => [...prev, trimmed]);
         setValue('');
         setCursor(0);
@@ -425,10 +437,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         return readClipboard().then((text) => {
           if (!text) return;
           const clean = text.replace(/\r\n/g, '\n').trimEnd();
-          lastPasteStart = -1;
-          lastPasteLen = 0;
-          setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-          setCursor(insertAt + clean.length);
+          const lines = clean.split('\n');
+          if (lines.length > 2) {
+            const placeholder = `[pasted ${lines.length} lines]`;
+            pastedBlocks.set(placeholder, clean);
+            setValue(prev => prev.slice(0, insertAt) + placeholder + prev.slice(insertAt));
+            setCursor(insertAt + placeholder.length);
+          } else {
+            setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+            setCursor(insertAt + clean.length);
+          }
         });
       }).catch(() => {});
       return;
