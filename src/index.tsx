@@ -150,6 +150,7 @@ async function main() {
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
     } catch {}
   };
+  process.on('exit', cleanupTerminal);
   process.on('SIGINT', () => { cleanupTerminal(); process.exit(0); });
   process.on('SIGTERM', () => { cleanupTerminal(); process.exit(0); });
   process.on('uncaughtException', (err) => { cleanupTerminal(); console.error(err); process.exit(1); });
