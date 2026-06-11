@@ -119,24 +119,88 @@ function writeClipboard(text: string): void {
     return;
   }
   if (isMac) {
-    const child = execFile('pbcopy', [], { timeout: 2000 }, () => {});
-    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+    const { spawn } = require('node:child_process');
+    const child = spawn('pbcopy', [], { stdio: ['pipe', 'ignore', 'ignore'] });
+    child.stdin?.end(text);
+    child.on('error', () => {});
     return;
   }
   if (process.env.WAYLAND_DISPLAY) {
-    const child = execFile('wl-copy', ['--', text], { timeout: 2000 }, () => {});
+    const { spawn } = require('node:child_process');
+    const child = spawn('wl-copy', ['--', text], { stdio: ['pipe', 'ignore', 'ignore'] });
     child.on('error', () => {});
-    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
     return;
   }
   const env = xclipEnv();
   if (env || process.env.DISPLAY) {
-    const child = execFile('xclip', ['-selection', 'clipboard'], {
-      timeout: 2000,
-      env: env ? { ...process.env, ...env } : undefined,
-    }, () => {});
-    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+    const { spawn } = require('node:child_process');
+    const fullEnv = env ? { ...process.env, ...env } : undefined;
+    const child = spawn('xclip', ['-selection', 'clipboard'], { stdio: ['pipe', 'ignore', 'ignore'], env: fullEnv });
+    child.stdin?.end(text);
+    child.on('error', () => {});
   }
+}
+
+function readClipboardImage(): Promise<string | undefined> {
+  return (async () => {
+    const { spawn: sp } = require('node:child_process');
+    const tmpFile = `/tmp/aurix-paste-${Date.now()}.png`;
+    const env = xclipEnv();
+    const fullEnv = env ? { ...process.env, ...env } : undefined;
+
+    if (isMac) {
+      return new Promise<string | undefined>((resolve) => {
+        const script = `set theFile to (POSIX file "${tmpFile}")
+try
+  set theClip to the clipboard as «class PNGf»
+  set fRef to open for access theFile with write permission
+  write theClip to fRef
+  close access fRef
+on error
+  try
+    close access theFile
+  end try
+  return ""
+end try
+return "ok"`;
+        const child = sp('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+        let out = '';
+        child.stdout?.on('data', (d: Buffer) => { out += d; });
+        child.on('close', () => resolve(out.includes('ok') ? tmpFile : undefined));
+        child.on('error', () => resolve(undefined));
+      });
+    }
+
+    if (isWindows) return undefined;
+
+    if (process.env.WAYLAND_DISPLAY) {
+      return new Promise<string | undefined>((resolve) => {
+        const child = sp('wl-paste', ['--type', 'image/png'], { stdio: ['ignore', 'pipe', 'ignore'] });
+        const chunks: Buffer[] = [];
+        child.stdout?.on('data', (d: Buffer) => chunks.push(d));
+        child.on('close', (code: number) => {
+          if (code === 0 && chunks.length > 0) {
+            require('fs').writeFileSync(tmpFile, Buffer.concat(chunks));
+            resolve(tmpFile);
+          } else resolve(undefined);
+        });
+        child.on('error', () => resolve(undefined));
+      });
+    }
+
+    return new Promise<string | undefined>((resolve) => {
+      const child = sp('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { stdio: ['ignore', 'pipe', 'ignore'], env: fullEnv });
+      const chunks: Buffer[] = [];
+      child.stdout?.on('data', (d: Buffer) => chunks.push(d));
+      child.on('close', (code: number) => {
+        if (code === 0 && chunks.length > 0) {
+          require('fs').writeFileSync(tmpFile, Buffer.concat(chunks));
+          resolve(tmpFile);
+        } else resolve(undefined);
+      });
+      child.on('error', () => resolve(undefined));
+    });
+  })();
 }
 
 interface InputBoxProps {
@@ -194,17 +258,14 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   }, []);
 
   usePaste((event) => {
-    const dbg = (m: string) => { try { require('fs').appendFileSync('/tmp/aurix-paste-debug.log', `[${new Date().toISOString()}] ${m}\n`); } catch {} };
-    dbg(`usePaste fired! bytes=${event.bytes?.length}`);
     if (disabled) return;
     pasteInProgress = true;
     const text = decodePasteBytes(event.bytes).replace(/\r\n/g, '\n').trimEnd();
     pasteInProgress = false;
-    dbg(`decoded paste: "${text.slice(0, 50)}" (${text.length} chars)`);
 
     if (text) {
       const lines = text.split('\n');
-      if (lines.length >= 3) {
+      if (lines.length > 2) {
         const summary = `[pasted ${lines.length} lines]`;
         setValue(prev => {
           lastPasteStart = prev.length;
@@ -312,30 +373,38 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     }
     if (evt.ctrl && name === 'v') {
       evt.preventDefault();
-      const dbg = (m: string) => { try { require('fs').appendFileSync('/tmp/aurix-paste-debug.log', `[${new Date().toISOString()}] ${m}\n`); } catch {} };
-      dbg(`Ctrl+V fired! cursor=${cursor}`);
       const insertAt = cursor;
-      readClipboard().then((text) => {
-        dbg(`readClipboard returned: "${text?.slice(0, 50)}" (${text?.length ?? 0} chars)`);
-        if (!text) return;
-        const clean = text.replace(/\r\n/g, '\n').trimEnd();
-        const lines = clean.split('\n');
-        dbg(`lines=${lines.length}, clean="${clean.slice(0, 50)}"`);
-        if (lines.length >= 3) {
-          const summary = `[pasted ${lines.length} lines]`;
+      readClipboardImage().then((imgPath) => {
+        if (imgPath) {
+          const summary = `[image: ${imgPath}]`;
           setValue(prev => {
             lastPasteStart = insertAt;
             lastPasteLen = summary.length;
             return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
           });
           setCursor(insertAt + summary.length);
-        } else {
-          lastPasteStart = -1;
-          lastPasteLen = 0;
-          setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-          setCursor(insertAt + clean.length);
+          return;
         }
-      }).catch((err) => { try { require('fs').appendFileSync('/tmp/aurix-paste-debug.log', `[${new Date().toISOString()}] readClipboard ERROR: ${err.message}\n`); } catch {} });
+        return readClipboard().then((text) => {
+          if (!text) return;
+          const clean = text.replace(/\r\n/g, '\n').trimEnd();
+          const lines = clean.split('\n');
+          if (lines.length > 2) {
+            const summary = `[pasted ${lines.length} lines]`;
+            setValue(prev => {
+              lastPasteStart = insertAt;
+              lastPasteLen = summary.length;
+              return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
+            });
+            setCursor(insertAt + summary.length);
+          } else {
+            lastPasteStart = -1;
+            lastPasteLen = 0;
+            setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+            setCursor(insertAt + clean.length);
+          }
+        });
+      }).catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {
