@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { TextAttributes } from '@opentui/core';
-import { useKeyboard, useTerminalDimensions } from '@opentui/react';
+import { TextAttributes, decodePasteBytes } from '@opentui/core';
+import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { execFile } from 'node:child_process';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
@@ -183,75 +183,40 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (process.stdin.isTTY) {
       process.stdout.write('\x1b[?2004h');
     }
-
-    let pasteBuffer = '';
-    let pasteTimeout: ReturnType<typeof setTimeout> | undefined;
-
-    const onData = (chunk: Buffer) => {
-      const str = chunk.toString('utf8');
-
-      if (!pasteBuffer && !str.includes('\x1b[200~')) return;
-
-      pasteBuffer += str;
-
-      const endIdx = pasteBuffer.indexOf('\x1b[201~');
-      if (endIdx === -1) {
-        pasteInProgress = true;
-        if (!pasteTimeout) {
-          pasteTimeout = setTimeout(() => {
-            pasteInProgress = false;
-            pasteBuffer = '';
-            pasteTimeout = undefined;
-          }, 5000);
-        }
-        return;
-      }
-
-      if (pasteTimeout) { clearTimeout(pasteTimeout); pasteTimeout = undefined; }
-      const startIdx = pasteBuffer.indexOf('\x1b[200~');
-      const text = pasteBuffer.slice(startIdx + 6, endIdx).replace(/\r\n/g, '\n').trimEnd();
-      pasteBuffer = '';
-      pasteInProgress = false;
-
-      if (text) {
-        const lines = text.split('\n');
-        if (lines.length >= 3) {
-          const summary = `[pasted ${lines.length} lines]`;
-          setValue(prev => {
-            lastPasteStart = prev.length;
-            lastPasteLen = summary.length;
-            return prev + summary;
-          });
-          setCursor(prev => prev + summary.length);
-        } else {
-          lastPasteStart = -1;
-          lastPasteLen = 0;
-          setValue(prev => prev + text);
-          setCursor(prev => prev + text.length);
-        }
-      }
-    };
-
     const onContinue = () => {
-      if (process.stdin.isTTY) {
-        process.stdout.write('\x1b[?2004h');
-      }
+      if (process.stdin.isTTY) process.stdout.write('\x1b[?2004h');
     };
     process.on('SIGCONT', onContinue);
-
-    if (process.stdin.isTTY) {
-      process.stdin.prependListener('data', onData);
-    }
-
     return () => {
-      if (pasteTimeout) clearTimeout(pasteTimeout);
       process.removeListener('SIGCONT', onContinue);
-      if (process.stdin.isTTY) {
-        process.stdout.write('\x1b[?2004l');
-        process.stdin.removeListener('data', onData);
-      }
+      if (process.stdin.isTTY) process.stdout.write('\x1b[?2004l');
     };
   }, []);
+
+  usePaste((event) => {
+    if (disabled) return;
+    pasteInProgress = true;
+    const text = decodePasteBytes(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    pasteInProgress = false;
+
+    if (text) {
+      const lines = text.split('\n');
+      if (lines.length >= 3) {
+        const summary = `[pasted ${lines.length} lines]`;
+        setValue(prev => {
+          lastPasteStart = prev.length;
+          lastPasteLen = summary.length;
+          return prev + summary;
+        });
+        setCursor(prev => prev + summary.length);
+      } else {
+        lastPasteStart = -1;
+        lastPasteLen = 0;
+        setValue(prev => prev + text);
+        setCursor(prev => prev + text.length);
+      }
+    }
+  });
 
   const frame = () => {
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
