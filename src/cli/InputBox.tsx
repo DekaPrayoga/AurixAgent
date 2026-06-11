@@ -6,23 +6,31 @@ import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 
-function readClipboard(): Promise<string | undefined> {
-  const tryCmd = (cmd: string, args: string[]): Promise<string> =>
-    new Promise((resolve, reject) => {
-      execFile(cmd, args, { timeout: 2000 }, (err, stdout) => {
-        if (err) reject(err);
-        else resolve(stdout);
-      });
+function runCmd(cmd: string, args: string[], input?: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(cmd, args, { timeout: 2000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(stdout);
     });
+    if (input && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
 
+function readClipboard(): Promise<string | undefined> {
   return (async () => {
     if (process.env.WAYLAND_DISPLAY) {
-      try { const t = await tryCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
+      try { const t = await runCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
     }
-    try { const t = await tryCmd('xclip', ['-selection', 'clipboard', '-o']); if (t) return t; } catch {}
-    try { const t = await tryCmd('pbpaste', []); if (t) return t; } catch {}
+    if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
+      try { const t = await runCmd('xclip', ['-selection', 'clipboard', '-o']); if (t) return t; } catch {}
+      try { const t = await runCmd('xsel', ['--clipboard', '--output']); if (t) return t; } catch {}
+    }
+    try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
     try {
-      const t = await tryCmd('powershell.exe', [
+      const t = await runCmd('powershell.exe', [
         '-NoProfile', '-command',
         '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard',
       ]);
@@ -30,6 +38,19 @@ function readClipboard(): Promise<string | undefined> {
     } catch {}
     return undefined;
   })();
+}
+
+function writeClipboard(text: string): void {
+  const b64 = Buffer.from(text).toString('base64');
+  const osc52 = `\x1b]52;c;${b64}\x07`;
+  process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
+
+  if (process.env.WAYLAND_DISPLAY) {
+    runCmd('wl-copy', ['--', text]).catch(() => {});
+  } else if (process.env.DISPLAY) {
+    const child = execFile('xclip', ['-selection', 'clipboard'], { timeout: 2000 }, () => {});
+    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+  }
 }
 
 interface InputBoxProps {
@@ -54,6 +75,8 @@ const MODE_COLOR: Record<'auto' | 'ask', string> = {
 };
 
 let pasteInProgress = false;
+let lastPasteStart = -1;
+let lastPasteLen = 0;
 
 export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
@@ -108,14 +131,27 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         const lines = text.split('\n');
         if (lines.length >= 3) {
           const summary = `[pasted ${lines.length} lines]`;
-          setValue(prev => prev + summary);
+          setValue(prev => {
+            lastPasteStart = prev.length;
+            lastPasteLen = summary.length;
+            return prev + summary;
+          });
           setCursor(prev => prev + summary.length);
         } else {
+          lastPasteStart = -1;
+          lastPasteLen = 0;
           setValue(prev => prev + text);
           setCursor(prev => prev + text.length);
         }
       }
     };
+
+    const onContinue = () => {
+      if (process.stdin.isTTY) {
+        process.stdout.write('\x1b[?2004h');
+      }
+    };
+    process.on('SIGCONT', onContinue);
 
     if (process.stdin.isTTY) {
       process.stdin.prependListener('data', onData);
@@ -123,6 +159,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
     return () => {
       if (pasteTimeout) clearTimeout(pasteTimeout);
+      process.removeListener('SIGCONT', onContinue);
       if (process.stdin.isTTY) {
         process.stdout.write('\x1b[?2004l');
         process.stdin.removeListener('data', onData);
@@ -161,6 +198,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
     if (name === 'escape') {
       evt.preventDefault();
+      lastPasteStart = -1;
+      lastPasteLen = 0;
       if (value) {
         setValue('');
         setCursor(0);
@@ -170,6 +209,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (name === 'return') {
       evt.preventDefault();
       evt.stopPropagation();
+      lastPasteStart = -1;
+      lastPasteLen = 0;
       if (suggestionsVisible) { applyCommandCompletion(); return; }
       const trimmed = value.trim();
       if (trimmed) {
@@ -196,12 +237,19 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       return;
     }
     if (evt.ctrl && name === 'c') {
+      evt.preventDefault();
+      evt.stopPropagation();
       if (value) {
-        evt.preventDefault();
-        evt.stopPropagation();
-        const seq = `\x1b]52;c;${Buffer.from(value).toString('base64')}\x07`;
-        process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
+        writeClipboard(value);
+      } else {
+        process.exit(0);
       }
+      return;
+    }
+    if (evt.ctrl && name === 'z') {
+      evt.preventDefault();
+      process.stdout.write('\x1b[?2004l');
+      process.kill(process.pid, 'SIGTSTP');
       return;
     }
     if (evt.ctrl && name === 'v') {
@@ -210,14 +258,34 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       readClipboard().then((text) => {
         if (!text) return;
         const clean = text.replace(/\r\n/g, '\n').trimEnd();
-        setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-        setCursor(insertAt + clean.length);
+        const lines = clean.split('\n');
+        if (lines.length >= 3) {
+          const summary = `[pasted ${lines.length} lines]`;
+          setValue(prev => {
+            lastPasteStart = insertAt;
+            lastPasteLen = summary.length;
+            return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
+          });
+          setCursor(insertAt + summary.length);
+        } else {
+          lastPasteStart = -1;
+          lastPasteLen = 0;
+          setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+          setCursor(insertAt + clean.length);
+        }
       }).catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {
       evt.preventDefault();
-      if (cursor > 0) {
+      if (cursor > 0 && lastPasteStart >= 0 && cursor === lastPasteStart + lastPasteLen) {
+        setValue(value.slice(0, lastPasteStart) + value.slice(cursor));
+        setCursor(lastPasteStart);
+        lastPasteStart = -1;
+        lastPasteLen = 0;
+      } else if (cursor > 0) {
+        lastPasteStart = -1;
+        lastPasteLen = 0;
         setValue(value.slice(0, cursor - 1) + value.slice(cursor));
         setCursor(cursor - 1);
       }
