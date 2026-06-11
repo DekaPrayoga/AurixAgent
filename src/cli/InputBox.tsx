@@ -263,6 +263,7 @@ const MODE_COLOR: Record<'auto' | 'ask', string> = {
 let pasteInProgress = false;
 let lastPasteStart = -1;
 let lastPasteLen = 0;
+let lastCtrlCEmpty = 0;
 
 export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
@@ -390,13 +391,25 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
-      try { require('node:fs').appendFileSync('/tmp/aurix-copy-debug.log', `[${new Date().toISOString()}] Ctrl+C fired, value.length=${value.length}\n`); } catch {}
       if (value) {
         writeClipboard(value);
-      } else if (onExit) {
-        onExit();
+        lastCtrlCEmpty = 0;
       } else {
-        process.exit(0);
+        const now = Date.now();
+        if (now - lastCtrlCEmpty < 1000) {
+          if (onExit) {
+            onExit();
+          } else {
+            process.exit(0);
+          }
+        } else {
+          lastCtrlCEmpty = now;
+          setValue('press Ctrl+C again to exit');
+          setCursor(0);
+          setTimeout(() => {
+            setValue(prev => prev === 'press Ctrl+C again to exit' ? '' : prev);
+          }, 1500);
+        }
       }
       return;
     }
