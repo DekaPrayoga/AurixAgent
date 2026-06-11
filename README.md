@@ -71,6 +71,27 @@ Here is what AURIX can actually do for you:
 - **Multi-Platform Gateway:** Access your exact same AI session from the Terminal, Discord, Telegram, or WhatsApp. Your memory and context persist everywhere.
 - **Self-Extending:** Need the AI to learn a new trick? Tell it: `> install skill from github.com/user/awesome-skill`. It will clone, validate, and rebuild itself without restarting.
 
+## How It Works Under the Hood
+
+AURIX is powered by a sophisticated LangGraph-based architecture that orchestrates multiple specialized AI agents. When you give AURIX a complex task, it doesn't just pass your prompt to a single LLM and hope for the best. Instead, it triggers a **Multi-Agent Workflow**:
+
+1. **The Orchestrator (Supervisor Agent):** Analyzes your request and determines the necessary steps. It breaks down the problem and delegates tasks to specialized sub-agents.
+2. **The Specialists (Sub-Agents):** Depending on the task, the Orchestrator might spin up a *Code Reviewer Agent*, a *Security Analyst Agent*, or a *Deep Researcher Agent*. These agents work in parallel.
+3. **The Execution Engine:** Agents interact with the real world using the 40+ built-in tools (running shell commands, scraping web pages, querying databases).
+4. **The Verification Loop:** Before returning the final result to you, a *Critic Agent* or *Judge Agent* reviews the output. If a code execution fails, the loop automatically retries, analyzes the error log, and attempts a fix using exponential backoff.
+
+This architecture ensures that AURIX delivers high-quality, verified results rather than hallucinated text.
+
+## Why Choose AURIX?
+
+There are many AI coding assistants and chat wrappers out there. Here is why AURIX stands out:
+
+- **True Autonomy:** You don't have to hold its hand. Tell it what you want, and watch it navigate your codebase, write tests, and deploy.
+- **No Context Switching:** Everything happens in your terminal. You don't need to switch between your IDE, a browser, and a chat app.
+- **Extensible by Design:** With the `/addskills` command, you can instantly teach AURIX new capabilities from a library of 280+ community skills, or write your own.
+- **Privacy & Flexibility:** Use any LLM provider you want. Connect to local models via Ollama or LM Studio for complete privacy, or use powerful cloud models from OpenAI and Anthropic.
+- **Omnipresent:** The Multi-Platform Gateway means your AI workspace travels with you. Start a deep research task on your laptop, and check the results on your phone via WhatsApp while grabbing coffee.
+
 ## The Arsenal: Core Capabilities
 
 AURIX is not limited to writing code. It is a fully equipped digital operator with 40+ built-in tools and 280+ opt-in skills.
