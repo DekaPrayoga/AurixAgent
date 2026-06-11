@@ -69,9 +69,39 @@ Here is what AURIX can actually do for you:
 
 - **Terminal-First UI (TUI):** A beautiful, interactive CLI built with React Ink. No more clunky text streams.
 - **Multi-Platform Gateway:** Access your exact same AI session from the Terminal, Discord, Telegram, or WhatsApp. Your memory and context persist everywhere.
-- **46+ Built-in Tools:** Browser automation (Puppeteer), Git management, Docker control, System monitoring (CPU/RAM), SQL/NoSQL database queries, and more.
 - **Self-Extending:** Need the AI to learn a new trick? Tell it: `> install skill from github.com/user/awesome-skill`. It will clone, validate, and rebuild itself without restarting.
-- **Persistent Memory:** AURIX remembers your coding style, your architectural preferences, and previous bugs across sessions.
+
+## The Arsenal: 46+ Native Capabilities
+
+AURIX is not limited to writing code. It is a fully equipped digital operator. Here is a glimpse of what it can do natively out-of-the-box:
+
+### 🛠️ Engineering & DevOps
+- **Code & Scaffold:** Generate entire projects (React, Next.js, Express, Fastify), UI components, database schemas, and REST endpoints.
+- **Docker & VPS Management:** Manage containers, deploy apps, configure Nginx/SSL, and monitor VPS resources safely.
+- **Cloud Deployments:** Deploy directly to Vercel, AWS (Lambda/EC2/ECS), Google Cloud (Run/Functions), and GitHub Pages.
+- **CI/CD & Build:** Automatically generate GitHub Actions, run build checks, and fix compiler/linter errors.
+
+### 🕵️ Deep Research & OSINT
+- **Forum Intelligence:** Scrape and analyze sentiment across Reddit, X/Twitter, HackerNews, YouTube, TikTok, Polymarket, and Bluesky.
+- **Cybersecurity Toolkit:** Port scanning, vulnerability assessment, SSL checking, DNS lookup, and log analysis (Red/Blue/Purple team modes).
+- **OSINT Investigation:** Investigate domains, emails, usernames, and IPs.
+- **Web Scraping & Fetching:** Automate headless browsers (Puppeteer) to click, scroll, fill forms, and extract structured data or YouTube transcripts.
+
+### 📈 Finance & Web3
+- **Trading Desk:** Multi-agent trading system with bull/bear researchers for stock analysis, technical indicators, and risk assessment.
+- **Blockchain Wallets:** Query EVM (Ethereum, Polygon, Base, Arbitrum) and Solana wallet balances and token holdings natively.
+
+### 🎨 Creative & Office
+- **Document Generation:** Compile research into styled PDF reports, Excel spreadsheets, and PowerPoint presentations.
+- **Diagrams:** Generate architecture, sequence, and flowchart diagrams (Mermaid/SVG).
+- **Media & Music:** Search, download, and play music from YouTube/SoundCloud (via `yt-dlp`), or search for GIFs via Tenor.
+- **Communication:** Compose and send HTML emails with attachments via SMTP or CLI tools.
+- **Humanize Text:** Strip out generic AI writing patterns to make text sound natural and human.
+
+### 🧠 Core Intelligence
+- **Persistent Memory:** AURIX remembers facts, preferences, and context across sessions. It learns how you like your code.
+- **Task Planning:** Decompose large features into stories, track progress, and generate implementation roadmaps.
+- **Code Execution:** Run Python, Node.js, or Bash scripts in a sandbox to calculate data or test snippets on the fly.
 
 ## Quick Start
 
