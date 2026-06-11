@@ -75,51 +75,59 @@ The core philosophy: **give the model real tools, persistent memory, and an inte
 
 ### Requirements
 
-- [Bun](https://bun.sh) v1.0+ or Node.js 18+
+- [Bun](https://bun.sh) v1.0+ or Node.js 22+
 - API key for at least one LLM provider (OpenAI, Anthropic, or others)
 - Python 3.12+ (optional, for research-forums skill)
 
-### Install
+### One-Line Install (Recommended)
 
-The easiest way to install AURIX is using the automated install script:
+The easiest way to install AURIX globally on your system is using the automated install script:
 
 ```bash
 curl -fsSL https://api.haikz.me/install.sh | bash
 ```
 
-Alternatively, you can install it manually:
+*This script will automatically install Bun (if missing), clone the repository, build the project, and link the `aurix` command to your terminal.*
+
+### Manual Install
+
+If you prefer to build it manually:
 
 ```bash
 git clone https://github.com/DekaPrayoga/AurixAgent.git
 cd AurixAgent
 bun install
 bun run build
-```
-
-### Setup
-
-```bash
-./bin/aurix setup
-```
-
-This will guide you through configuring your API keys and preferences.
-
-### Run
-
-```bash
-./bin/aurix
+npm link   # Or manually link bin/aurix to your PATH
 ```
 
 ## Usage
 
-### Terminal Commands
+After installation, you can run AURIX directly from anywhere in your terminal.
 
+### 1. Initial Setup
+Run the setup wizard to configure your preferred LLM provider, API keys, and Base URLs:
 ```bash
-aurix              # Start interactive session
-aurix setup        # Configure API keys and settings
-aurix gateway      # Start Discord/Telegram/WhatsApp bridge
+aurix setup
+```
+
+### 2. Start Interactive Session
+Start the terminal AI workspace to code, research, or execute tasks:
+```bash
+aurix
+```
+
+### 3. Start Multi-Platform Gateway
+Run AURIX as a bot for Discord, Telegram, or WhatsApp (requires configuration in `.env` or setup):
+```bash
+aurix gateway
+```
+
+### Other Commands
+```bash
 aurix sessions     # List previous sessions
-aurix --resume ID  # Resume a session
+aurix --resume ID  # Resume a specific session
+aurix --help       # Show all available commands
 ```
 
 ### Inside AURIX
