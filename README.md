@@ -27,49 +27,45 @@
 
 ![AURIX Demo](docs/assets/aurix-demo.png)
 
-## What is AURIX
+## The Problem with Current AI Tools
 
-AURIX is not another chat wrapper. It is a **tool-using AI workspace** built for people who want an AI that can actually do work:
+Most developers use AI by copying code from a chat window, pasting it into their editor, running it, copying the error message, and pasting it back into the chat. **This loop is exhausting.**
 
-- Read, write, and refactor real files in your project
-- Execute shell commands in a real environment
-- Research topics with multi-source citations
-- Automate browser and system tasks
-- Generate PDFs, spreadsheets, and presentations
-- Accessible from terminal, Discord, Telegram, and WhatsApp
+Current AI tools are like smart consultants who sit on the couch giving advice, but refuse to touch your keyboard. Furthermore, they are isolated. If you want your AI to read a database, check a server's RAM, or scrape a competitor's website, you have to build the integration yourself.
 
-The core philosophy: **give the model real tools, persistent memory, and an interface that fits how technical users actually work.**
+## What is AURIX?
 
-## Features
+AURIX is an **Autonomous Multi-Agent AI Workspace**. It is not a chat wrapper; it is an AI that has hands, eyes, and memory.
 
-### Code & Repo Work
-- Full repository inspection and navigation
-- Intelligent file editing and refactoring
-- Command execution with context awareness
-- Implementation support beyond just snippets
+Instead of just generating text, AURIX operates directly inside your environment to close the execution loop:
+1. **It Reads:** It navigates your folders, reads your codebase, and searches the web.
+2. **It Thinks:** It delegates complex tasks to a swarm of sub-agents (e.g., a "Planner Agent" breaks down the task, a "Skeptic Agent" double-checks the logic).
+3. **It Acts:** It writes files, runs shell commands, creates Git commits, and manages Docker containers.
+4. **It Verifies:** If a test fails or a build crashes, AURIX reads the error log and fixes the code autonomously.
 
-### Deep Research
-- Multi-source information gathering (web, arXiv, Wikipedia, forums)
-- Citation-verified output
-- Structured reports with configurable depth
-- 13-agent research pipeline for deep analysis
+## Real-World Use Cases
 
-### Automation
-- Shell command automation
-- Browser automation (headless Chrome)
-- Workflow chaining across tools
-- File operations at scale
+Here is what AURIX can actually do for you:
 
-### Document Generation
-- PDF reports
-- Excel spreadsheets
-- PowerPoint presentations
-- Structured markdown output
+### 💻 The "Hands-Free" Developer
+> **You:** *"AURIX, look at `auth.ts`. There's a bug where JWT tokens expire too early. Fix it, run the test suite, and if it passes, push it to the `main` branch."*
+> **AURIX:** Reads the file, edits the code using regex/AST, runs `bun test`, sees an error, fixes the typo, runs it again, and executes `git push`.
 
-### Multi-Platform Gateway
-- Same workspace from terminal, Discord, Telegram, and WhatsApp
-- Session persistence across platforms
-- QR code login for messaging apps
+### 🕵️ The Deep Researcher
+> **You:** *"Write a 5-page PDF report on how Vercel alternatives are perceived on Reddit and HackerNews."*
+> **AURIX:** Spawns 13 research agents. It scrapes forums, debates the validity of claims to prevent hallucinations, compiles the data into markdown, and converts it to a styled PDF using LaTeX/HTML.
+
+### 📱 The "DevOps on a Train"
+> **You (via WhatsApp):** *"Is the production server down? Check the PM2 logs on the VPS."*
+> **AURIX:** Connects via its Gateway, SSHs into your server, runs `pm2 logs`, and replies to your WhatsApp with a summary of the crash and a button to restart it.
+
+## Key Features
+
+- **Terminal-First UI (TUI):** A beautiful, interactive CLI built with React Ink. No more clunky text streams.
+- **Multi-Platform Gateway:** Access your exact same AI session from the Terminal, Discord, Telegram, or WhatsApp. Your memory and context persist everywhere.
+- **46+ Built-in Tools:** Browser automation (Puppeteer), Git management, Docker control, System monitoring (CPU/RAM), SQL/NoSQL database queries, and more.
+- **Self-Extending:** Need the AI to learn a new trick? Tell it: `> install skill from github.com/user/awesome-skill`. It will clone, validate, and rebuild itself without restarting.
+- **Persistent Memory:** AURIX remembers your coding style, your architectural preferences, and previous bugs across sessions.
 
 ## Quick Start
 
