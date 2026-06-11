@@ -6,9 +6,9 @@ import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 
-function runCmd(cmd: string, args: string[], input?: string): Promise<string> {
+function runCmd(cmd: string, args: string[], input?: string, env?: Record<string, string>): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(cmd, args, { timeout: 2000 }, (err, stdout) => {
+    const child = execFile(cmd, args, { timeout: 2000, env: env ? { ...process.env, ...env } : undefined }, (err, stdout) => {
       if (err) reject(err);
       else resolve(stdout);
     });
@@ -19,23 +19,71 @@ function runCmd(cmd: string, args: string[], input?: string): Promise<string> {
   });
 }
 
+let cachedDisplay: { display: string; xauth: string } | null | undefined;
+
+function findDisplay(): { display: string; xauth: string } | null {
+  if (cachedDisplay !== undefined) return cachedDisplay;
+
+  const xauthPaths = [
+    process.env.XAUTHORITY,
+    '/home/kali/.Xauthority',
+    `${process.env.HOME}/.Xauthority`,
+    '/root/.Xauthority',
+  ].filter(Boolean) as string[];
+
+  let xauth = '';
+  for (const p of xauthPaths) {
+    try { require('fs').accessSync(p); xauth = p; break; } catch {}
+  }
+
+  if (process.env.DISPLAY) {
+    cachedDisplay = { display: process.env.DISPLAY, xauth };
+    return cachedDisplay;
+  }
+
+  try {
+    const out = require('child_process').execFileSync('/usr/NX/bin/nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
+    const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
+    if (match) {
+      cachedDisplay = { display: `:${match[1]}`, xauth };
+      return cachedDisplay;
+    }
+  } catch {}
+
+  try {
+    const fs = require('fs');
+    const sockets = fs.readdirSync('/tmp/.X11-unix/');
+    for (const s of sockets) {
+      if (s.startsWith('X')) {
+        cachedDisplay = { display: `:${s.slice(1)}`, xauth };
+        return cachedDisplay;
+      }
+    }
+  } catch {}
+
+  cachedDisplay = null;
+  return null;
+}
+
+function xclipEnv(): Record<string, string> | undefined {
+  const d = findDisplay();
+  if (!d?.display) return undefined;
+  const env: Record<string, string> = { DISPLAY: d.display };
+  if (d.xauth) env.XAUTHORITY = d.xauth;
+  return env;
+}
+
 function readClipboard(): Promise<string | undefined> {
   return (async () => {
     if (process.env.WAYLAND_DISPLAY) {
       try { const t = await runCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
     }
-    if (process.env.DISPLAY || process.env.WAYLAND_DISPLAY) {
-      try { const t = await runCmd('xclip', ['-selection', 'clipboard', '-o']); if (t) return t; } catch {}
-      try { const t = await runCmd('xsel', ['--clipboard', '--output']); if (t) return t; } catch {}
+    const env = xclipEnv();
+    if (env || process.env.DISPLAY) {
+      try { const t = await runCmd('xclip', ['-selection', 'clipboard', '-o'], undefined, env); if (t) return t; } catch {}
+      try { const t = await runCmd('xsel', ['--clipboard', '--output'], undefined, env); if (t) return t; } catch {}
     }
     try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
-    try {
-      const t = await runCmd('powershell.exe', [
-        '-NoProfile', '-command',
-        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard',
-      ]);
-      if (t) return t.replace(/\r\n/g, '\n');
-    } catch {}
     return undefined;
   })();
 }
@@ -47,9 +95,15 @@ function writeClipboard(text: string): void {
 
   if (process.env.WAYLAND_DISPLAY) {
     runCmd('wl-copy', ['--', text]).catch(() => {});
-  } else if (process.env.DISPLAY) {
-    const child = execFile('xclip', ['-selection', 'clipboard'], { timeout: 2000 }, () => {});
-    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+  } else {
+    const env = xclipEnv();
+    if (env || process.env.DISPLAY) {
+      const child = execFile('xclip', ['-selection', 'clipboard'], {
+        timeout: 2000,
+        env: env ? { ...process.env, ...env } : undefined,
+      }, () => {});
+      if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+    }
   }
 }
 
