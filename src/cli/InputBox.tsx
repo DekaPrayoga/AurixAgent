@@ -194,10 +194,12 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   }, []);
 
   usePaste((event) => {
+    process.stderr.write(`[DEBUG] usePaste fired! bytes=${event.bytes?.length}\n`);
     if (disabled) return;
     pasteInProgress = true;
     const text = decodePasteBytes(event.bytes).replace(/\r\n/g, '\n').trimEnd();
     pasteInProgress = false;
+    process.stderr.write(`[DEBUG] decoded paste: "${text.slice(0, 50)}" (${text.length} chars)\n`);
 
     if (text) {
       const lines = text.split('\n');
@@ -309,11 +311,14 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     }
     if (evt.ctrl && name === 'v') {
       evt.preventDefault();
+      process.stderr.write(`[DEBUG] Ctrl+V fired! cursor=${cursor}\n`);
       const insertAt = cursor;
       readClipboard().then((text) => {
+        process.stderr.write(`[DEBUG] readClipboard returned: "${text?.slice(0, 50)}" (${text?.length ?? 0} chars)\n`);
         if (!text) return;
         const clean = text.replace(/\r\n/g, '\n').trimEnd();
         const lines = clean.split('\n');
+        process.stderr.write(`[DEBUG] lines=${lines.length}, clean="${clean.slice(0, 50)}"\n`);
         if (lines.length >= 3) {
           const summary = `[pasted ${lines.length} lines]`;
           setValue(prev => {
@@ -328,7 +333,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
           setCursor(insertAt + clean.length);
         }
-      }).catch(() => {});
+      }).catch((err) => { process.stderr.write(`[DEBUG] readClipboard ERROR: ${err.message}\n`); });
       return;
     }
     if (name === 'backspace' || name === 'delete') {
