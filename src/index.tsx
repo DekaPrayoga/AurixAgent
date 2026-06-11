@@ -142,27 +142,29 @@ export { createRegistry };
 async function main() {
   const args = process.argv.slice(2);
 
-  if (!process.env.DISPLAY) {
+  if (process.platform === 'linux' && !process.env.DISPLAY) {
     try {
-      const { execFileSync } = await import('child_process');
-      const out = execFileSync('/usr/NX/bin/nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
-      const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
-      if (match) process.env.DISPLAY = `:${match[1]}`;
+      const fs = await import('fs');
+      for (const s of fs.readdirSync('/tmp/.X11-unix/')) {
+        if (s.startsWith('X')) { process.env.DISPLAY = `:${s.slice(1)}`; break; }
+      }
     } catch {}
     if (!process.env.DISPLAY) {
       try {
-        const fs = await import('fs');
-        for (const s of fs.readdirSync('/tmp/.X11-unix/')) {
-          if (s.startsWith('X')) { process.env.DISPLAY = `:${s.slice(1)}`; break; }
-        }
+        const { execFileSync } = await import('child_process');
+        const out = execFileSync('nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
+        const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
+        if (match) process.env.DISPLAY = `:${match[1]}`;
       } catch {}
     }
   }
-  if (!process.env.XAUTHORITY) {
-    const fs = await import('fs');
-    for (const p of [`/home/${process.env.USER || 'kali'}/.Xauthority`, `${process.env.HOME}/.Xauthority`]) {
-      try { fs.accessSync(p); process.env.XAUTHORITY = p; break; } catch {}
-    }
+  if (process.platform === 'linux' && !process.env.XAUTHORITY && process.env.HOME) {
+    try {
+      const fs = await import('fs');
+      const xauth = `${process.env.HOME}/.Xauthority`;
+      fs.accessSync(xauth);
+      process.env.XAUTHORITY = xauth;
+    } catch {}
   }
 
   if (args[0] === 'gateway') {

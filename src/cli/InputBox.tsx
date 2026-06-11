@@ -19,21 +19,26 @@ function runCmd(cmd: string, args: string[], input?: string, env?: Record<string
   });
 }
 
+const isWindows = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
+
 let cachedDisplay: { display: string; xauth: string } | null | undefined;
 
 function findDisplay(): { display: string; xauth: string } | null {
+  if (isWindows || isMac) return null;
   if (cachedDisplay !== undefined) return cachedDisplay;
 
-  const xauthPaths = [
+  const fs = require('fs');
+  const home = process.env.HOME || '';
+
+  const xauthCandidates = [
     process.env.XAUTHORITY,
-    '/home/kali/.Xauthority',
-    `${process.env.HOME}/.Xauthority`,
-    '/root/.Xauthority',
+    home && `${home}/.Xauthority`,
   ].filter(Boolean) as string[];
 
   let xauth = '';
-  for (const p of xauthPaths) {
-    try { require('fs').accessSync(p); xauth = p; break; } catch {}
+  for (const p of xauthCandidates) {
+    try { fs.accessSync(p); xauth = p; break; } catch {}
   }
 
   if (process.env.DISPLAY) {
@@ -42,22 +47,22 @@ function findDisplay(): { display: string; xauth: string } | null {
   }
 
   try {
-    const out = require('child_process').execFileSync('/usr/NX/bin/nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
-    const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
-    if (match) {
-      cachedDisplay = { display: `:${match[1]}`, xauth };
-      return cachedDisplay;
-    }
-  } catch {}
-
-  try {
-    const fs = require('fs');
     const sockets = fs.readdirSync('/tmp/.X11-unix/');
     for (const s of sockets) {
       if (s.startsWith('X')) {
         cachedDisplay = { display: `:${s.slice(1)}`, xauth };
         return cachedDisplay;
       }
+    }
+  } catch {}
+
+  try {
+    const { execFileSync } = require('child_process');
+    const out = execFileSync('nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
+    const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
+    if (match) {
+      cachedDisplay = { display: `:${match[1]}`, xauth };
+      return cachedDisplay;
     }
   } catch {}
 
@@ -75,6 +80,20 @@ function xclipEnv(): Record<string, string> | undefined {
 
 function readClipboard(): Promise<string | undefined> {
   return (async () => {
+    if (isMac) {
+      try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
+      return undefined;
+    }
+    if (isWindows) {
+      try {
+        const t = await runCmd('powershell.exe', [
+          '-NoProfile', '-command',
+          '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard',
+        ]);
+        if (t) return t.replace(/\r\n/g, '\n');
+      } catch {}
+      return undefined;
+    }
     if (process.env.WAYLAND_DISPLAY) {
       try { const t = await runCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
     }
@@ -83,7 +102,6 @@ function readClipboard(): Promise<string | undefined> {
       try { const t = await runCmd('xclip', ['-selection', 'clipboard', '-o'], undefined, env); if (t) return t; } catch {}
       try { const t = await runCmd('xsel', ['--clipboard', '--output'], undefined, env); if (t) return t; } catch {}
     }
-    try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
     return undefined;
   })();
 }
@@ -93,17 +111,31 @@ function writeClipboard(text: string): void {
   const osc52 = `\x1b]52;c;${b64}\x07`;
   process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
 
+  if (isWindows) {
+    const child = execFile('powershell.exe', [
+      '-NoProfile', '-command',
+      `Set-Clipboard -Value '${text.replace(/'/g, "''")}'`,
+    ], { timeout: 2000 }, () => {});
+    return;
+  }
+  if (isMac) {
+    const child = execFile('pbcopy', [], { timeout: 2000 }, () => {});
+    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+    return;
+  }
   if (process.env.WAYLAND_DISPLAY) {
-    runCmd('wl-copy', ['--', text]).catch(() => {});
-  } else {
-    const env = xclipEnv();
-    if (env || process.env.DISPLAY) {
-      const child = execFile('xclip', ['-selection', 'clipboard'], {
-        timeout: 2000,
-        env: env ? { ...process.env, ...env } : undefined,
-      }, () => {});
-      if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
-    }
+    const child = execFile('wl-copy', ['--', text], { timeout: 2000 }, () => {});
+    child.on('error', () => {});
+    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
+    return;
+  }
+  const env = xclipEnv();
+  if (env || process.env.DISPLAY) {
+    const child = execFile('xclip', ['-selection', 'clipboard'], {
+      timeout: 2000,
+      env: env ? { ...process.env, ...env } : undefined,
+    }, () => {});
+    if (child.stdin) { child.stdin.write(text); child.stdin.end(); }
   }
 }
 

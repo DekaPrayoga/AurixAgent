@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "aurix": "bin/aurix"
+    "aurix": "bin/aurix",
+    "aurix.cmd": "bin/aurix.cmd"
   },
   "keywords": [
     "ai",
