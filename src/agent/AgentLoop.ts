@@ -90,21 +90,60 @@ export class AgentLoop {
       yield { type: 'compact', data: `Compacted to ${this.messages.length} messages` };
     }
 
+    const RETRY_DELAYS = [10, 30, 60, 180, 180, 180, 180, 180, 180, 180];
+    let retryCount = 0;
+
     for (let i = 0; i < this.maxIterations; i++) {
       const optimizedMessages = this.contextManager.pruneToolResults(this.messages);
 
       let response;
       try {
         response = await this.provider.chat(optimizedMessages, this.registry.getToolDefs());
+        retryCount = 0;
       } catch (e: any) {
-        yield { type: 'error', data: `Provider error: ${e.message}` };
-        return;
+        if (retryCount >= RETRY_DELAYS.length) {
+          yield { type: 'error', data: `Provider failed after ${retryCount} retries. Last error: ${e.message}` };
+          return;
+        }
+        const delay = RETRY_DELAYS[retryCount];
+        retryCount++;
+        yield { type: 'text', data: `⏳ Retry ${retryCount}/10 — waiting ${delay}s... (${e.message?.slice(0, 80) || 'error'})` };
+        for (let s = 0; s < delay; s++) {
+          if (this.interrupted) {
+            this.interrupted = false;
+            yield { type: 'error', data: 'Retry cancelled by user.' };
+            return;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        i--;
+        continue;
       }
 
       if (this.interrupted) {
         this.interrupted = false;
         yield { type: 'error', data: 'Interrupted by user.' };
         return;
+      }
+
+      if (!response.text && response.toolCalls.length === 0) {
+        if (retryCount >= RETRY_DELAYS.length) {
+          yield { type: 'error', data: `Provider returned empty response after ${retryCount} retries (model: ${this.config.model}).\nTry: /login to update credentials, /model <id> to switch, or /doctor to diagnose.` };
+          return;
+        }
+        const delay = RETRY_DELAYS[retryCount];
+        retryCount++;
+        yield { type: 'text', data: `⏳ Empty response — retry ${retryCount}/10, waiting ${delay}s...` };
+        for (let s = 0; s < delay; s++) {
+          if (this.interrupted) {
+            this.interrupted = false;
+            yield { type: 'error', data: 'Retry cancelled by user.' };
+            return;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        i--;
+        continue;
       }
 
       if (response.toolCalls.length > 0) {
@@ -148,11 +187,6 @@ export class AgentLoop {
         }
 
         continue;
-      }
-
-      if (!response.text && response.toolCalls.length === 0) {
-        yield { type: 'error', data: `Provider returned empty response (model: ${this.config.model}).\nTry: /login to update credentials, /model <id> to switch, or /doctor to diagnose.` };
-        return;
       }
 
       this.messages.push({ role: 'assistant', content: response.text });
