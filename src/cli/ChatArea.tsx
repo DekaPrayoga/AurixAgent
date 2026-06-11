@@ -283,6 +283,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   toolName?: string;
+  model?: string;
   timestamp: Date;
 }
 
@@ -368,6 +369,11 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
   if (!msg.content) return null;
   return (
     <box flexDirection="column" paddingX={2} flexShrink={0}>
+      {msg.model && (
+        <box paddingBottom={0} paddingLeft={1}>
+          <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>{msg.model}</text>
+        </box>
+      )}
       <box
         border={["left"]}
         borderColor={theme.secondary}

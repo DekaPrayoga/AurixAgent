@@ -213,6 +213,7 @@ interface InputBoxProps {
   cwd?: string;
   mode?: 'auto' | 'ask';
   onModeCycle?: () => void;
+  onExit?: () => void;
 }
 
 const MODE_LABEL: Record<'auto' | 'ask', string> = {
@@ -228,7 +229,7 @@ let pasteInProgress = false;
 let lastPasteStart = -1;
 let lastPasteLen = 0;
 
-export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle }: InputBoxProps) {
+export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
@@ -356,11 +357,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       evt.stopPropagation();
       if (value) {
         writeClipboard(value);
+      } else if (onExit) {
+        onExit();
       } else {
-        process.stdout.write(
-          '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m'
-        );
-        if (process.stdin.isTTY) process.stdin.setRawMode(false);
         process.exit(0);
       }
       return;

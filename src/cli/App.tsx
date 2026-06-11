@@ -126,6 +126,12 @@ export function App({ config, registry, resumeId }: AppProps) {
         timestamp: new Date(),
       })));
       setShowBanner(false);
+    } else {
+      setMessages([{
+        role: 'system' as const,
+        content: `Session "${resumeId}" not found. Use /title to name sessions, or run aurix without --resume.`,
+        timestamp: new Date(),
+      }]);
     }
   }
 
@@ -503,7 +509,7 @@ Supervisor auto-routes tasks to the right specialist(s).`);
               } else if (event.type === 'text') {
                 setMessages(prev => {
                   const next = prev.filter(m => !(m.role === 'system' && m.content.startsWith('Research progress:')));
-                  return [...next, { role: 'assistant' as const, content: event.data, timestamp: new Date() }];
+                  return [...next, { role: 'assistant' as const, content: event.data, model: agent.getModel(), timestamp: new Date() }];
                 });
               } else if (event.type === 'error') {
                 addAssistant(`Research error: ${event.data}`);
@@ -1035,6 +1041,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
             setMessages(prev => [...prev, {
               role: 'assistant',
               content: event.data,
+              model: agent.getModel(),
               timestamp: new Date(),
             }]);
             break;
@@ -1148,14 +1155,6 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 <text fg={theme.accent}>{'  ::  '}</text>
                 <text fg={theme.textMuted}>terminal autonomy workspace</text>
               </box>
-              <box marginTop={1}>
-                <text fg={theme.textMuted}>{toolCount} tools</text>
-                <text fg={theme.border}>{'  ·  '}</text>
-                <text fg={theme.textMuted}>{skillCount} skills</text>
-                <text fg={theme.border}>{'  ·  '}</text>
-                <text fg={theme.textMuted}>model </text>
-                <text fg={theme.text}>{agent.getModel().slice(0, 22)}</text>
-              </box>
             </box>
             <box height={1} minHeight={0} flexShrink={1} />
             <box width="100%" maxWidth={promptW} paddingTop={1} flexShrink={0}>
@@ -1169,11 +1168,13 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 cwd={process.cwd()}
                 mode={mode}
                 onModeCycle={cycleMode}
+                onExit={doExit}
               />
             </box>
             <box flexGrow={1} minHeight={0} />
-            <box width="100%" flexShrink={0}>
-              <StatusBar model={agent.getModel()} provider={agent.getProviderName()} researchMode={researchMode} cwd={process.cwd()} />
+            <box width="100%" flexShrink={0} justifyContent="space-between" paddingX={2}>
+              <text fg={theme.textMuted}>{process.cwd().replace(/^\/root\//, '~/')}</text>
+              <text fg={theme.textMuted}>v{require('../../package.json').version}</text>
             </box>
           </box>
         ) : (
@@ -1220,7 +1221,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                       setShowLogin(false);
                       setMessages(prev => [...prev, {
                         role: 'assistant',
-                        content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? newApiKey.slice(0, 8) + '...' : '(unchanged)'}\n  Model: ${newModel || agent.getModel()}`,
+                        content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? newApiKey.slice(0, 8) + '...' : '(skipped)'}\n  Model: ${newModel || agent.getModel()}`,
                         timestamp: new Date(),
                       }]);
                     }}
@@ -1309,6 +1310,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                   cwd={process.cwd()}
                   mode={mode}
                   onModeCycle={cycleMode}
+                  onExit={doExit}
                 />
               </box>
               <box flexShrink={0}>

@@ -63,7 +63,6 @@
     "systeminformation": "^5.23.0"
   },
   "devDependencies": {
-    "2": "^3.0.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",

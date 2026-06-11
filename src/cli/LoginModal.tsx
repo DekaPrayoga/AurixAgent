@@ -20,7 +20,7 @@ export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }:
 
   const fields = [
     { label: 'Base URL', hint: 'https://api.openai.com/v1', value: baseUrl, setter: setBaseUrl },
-    { label: 'API Key', hint: 'sk-...', value: apiKey, setter: setApiKey, masked: true },
+    { label: 'API Key (optional)', hint: 'sk-... or leave blank', value: apiKey, setter: setApiKey, masked: true },
     { label: 'Model (optional)', hint: 'gpt-4o', value: model, setter: setModel },
   ];
 
