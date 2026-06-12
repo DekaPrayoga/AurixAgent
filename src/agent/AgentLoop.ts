@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import type { AurixConfig } from './Config.js';
 import { buildSystemPrompt } from './Context.js';
-import type { Provider, Message, ToolCall } from '../providers/index.js';
+import type { Provider, Message } from '../providers/index.js';
 import { createProvider } from '../providers/index.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
@@ -51,6 +51,27 @@ function buildPersistedMessage(result: { filepath: string; preview: string; hasM
 
 const WRITE_TOOLS = new Set(['file_edit', 'write_file', 'terminal']);
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
+
+type ErrorType = 'rate_limit' | 'auth' | 'context_length' | 'network' | 'unknown';
+
+function classifyError(e: any): ErrorType {
+  const msg = (e.message || e.error?.message || String(e)).toLowerCase();
+  const status = e.status || e.statusCode || e.response?.status || e.error?.status;
+
+  if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('quota exceeded')) {
+    return 'rate_limit';
+  }
+  if (status === 401 || status === 403 || msg.includes('invalid api key') || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('authentication')) {
+    return 'auth';
+  }
+  if (msg.includes('context length') || msg.includes('too many tokens') || msg.includes('maximum context') || msg.includes('reduce your prompt') || msg.includes('max_tokens')) {
+    return 'context_length';
+  }
+  if (msg.includes('econnrefused') || msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('network') || msg.includes('socket hang up') || msg.includes('dns') || msg.includes('fetch failed')) {
+    return 'network';
+  }
+  return 'unknown';
+}
 
 export interface AgentEvent {
   type: 'text' | 'tool_start' | 'tool_end' | 'error' | 'done' | 'route' | 'compact' | 'research';
@@ -126,14 +147,19 @@ export class AgentLoop {
     this.messages.push({ role: 'user', content: userMessage });
     this._inputTokens += Math.ceil(userMessage.length / 4);
 
-    // Auto-compact if approaching context limit
     if (this.contextManager.shouldCompact(this.messages)) {
       yield { type: 'compact', data: 'Context nearing limit — compacting history...' };
       this.messages = await this.contextManager.compact(this.messages);
       yield { type: 'compact', data: `Compacted to ${this.messages.length} messages` };
     }
 
-    const RETRY_DELAYS = [10, 30, 60, 180, 180, 180, 180, 180, 180, 180];
+    let consecutiveEmpty = 0;
+    let totalFailures = 0;
+    const MAX_EMPTY = 3;
+    const MAX_FAILURES = 5;
+
+    const RETRY_DELAYS_NORMAL = [5, 15, 30, 60, 120];
+    const RETRY_DELAYS_RATE_LIMIT = [60, 120, 300, 600];
     let retryCount = 0;
 
     for (let i = 0; i < this.maxIterations; i++) {
@@ -143,14 +169,39 @@ export class AgentLoop {
       try {
         response = await this.provider.chat(optimizedMessages, this.registry.getToolDefs());
         retryCount = 0;
+        totalFailures = 0;
       } catch (e: any) {
-        if (retryCount >= RETRY_DELAYS.length) {
-          yield { type: 'error', data: `Provider failed after ${retryCount} retries. Last error: ${e.message}` };
+        totalFailures++;
+        if (totalFailures >= MAX_FAILURES) {
+          yield { type: 'error', data: `Provider failed ${totalFailures} times. Last error: ${e.message}\nStopping. Try: /login, /model <id>, or /doctor.` };
           return;
         }
-        const delay = RETRY_DELAYS[retryCount];
+
+        const errType = classifyError(e);
+
+        if (errType === 'auth') {
+          yield { type: 'error', data: `Authentication failed: ${e.message}\nRun /login to update credentials or /model <id> to switch models.` };
+          return;
+        }
+
+        if (errType === 'context_length') {
+          yield { type: 'compact', data: 'Context too long — emergency compacting...' };
+          this.messages = await this.contextManager.compact(this.messages);
+          i--;
+          continue;
+        }
+
+        const delays = errType === 'rate_limit' ? RETRY_DELAYS_RATE_LIMIT : RETRY_DELAYS_NORMAL;
+        if (retryCount >= delays.length) {
+          yield { type: 'error', data: `Provider failed after ${retryCount} retries. Error: ${e.message}\nStopping.` };
+          return;
+        }
+
+        const delay = delays[retryCount];
         retryCount++;
-        yield { type: 'text', data: `⏳ Retry ${retryCount}/10 — waiting ${delay}s... (${e.message?.slice(0, 80) || 'error'})` };
+        const label = errType === 'rate_limit' ? 'rate limited' : errType === 'network' ? 'network error' : 'error';
+        yield { type: 'text', data: `⏳ ${label} — retry ${retryCount}/${delays.length}, waiting ${delay}s...` };
+
         for (let s = 0; s < delay; s++) {
           if (this.interrupted) {
             this.interrupted = false;
@@ -170,13 +221,14 @@ export class AgentLoop {
       }
 
       if (!response.text && response.toolCalls.length === 0) {
-        if (retryCount >= RETRY_DELAYS.length) {
-          yield { type: 'error', data: `Provider returned empty response after ${retryCount} retries (model: ${this.config.model}).\nTry: /login to update credentials, /model <id> to switch, or /doctor to diagnose.` };
+        consecutiveEmpty++;
+        if (consecutiveEmpty >= MAX_EMPTY) {
+          yield { type: 'error', data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nStopping. Try: /login, /model <id>, or /doctor.` };
           return;
         }
-        const delay = RETRY_DELAYS[retryCount];
+        const delay = RETRY_DELAYS_NORMAL[Math.min(retryCount, RETRY_DELAYS_NORMAL.length - 1)];
         retryCount++;
-        yield { type: 'text', data: `⏳ Empty response — retry ${retryCount}/10, waiting ${delay}s...` };
+        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — retry in ${delay}s...` };
         for (let s = 0; s < delay; s++) {
           if (this.interrupted) {
             this.interrupted = false;
@@ -188,6 +240,8 @@ export class AgentLoop {
         i--;
         continue;
       }
+
+      consecutiveEmpty = 0;
 
       if (response.toolCalls.length > 0) {
         this.messages.push({
@@ -231,44 +285,55 @@ export class AgentLoop {
         const readOnlyCalls = response.toolCalls.filter(c => READ_ONLY_TOOLS.has(c.name));
         const writeCalls = response.toolCalls.filter(c => !READ_ONLY_TOOLS.has(c.name));
 
-        if (readOnlyCalls.length > 1) {
-          yield { type: 'tool_start', data: `Executing ${readOnlyCalls.length} read operations concurrently`, toolName: 'batch' };
-
-          const results = await Promise.all(readOnlyCalls.map(async (call) => {
+        if (readOnlyCalls.length > 0) {
+          if (readOnlyCalls.length === 1) {
+            const call = readOnlyCalls[0];
+            yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
             try {
               const result = await this.registry.execute(call.name, call.arguments);
-              return { call, result };
+              const processed = processResult(result, call.name);
+              this._outputTokens += Math.ceil(processed.length / 4);
+              yield { type: 'tool_end', data: processed, toolName: call.name };
+              this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
             } catch (e: any) {
-              return { call, result: `Error executing ${call.name}: ${e.message}\n\nIf this tool failed, try a different approach: use search_files to find the file, read_file to read it, or terminal to run commands.` };
+              const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
+              this._outputTokens += Math.ceil(errMsg.length / 4);
+              yield { type: 'tool_end', data: errMsg, toolName: call.name };
+              this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
             }
-          }));
+          } else {
+            yield { type: 'tool_start', data: `Executing ${readOnlyCalls.length} reads concurrently`, toolName: 'batch' };
 
-          for (const { call, result } of results) {
-            if (this.interrupted) {
-              this.interrupted = false;
-              yield { type: 'error', data: 'Interrupted during batch tool execution.' };
-              return;
+            const results = await Promise.all(readOnlyCalls.map(async (call) => {
+              try {
+                const result = await this.registry.execute(call.name, call.arguments);
+                return { call, result, error: null as any };
+              } catch (e: any) {
+                return { call, result: '', error: e };
+              }
+            }));
+
+            for (const { call, result, error } of results) {
+              if (this.interrupted) {
+                this.interrupted = false;
+                yield { type: 'error', data: 'Interrupted during tool execution.' };
+                return;
+              }
+
+              yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
+
+              if (error) {
+                const errMsg = `Error executing ${call.name}: ${error.message}\n\nTry a different approach.`;
+                this._outputTokens += Math.ceil(errMsg.length / 4);
+                yield { type: 'tool_end', data: errMsg, toolName: call.name };
+                this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
+              } else {
+                const processed = processResult(result, call.name);
+                this._outputTokens += Math.ceil(processed.length / 4);
+                yield { type: 'tool_end', data: processed, toolName: call.name };
+                this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
+              }
             }
-
-            const processed = processResult(result, call.name);
-            this._outputTokens += Math.ceil(processed.length / 4);
-            yield { type: 'tool_end', data: processed, toolName: call.name };
-            this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
-          }
-        } else if (readOnlyCalls.length === 1) {
-          const call = readOnlyCalls[0];
-          yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
-          try {
-            const result = await this.registry.execute(call.name, call.arguments);
-            const processed = processResult(result, call.name);
-            this._outputTokens += Math.ceil(processed.length / 4);
-            yield { type: 'tool_end', data: processed, toolName: call.name };
-            this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
-          } catch (e: any) {
-            const errMsg = `Error executing ${call.name}: ${e.message}\n\nIf this tool failed, diagnose why before retrying: check the file path, verify the pattern, or try an alternative approach.`;
-            this._outputTokens += Math.ceil(errMsg.length / 4);
-            yield { type: 'tool_end', data: errMsg, toolName: call.name };
-            this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
           }
         }
 
@@ -285,7 +350,7 @@ export class AgentLoop {
           try {
             result = await this.registry.execute(call.name, call.arguments);
           } catch (e: any) {
-            result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying. Check file paths, permissions, and whether the target exists.`;
+            result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying.`;
           }
           result = processResult(result, call.name);
           result = addPostExecutionHint(result, call.name, call.arguments);

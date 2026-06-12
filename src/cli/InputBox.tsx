@@ -303,8 +303,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
     if (text) {
       const lines = text.split('\n');
-      if (lines.length > 2) {
-        const placeholder = `[pasted ${lines.length} lines]`;
+      if (lines.length >= 2 || text.length > 200) {
+        const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
         pastedBlocks.set(placeholder, text);
         setValue(prev => prev + placeholder);
         setCursor(prev => prev + placeholder.length);
@@ -439,8 +439,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           if (!text) return;
           const clean = text.replace(/\r\n/g, '\n').trimEnd();
           const lines = clean.split('\n');
-          if (lines.length > 2) {
-            const placeholder = `[pasted ${lines.length} lines]`;
+          if (lines.length >= 2 || clean.length > 200) {
+            const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
             pastedBlocks.set(placeholder, clean);
             setValue(prev => prev.slice(0, insertAt) + placeholder + prev.slice(insertAt));
             setCursor(insertAt + placeholder.length);
