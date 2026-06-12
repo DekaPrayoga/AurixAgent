@@ -313,9 +313,43 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
 
   let detail = '';
   if (args) {
-    if (name === 'bash' && args.command) {
+    if ((name === 'terminal' || name === 'bash') && args.command) {
       const cmd = String(args.command);
-      detail = cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd;
+      detail = cmd.length > 100 ? cmd.slice(0, 97) + '...' : cmd;
+    } else if (name === 'file_edit' && (args.file_path || args.path)) {
+      const file = String(args.file_path || args.path || '');
+      const shortFile = file.split('/').pop() || file;
+      const oldStr = args.old_string ? String(args.old_string).slice(0, 30) : '';
+      const newStr = args.new_string ? String(args.new_string).slice(0, 30) : '';
+      if (oldStr && newStr) {
+        detail = `${shortFile} "${oldStr}..." → "${newStr}..."`;
+      } else {
+        detail = file;
+      }
+    } else if (name === 'write_file' && (args.file_path || args.path)) {
+      detail = String(args.file_path || args.path || '');
+    } else if (name === 'read_file' && (args.file_path || args.path)) {
+      const file = String(args.file_path || args.path || '');
+      const offset = args.offset ? ` :${args.offset}` : '';
+      detail = file + offset;
+    } else if (name === 'search_files') {
+      const pattern = args.pattern ? String(args.pattern) : '';
+      const path = args.path ? ` in ${String(args.path)}` : '';
+      detail = pattern + path;
+    } else if (name === 'browser') {
+      const action = args.action ? String(args.action) : '';
+      const target = args.target ? ` → ${String(args.target).slice(0, 40)}` : '';
+      const value = args.value ? ` "${String(args.value).slice(0, 30)}"` : '';
+      detail = action + target + value;
+    } else if (name === 'web_search' && args.query) {
+      detail = String(args.query);
+    } else if (name === 'research') {
+      const depth = args.depth ? ` (${String(args.depth)})` : '';
+      const query = args.query ? String(args.query).slice(0, 50) : '';
+      detail = query + depth;
+    } else if (name === 'research_forums') {
+      const sources = args.sources ? String(args.sources) : 'all';
+      detail = `sources: ${sources}`;
     } else if (args.file_path || args.path) {
       detail = String(args.file_path || args.path || '');
     } else if (args.pattern) {

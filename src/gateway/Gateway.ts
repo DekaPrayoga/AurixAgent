@@ -170,7 +170,8 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
 
   if (toolName === 'research') {
     const depth = args?.depth ? String(args.depth) : 'standard';
-    return `🔬 Deep research (${depth} depth)...`;
+    const query = args?.query ? String(args.query).slice(0, 60) : '';
+    return `🔬 Deep research: ${query} (${depth} depth)...`;
   }
 
   if (toolName === 'web_search') {
@@ -179,19 +180,39 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
   }
 
   if (toolName === 'terminal' || toolName === 'bash') {
-    const cmd = args?.command ? String(args.command).slice(0, 80) : '';
+    const cmd = args?.command ? String(args.command).slice(0, 100) : '';
     return `🔧 Running: ${cmd}...`;
   }
 
   if (toolName === 'browser') {
-    const url = args?.url ? String(args.url).slice(0, 60) : '';
-    return `🌐 Browsing: ${url}...`;
+    const action = args?.action ? String(args.action) : '';
+    const target = args?.target ? ` → ${String(args.target).slice(0, 40)}` : '';
+    const value = args?.value ? ` "${String(args.value).slice(0, 30)}"` : '';
+    return `🌐 Browser: ${action}${target}${value}...`;
   }
 
-  if (toolName === 'read_file' || toolName === 'write_file') {
+  if (toolName === 'read_file') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `📄 ${toolName === 'read_file' ? 'Reading' : 'Writing'}: ${shortFile}...`;
+    return `📄 Reading: ${shortFile}...`;
+  }
+
+  if (toolName === 'write_file') {
+    const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
+    const shortFile = String(file).split('/').pop() || file;
+    return `📄 Writing: ${shortFile}...`;
+  }
+
+  if (toolName === 'file_edit') {
+    const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
+    const shortFile = String(file).split('/').pop() || file;
+    return `✏️ Editing: ${shortFile}...`;
+  }
+
+  if (toolName === 'search_files') {
+    const pattern = args?.pattern ? String(args.pattern).slice(0, 40) : '';
+    const path = args?.path ? ` in ${String(args.path)}` : '';
+    return `🔍 Searching: ${pattern}${path}...`;
   }
 
   return formatStatus('tool_start', toolName);
@@ -454,23 +475,28 @@ export class Gateway extends EventEmitter {
       await platform.send(statusMsg, msg.channelId, msg.replyTo);
 
       let lastStatusUpdate = Date.now();
+      let lastToolStatus = '';
 
       for await (const event of agent.run(taggedPrompt)) {
         if (event.type === 'tool_start') {
-          const now = Date.now();
-          if (now - lastStatusUpdate > 2000) {
-            statusMsg = formatToolStatus(event.toolName || event.data, event.toolArgs);
-            await platform.send(statusMsg, msg.channelId, msg.replyTo);
-            lastStatusUpdate = now;
+          const newStatus = formatToolStatus(event.toolName || event.data, event.toolArgs);
+          if (newStatus !== lastToolStatus) {
+            await platform.send(newStatus, msg.channelId, msg.replyTo);
+            lastToolStatus = newStatus;
+            lastStatusUpdate = Date.now();
           }
         } else if (event.type === 'text') {
           fullResponse += event.data;
           const now = Date.now();
-          if (now - lastStatusUpdate > 3000 && fullResponse.length > 50) {
+          if (now - lastStatusUpdate > 5000 && fullResponse.length > 50) {
             statusMsg = formatStatus('text');
             await platform.send(statusMsg, msg.channelId, msg.replyTo);
             lastStatusUpdate = now;
           }
+        } else if (event.type === 'error') {
+          await platform.send(`❌ ${event.data}`, msg.channelId, msg.replyTo);
+        } else if (event.type === 'compact') {
+          await platform.send(`📦 ${event.data}`, msg.channelId, msg.replyTo);
         }
       }
 
