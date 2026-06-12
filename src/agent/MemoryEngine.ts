@@ -179,15 +179,100 @@ export class MemoryEngine {
       if (msg.role === 'user') {
         const lower = msg.content.toLowerCase();
         if (/^(i am|i'm|my name is|call me|prefer|always|never|i like|i use|i work)/i.test(lower)) {
-          facts.push(stripCredentials(msg.content.slice(0, 300)));
+          facts.push(`[preference] ${stripCredentials(msg.content.slice(0, 300))}`);
         }
         if (/remember|keep in mind|note that/i.test(lower)) {
-          facts.push(stripCredentials(msg.content.slice(0, 300)));
+          facts.push(`[instruction] ${stripCredentials(msg.content.slice(0, 300))}`);
+        }
+        if (/jangan|don't|ga usah|gausa|stop doing|wrong|salah|bukan gitu/i.test(lower)) {
+          facts.push(`[correction] ${stripCredentials(msg.content.slice(0, 300))}`);
+        }
+        if (/pake|gunakan|use .* instead|better to|lebih baik/i.test(lower)) {
+          facts.push(`[preference] ${stripCredentials(msg.content.slice(0, 300))}`);
+        }
+      }
+
+      if (msg.role === 'tool' && msg.content) {
+        const content = msg.content;
+        if (content.includes('Error:') || content.includes('error TS')) {
+          const errorLine = content.split('\n').find(l => l.includes('Error')) || '';
+          if (errorLine.length > 10) {
+            facts.push(`[error-pattern] ${stripCredentials(errorLine.slice(0, 200))}`);
+          }
+        }
+        if (content.includes('Build successful') || content.includes('exit: 0') || content.includes('All tests passed')) {
+          facts.push(`[build-success] ${stripCredentials(content.slice(0, 150))}`);
+        }
+      }
+
+      if (msg.role === 'assistant' && msg.content) {
+        const lower = msg.content.toLowerCase();
+        if (lower.includes('the fix is') || lower.includes('the solution') || lower.includes('resolved by')) {
+          const sentence = msg.content.split(/[.!]\s/).find(s => /fix|solution|resolved/i.test(s)) || '';
+          if (sentence.length > 20) {
+            facts.push(`[fix] ${stripCredentials(sentence.slice(0, 300))}`);
+          }
+        }
+        if (msg.toolCalls?.length) {
+          for (const tc of msg.toolCalls) {
+            if (tc.name === 'file_edit' || tc.name === 'write_file') {
+              const fp = (tc.arguments.file_path || tc.arguments.path || '') as string;
+              if (fp) facts.push(`[file-edited] ${fp}`);
+            }
+          }
         }
       }
     }
 
-    return facts;
+    const seen = new Set<string>();
+    return facts.filter(f => {
+      const key = f.slice(0, 80);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  extractSessionLearnings(messages: Message[]): string {
+    const entries: string[] = [];
+    const filesEdited: string[] = [];
+    const errorsEncountered: string[] = [];
+    const toolsUsed = new Set<string>();
+
+    for (const msg of messages) {
+      if (msg.role === 'assistant' && msg.toolCalls) {
+        for (const tc of msg.toolCalls) {
+          toolsUsed.add(tc.name);
+          if ((tc.name === 'file_edit' || tc.name === 'write_file') && (tc.arguments.file_path || tc.arguments.path)) {
+            filesEdited.push(String(tc.arguments.file_path || tc.arguments.path));
+          }
+        }
+      }
+      if (msg.role === 'tool' && msg.content && (msg.content.includes('Error') || msg.content.includes('error'))) {
+        const firstLine = msg.content.split('\n')[0]?.slice(0, 150) || '';
+        if (firstLine && !errorsEncountered.includes(firstLine)) {
+          errorsEncountered.push(firstLine);
+        }
+      }
+    }
+
+    if (toolsUsed.size > 0) {
+      entries.push(`Tools used: ${[...toolsUsed].join(', ')}`);
+    }
+    if (filesEdited.length > 0) {
+      const unique = [...new Set(filesEdited)].slice(0, 10);
+      entries.push(`Files modified: ${unique.join(', ')}`);
+    }
+    if (errorsEncountered.length > 0) {
+      entries.push(`Errors encountered:\n${errorsEncountered.slice(0, 5).map(e => `  - ${e}`).join('\n')}`);
+    }
+
+    const facts = this.extractNotableFacts(messages);
+    if (facts.length > 0) {
+      entries.push(`Learned:\n${facts.slice(0, 10).map(f => `  - ${f}`).join('\n')}`);
+    }
+
+    return entries.join('\n');
   }
 
   async consolidate(): Promise<void> {

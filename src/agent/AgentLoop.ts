@@ -487,10 +487,10 @@ export class AgentLoop {
   saveSession(sessionId?: string): string {
     try {
       const id = this.memoryEngine.saveSession(this.messages, sessionId);
-      const facts = this.memoryEngine.extractNotableFacts(this.messages);
-      if (facts.length > 0) {
+      const learnings = this.memoryEngine.extractSessionLearnings(this.messages);
+      if (learnings) {
         this.memoryEngine.appendRaw(
-          '# Notable facts from session\n' + facts.map(f => `- ${f}`).join('\n')
+          `# Session learnings (${new Date().toLocaleDateString()})\n${learnings}`
         );
       }
       return id;
