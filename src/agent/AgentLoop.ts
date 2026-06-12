@@ -6,6 +6,7 @@ import type { AurixConfig } from './Config.js';
 import { buildSystemPrompt } from './Context.js';
 import type { Provider, Message } from '../providers/index.js';
 import { createProvider } from '../providers/index.js';
+import { countTokens } from './TokenCounter.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
 import { ContextManager } from './ContextManager.js';
@@ -149,7 +150,7 @@ export class AgentLoop {
     }
 
     this.messages.push({ role: 'user', content: userMessage });
-    this._inputTokens += Math.ceil(userMessage.length / 4);
+    this._inputTokens += countTokens(userMessage);
 
     if (this.contextManager.shouldCompact(this.messages)) {
       yield { type: 'compact', data: 'Context nearing limit — compacting history...' };
@@ -247,6 +248,11 @@ export class AgentLoop {
 
       consecutiveEmpty = 0;
 
+      if (response.usage) {
+        this._inputTokens = response.usage.promptTokens;
+        this._outputTokens += response.usage.completionTokens;
+      }
+
       if (response.toolCalls.length > 0) {
         this.messages.push({
           role: 'assistant',
@@ -255,7 +261,7 @@ export class AgentLoop {
         });
 
         if (response.text) {
-          this._outputTokens += Math.ceil(response.text.length / 4);
+          this._outputTokens += countTokens(response.text);
           yield { type: 'text', data: response.text };
         }
 
@@ -296,12 +302,12 @@ export class AgentLoop {
             try {
               const result = await this.registry.execute(call.name, call.arguments);
               const processed = processResult(result, call.name);
-              this._outputTokens += Math.ceil(processed.length / 4);
+              this._outputTokens += countTokens(processed);
               yield { type: 'tool_end', data: processed, toolName: call.name };
               this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
             } catch (e: any) {
               const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
-              this._outputTokens += Math.ceil(errMsg.length / 4);
+              this._outputTokens += countTokens(errMsg);
               yield { type: 'tool_end', data: errMsg, toolName: call.name };
               this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
             }
@@ -328,12 +334,12 @@ export class AgentLoop {
 
               if (error) {
                 const errMsg = `Error executing ${call.name}: ${error.message}\n\nTry a different approach.`;
-                this._outputTokens += Math.ceil(errMsg.length / 4);
+                this._outputTokens += countTokens(errMsg);
                 yield { type: 'tool_end', data: errMsg, toolName: call.name };
                 this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
               } else {
                 const processed = processResult(result, call.name);
-                this._outputTokens += Math.ceil(processed.length / 4);
+                this._outputTokens += countTokens(processed);
                 yield { type: 'tool_end', data: processed, toolName: call.name };
                 this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
               }
@@ -358,7 +364,7 @@ export class AgentLoop {
           }
           result = processResult(result, call.name);
           result = addPostExecutionHint(result, call.name, call.arguments);
-          this._outputTokens += Math.ceil(result.length / 4);
+          this._outputTokens += countTokens(result);
 
           yield { type: 'tool_end', data: result, toolName: call.name };
 

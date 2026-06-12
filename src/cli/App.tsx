@@ -416,7 +416,8 @@ Supervisor auto-routes tasks to the right specialist(s).`);
 
       if (commandName === 'cost') {
         const stats = agent.getContextStats();
-        addAssistant(`Session cost estimate:\n  Tokens used: ${stats.totalTokens.toLocaleString()}\n  Messages: ${stats.messageCount}\n  Compactions: ${stats.compactedCount}\n\nActual cost depends on your provider's pricing.`);
+        const tokens = agent.getTokenStats();
+        addAssistant(`Session token usage:\n  Input tokens:  ${tokens.input.toLocaleString()}\n  Output tokens: ${tokens.output.toLocaleString()}\n  Context:       ${tokens.total.toLocaleString()} (~${tokens.pct}%)\n  Messages:      ${stats.messageCount} (${stats.compactedCount} compactions)\n\nActual cost depends on your provider's pricing.`);
         return;
       }
 
@@ -697,7 +698,8 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         return;
       } else if (commandName === 'usage') {
         const stats = agent.getContextStats();
-        addAssistant(`Token usage: ${stats.totalTokens.toLocaleString()}\nMessages: ${stats.messageCount}\nCompactions: ${stats.compactedCount}\nContext: ~${stats.estimatedPct}%`);
+        const tokens = agent.getTokenStats();
+        addAssistant(`Token usage:\n  Input:  ${tokens.input.toLocaleString()}\n  Output: ${tokens.output.toLocaleString()}\n  Context: ${tokens.total.toLocaleString()} (~${tokens.pct}%)\n  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)`);
         return;
       } else if (commandName === 'agents' || commandName === 'tasks') {
         if (agent.isMultiAgent()) {

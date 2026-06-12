@@ -30,3 +30,17 @@ try {
 } catch (e) {
   console.warn('[postinstall] CloakBrowser binary download skipped:', e.message);
 }
+
+import { execSync } from 'child_process';
+import { existsSync } from 'fs';
+
+const nativeDir = join(__dirname, '..', 'native', 'token-counter');
+try {
+  if (existsSync(nativeDir)) {
+    console.log('[postinstall] Building Rust token counter...');
+    execSync('npx napi build --release --platform', { cwd: nativeDir, stdio: 'inherit' });
+    console.log('[postinstall] Rust token counter built successfully');
+  }
+} catch (e) {
+  console.warn('[postinstall] Rust token counter build failed (fallback will be used):', e.message);
+}

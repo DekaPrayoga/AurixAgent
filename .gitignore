@@ -21,3 +21,7 @@ hello.o
 
 # Unrelated files
 jurnal-pupuk.*
+
+# Native modules
+*.node
+native/token-counter/target/

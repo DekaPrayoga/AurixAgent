@@ -1,4 +1,5 @@
 import type { Provider, Message } from '../providers/index.js';
+import { countTokens } from './TokenCounter.js';
 
 export interface ContextStats {
   totalTokens: number;
@@ -38,7 +39,7 @@ export class ContextManager {
   estimateTokens(messages: Message[]): number {
     let total = 0;
     for (const msg of messages) {
-      total += Math.ceil(msg.content.length / 4);
+      total += countTokens(msg.content);
       if (msg.role === 'system') total += 4;
       if (msg.toolCallId) total += 7;
     }
@@ -145,7 +146,7 @@ export class ContextManager {
     const kept: Message[] = [];
 
     for (let i = rest.length - 1; i >= 0; i--) {
-      const msgTokens = Math.ceil(rest[i].content.length / 4);
+      const msgTokens = countTokens(rest[i].content);
       if (tokens + msgTokens > limit && kept.length > 2) break;
       kept.unshift(rest[i]);
       tokens += msgTokens;

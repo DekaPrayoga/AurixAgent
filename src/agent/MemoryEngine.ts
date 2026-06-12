@@ -4,6 +4,7 @@ import os from 'os';
 import crypto from 'crypto';
 import type { Message } from '../providers/index.js';
 import type { Provider } from '../providers/index.js';
+import { countTokens } from './TokenCounter.js';
 
 function generateUUID(): string {
   return crypto.randomUUID();
@@ -42,7 +43,7 @@ function stripCredentials(text: string): string {
 }
 
 function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return countTokens(text);
 }
 
 function trimToTokenBudget(text: string, maxTokens: number): string {
@@ -54,7 +55,7 @@ function trimToTokenBudget(text: string, maxTokens: number): string {
   let currentTokens = 0;
 
   for (const line of lines) {
-    const lineTokens = Math.ceil(line.length / 4);
+    const lineTokens = countTokens(line);
     if (currentTokens + lineTokens > maxTokens) break;
     result += line + '\n';
     currentTokens += lineTokens;
