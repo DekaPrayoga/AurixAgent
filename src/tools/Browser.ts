@@ -24,14 +24,35 @@ async function ensureBrowser(): Promise<Page> {
         headless: true,
         viewport: { width: 1280, height: 720 },
         args: ['-width=1280', '-height=720'],
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
       })
     : chromium.launchPersistentContext(PROFILE_DIR, {
         headless: true,
         viewport: { width: 1280, height: 720 },
-        args: ['--no-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-features=IsolateOrigins,site-per-process',
+        ],
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       }));
 
   page = context.pages()[0] || await context.newPage();
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'id'] });
+    (window as any).chrome = { runtime: {} };
+    const origQuery = (window as any).Permissions?.prototype?.query;
+    if (origQuery) {
+      (window as any).Permissions.prototype.query = (params: any) =>
+        params.name === 'notifications'
+          ? Promise.resolve({ state: Notification.permission } as any)
+          : origQuery(params);
+    }
+  });
+
   return page;
 }
 
@@ -71,7 +92,11 @@ export const browserTool: Tool = {
   name: 'browser',
   description: `Control a real browser (Firefox/Chromium) with persistent profile — cookies, sessions, and logged-in accounts survive across runs. Use this for web automation, form filling, account registration, reading emails in Gmail, scraping authenticated pages, and any task requiring a real browser session.
 
-Actions: navigate, click, fill, type, screenshot, snapshot, text, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, status, close.
+Actions: navigate, click, fill, type, screenshot, snapshot, text, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, status, close.
+
+Captcha solving: Use "detect-captcha" to scan for captchas on the page. Use "solve-captcha" to attempt auto-solving (supports reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha, and image captchas). Checkbox captchas are auto-clicked; image challenges are screenshot for AI vision analysis.
+
+Stealth: Browser uses anti-detection measures (spoofed webdriver, plugins, user-agent) to reduce bot detection by captcha systems.
 
 Target resolution: CSS selectors (#id, .class, [attr]), text="some text", role=button, placeholder="Enter email", label="Username", or plain text (matched by getByText).
 
@@ -356,8 +381,184 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           return `Uploaded file: ${value}`;
         }
 
+        case 'detect-captcha': {
+          const p = await ensureBrowser();
+          const frames = p.frames();
+          const captchaInfo: string[] = [];
+
+          for (const frame of frames) {
+            const url = frame.url();
+            if (url.includes('recaptcha') || url.includes('google.com/recaptcha')) {
+              captchaInfo.push(`reCAPTCHA iframe: ${url.slice(0, 100)}`);
+            }
+            if (url.includes('hcaptcha') || url.includes('newassets.hcaptcha')) {
+              captchaInfo.push(`hCaptcha iframe: ${url.slice(0, 100)}`);
+            }
+            if (url.includes('funcaptcha') || url.includes('arkoselabs')) {
+              captchaInfo.push(`FunCaptcha iframe: ${url.slice(0, 100)}`);
+            }
+            if (url.includes('geetest') || url.includes('captcha.com')) {
+              captchaInfo.push(`GeeTest iframe: ${url.slice(0, 100)}`);
+            }
+          }
+
+          const pageContent = await p.content();
+          if (pageContent.includes('g-recaptcha') || pageContent.includes('recaptcha')) captchaInfo.push('reCAPTCHA element detected in DOM');
+          if (pageContent.includes('h-captcha') || pageContent.includes('hcaptcha')) captchaInfo.push('hCaptcha element detected in DOM');
+          if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare')) captchaInfo.push('Cloudflare Turnstile detected');
+          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image captcha detected (may need manual solving)');
+
+          if (captchaInfo.length === 0) return 'No captcha detected on this page.';
+          return `Captcha detected:\n${captchaInfo.map(c => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to attempt solving.`;
+        }
+
+        case 'solve-captcha': {
+          const p = await ensureBrowser();
+          const results: string[] = [];
+
+          const frames = p.frames();
+          let captchaFrame: typeof frames[0] | null = null;
+          let captchaType = 'unknown';
+
+          for (const frame of frames) {
+            const url = frame.url();
+            if (url.includes('recaptcha') || url.includes('google.com/recaptcha')) {
+              captchaFrame = frame;
+              captchaType = 'recaptcha';
+              break;
+            }
+            if (url.includes('hcaptcha') || url.includes('newassets.hcaptcha')) {
+              captchaFrame = frame;
+              captchaType = 'hcaptcha';
+              break;
+            }
+            if (url.includes('funcaptcha') || url.includes('arkoselabs')) {
+              captchaFrame = frame;
+              captchaType = 'funcaptcha';
+              break;
+            }
+          }
+
+          const pageContent = await p.content();
+          if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare')) {
+            captchaType = 'turnstile';
+          }
+
+          if (captchaType === 'recaptcha') {
+            results.push('Attempting reCAPTCHA checkbox...');
+            try {
+              const checkbox = captchaFrame!.locator('#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox');
+              if (await checkbox.count() > 0) {
+                await p.waitForTimeout(1000 + Math.random() * 1500);
+                await checkbox.first().click({ force: true });
+                await p.waitForTimeout(3000);
+
+                const challengeFrame = frames.find(f => f.url().includes('bframe'));
+                if (challengeFrame) {
+                  results.push('reCAPTCHA challenge appeared (image selection required).');
+                  const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                  await p.screenshot({ path: screenshotPath });
+                  results.push(`Challenge screenshot saved: ${screenshotPath}`);
+                  results.push('Image challenge needs AI vision or manual solving. Use "screenshot" to view and solve manually.');
+                } else {
+                  const checkmark = captchaFrame!.locator('.recaptcha-checkbox-checked, .rc-anchor-checkbox-checked');
+                  if (await checkmark.count() > 0) {
+                    results.push('reCAPTCHA checkbox solved!');
+                  } else {
+                    results.push('Checkbox clicked but verification unclear. Check with screenshot.');
+                  }
+                }
+              } else {
+                results.push('reCAPTCHA checkbox not found in iframe. Trying main page...');
+                const mainCheckbox = p.locator('.g-recaptcha, [data-sitekey]');
+                if (await mainCheckbox.count() > 0) {
+                  await mainCheckbox.first().click({ force: true });
+                  await p.waitForTimeout(3000);
+                  results.push('Clicked reCAPTCHA widget on main page.');
+                }
+              }
+            } catch (e: any) {
+              results.push(`reCAPTCHA click failed: ${e.message}`);
+            }
+          }
+
+          if (captchaType === 'hcaptcha') {
+            results.push('Attempting hCaptcha checkbox...');
+            try {
+              const checkbox = captchaFrame!.locator('#checkbox, .check');
+              if (await checkbox.count() > 0) {
+                await p.waitForTimeout(800 + Math.random() * 1200);
+                await checkbox.first().click({ force: true });
+                await p.waitForTimeout(3000);
+
+                const challengeFrame = frames.find(f => f.url().includes('hcaptcha') && f.url().includes('challenge'));
+                if (challengeFrame && challengeFrame !== captchaFrame) {
+                  results.push('hCaptcha image challenge appeared.');
+                  const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                  await p.screenshot({ path: screenshotPath });
+                  results.push(`Challenge screenshot saved: ${screenshotPath}`);
+                  results.push('Image challenge needs AI vision or manual solving.');
+                } else {
+                  results.push('hCaptcha checkbox clicked. Check if solved with screenshot.');
+                }
+              }
+            } catch (e: any) {
+              results.push(`hCaptcha click failed: ${e.message}`);
+            }
+          }
+
+          if (captchaType === 'turnstile') {
+            results.push('Attempting Cloudflare Turnstile...');
+            try {
+              const turnstileFrame = frames.find(f => f.url().includes('challenges.cloudflare'));
+              if (turnstileFrame) {
+                await p.waitForTimeout(1500 + Math.random() * 1000);
+                const cb = turnstileFrame.locator('input[type="checkbox"], .cb-lb');
+                if (await cb.count() > 0) {
+                  await cb.first().click({ force: true });
+                  await p.waitForTimeout(3000);
+                  results.push('Turnstile checkbox clicked.');
+                } else {
+                  await turnstileFrame.locator('body').click();
+                  await p.waitForTimeout(3000);
+                  results.push('Turnstile frame clicked (managed challenge).');
+                }
+              }
+            } catch (e: any) {
+              results.push(`Turnstile failed: ${e.message}`);
+            }
+          }
+
+          if (captchaType === 'unknown') {
+            const imgCaptcha = p.locator('img[src*="captcha"], #captcha-image, .captcha-image, img.captcha');
+            if (await imgCaptcha.count() > 0) {
+              results.push('Image-based captcha detected.');
+              const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+              await imgCaptcha.first().screenshot({ path: screenshotPath });
+              results.push(`Captcha image saved: ${screenshotPath}`);
+              results.push('Read the text from the image and use "fill" to type it into the captcha input field.');
+
+              const input = p.locator('input[name*="captcha"], input[id*="captcha"], input[placeholder*="captcha" i], input[placeholder*="code" i]');
+              if (await input.count() > 0) {
+                const name = await input.first().getAttribute('name') || await input.first().getAttribute('id') || 'captcha input';
+                results.push(`Captcha input field found: ${name}`);
+              }
+            } else {
+              results.push('No recognizable captcha found. Taking full page screenshot...');
+              const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+              await p.screenshot({ path: screenshotPath });
+              results.push(`Screenshot saved: ${screenshotPath}`);
+            }
+          }
+
+          const screenshotPath = join(homedir(), '.aurix-captcha-after.png');
+          await p.screenshot({ path: screenshotPath });
+          results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
+          return results.join('\n');
+        }
+
         default:
-          return `Unknown action: "${action}". Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, close, status`;
+          return `Unknown action: "${action}". Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, close, status`;
       }
     } catch (e: any) {
       const msg = e.message || String(e);
