@@ -9,15 +9,18 @@ VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SC
 export AURIX_HOME="$SCRIPT_DIR"
 export PATH="$HOME/.bun/bin:$PATH"
 
-# --- runtime detection (OpenTUI requires bun) ---
+# --- runtime detection ---
 RUNTIME=""
 if [ -x "$HOME/.bun/bin/bun" ]; then
   RUNTIME="$HOME/.bun/bin/bun"
 elif command -v bun &>/dev/null; then
   RUNTIME="bun"
+elif command -v node &>/dev/null; then
+  RUNTIME="node"
 else
-  echo -e "\033[38;2;224;108;117merror\033[0m: bun is required (OpenTUI needs bun runtime)"
-  echo "  install bun: curl -fsSL https://bun.sh/install | bash"
+  echo -e "\033[38;2;224;108;117merror\033[0m: node or bun is required"
+  echo "  install node: https://nodejs.org"
+  echo "  install bun:  curl -fsSL https://bun.sh/install | bash"
   exit 1
 fi
 

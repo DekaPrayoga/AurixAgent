@@ -38,10 +38,18 @@
     "url": "https://github.com/DekaPrayoga/AurixAgent/issues"
   },
   "license": "MIT",
+  "files": [
+    "bin/",
+    "dist/",
+    "native/",
+    "scripts/",
+    "README.md"
+  ],
   "scripts": {
     "build": "node scripts/build.cjs",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
+    "prepare": "node scripts/build.cjs",
     "postinstall": "node scripts/postinstall.mjs",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts"

@@ -8,6 +8,7 @@ const DISCORD_COMMANDS = [
   { name: 'cancel', description: 'Stop current task and clear queue' },
   { name: 'title', description: 'Name & save session (auto-random if no name)' },
   { name: 'resume', description: 'Load a saved session' },
+  { name: 'proxy', description: 'Add proxy IPs to browser pool' },
   { name: 'save', description: 'Save session for later resume' },
   { name: 'model', description: 'Switch AI model' },
   { name: 'baseurl', description: 'Change API base URL' },

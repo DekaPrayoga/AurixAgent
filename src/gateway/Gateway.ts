@@ -349,8 +349,13 @@ export class Gateway extends EventEmitter {
       return;
     }
 
-    const proxyLines = text.split('\n').map(l => l.trim()).filter(l => /^\d{1,3}(\.\d{1,3}){3}:\d{1,5}(:[^:\s]+:[^:\s]+)?$/.test(l));
-    if (proxyLines.length > 0 && !cmd) {
+    if (cmd === 'proxy') {
+      const proxyRegex = /^\d{1,3}(\.\d{1,3}){3}:\d{1,5}(:[^:\s]+:[^:\s]+)?$/;
+      const proxyLines = args.split(/[\s\n]+/).map(l => l.trim()).filter(l => proxyRegex.test(l));
+      if (proxyLines.length === 0) {
+        await platform.send('🌐 Usage: /proxy <ip:port:user:pass>\nPaste one or more proxies (one per line).', msg.channelId, msg.replyTo);
+        return;
+      }
       try {
         const config = loadConfig();
         if (!config.browser) config.browser = {};
@@ -364,9 +369,9 @@ export class Gateway extends EventEmitter {
         }
         if (added > 0) {
           saveConfig(config);
-          await platform.send(`🌐 ${added} proxy added to config (total: ${config.browser.proxies.length}).\nBrowser will use them on next session.`, msg.channelId, msg.replyTo);
+          await platform.send(`🌐 ${added} proxy added (total: ${config.browser.proxies.length}).`, msg.channelId, msg.replyTo);
         } else {
-          await platform.send(`🌐 All proxies already in config (total: ${config.browser.proxies!.length}).`, msg.channelId, msg.replyTo);
+          await platform.send(`🌐 All proxies already exist (total: ${config.browser.proxies!.length}).`, msg.channelId, msg.replyTo);
         }
       } catch (e: any) {
         await platform.send(`Failed to save proxies: ${e.message}`, msg.channelId, msg.replyTo);

@@ -110,6 +110,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'cancel', description: '🛑 Stop current task' },
           { command: 'title', description: '💾 Name & save session' },
           { command: 'resume', description: '📂 Load saved session' },
+          { command: 'proxy', description: '🌐 Add proxy to browser pool' },
           { command: 'save', description: '💾 Save session' },
           { command: 'model', description: '🤖 Switch AI model' },
           { command: 'baseurl', description: '🔌 Change API base URL' },
