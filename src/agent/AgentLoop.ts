@@ -85,7 +85,7 @@ export class AgentLoop {
   private registry: ToolRegistry;
   private config: AurixConfig;
   private messages: Message[] = [];
-  private maxIterations = 30;
+  private maxIterations = 200;
   private multiAgentMode = false;
   private multiAgent?: MultiAgentSystem;
   private contextManager: ContextManager;
@@ -120,6 +120,10 @@ export class AgentLoop {
 
   interrupt(): void {
     this.interrupted = true;
+  }
+
+  setMaxIterations(n: number): void {
+    if (n >= 10 && n <= 500) this.maxIterations = n;
   }
 
   getContextStats() {
@@ -380,7 +384,7 @@ export class AgentLoop {
       return;
     }
 
-    yield { type: 'error', data: 'Max iterations reached. Agent stopped.' };
+    yield { type: 'error', data: `Max iterations (${this.maxIterations}) reached. Agent stopped.\nThe task was too complex for the current iteration limit. Try breaking it into smaller steps, or increase the limit with: agent.setMaxIterations(500)` };
   }
 
   private async *runMultiAgent(userMessage: string): AsyncGenerator<AgentEvent> {

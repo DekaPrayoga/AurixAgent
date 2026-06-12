@@ -462,7 +462,7 @@ IMPORTANT: Execute your task fully. Use tools to build, search, analyze. Don't a
 
     const messages: BaseMessage[] = [systemMsg, new HumanMessage(userMessage)];
     let iterations = 0;
-    const maxIterations = 10;
+    const maxIterations = 50;
 
     while (iterations < maxIterations) {
       iterations++;
