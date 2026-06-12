@@ -45,7 +45,59 @@ function pickRandomProxy(): string {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-const PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
+interface GeoInfo {
+  latitude: number;
+  longitude: number;
+  country: string;
+  city: string;
+  timezone: string;
+}
+
+const geoCache = new Map<string, GeoInfo>();
+
+const FALLBACK_GEO: GeoInfo = {
+  latitude: 40.7128,
+  longitude: -74.006,
+  country: 'US',
+  city: 'New York',
+  timezone: 'America/New_York',
+};
+
+async function lookupGeo(ip: string): Promise<GeoInfo> {
+  if (geoCache.has(ip)) return geoCache.get(ip)!;
+  try {
+    const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,lat,lon,country,city,timezone`);
+    const data = await res.json() as any;
+    if (data.status === 'success') {
+      const info: GeoInfo = {
+        latitude: data.lat,
+        longitude: data.lon,
+        country: data.country,
+        city: data.city,
+        timezone: data.timezone,
+      };
+      geoCache.set(ip, info);
+      return info;
+    }
+  } catch {}
+  geoCache.set(ip, FALLBACK_GEO);
+  return FALLBACK_GEO;
+}
+
+async function resolveGeoForProxy(proxyStr: string): Promise<GeoInfo> {
+  if (!proxyStr) return FALLBACK_GEO;
+  const host = proxyStr.split(':')[0];
+  if (geoCache.has(host)) return geoCache.get(host)!;
+  return await lookupGeo(host);
+}
+
+const BASE_PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
+
+function getProfileDir(): string {
+  if (process.env.BROWSER_PERSISTENT_PROFILE === 'true') return BASE_PROFILE_DIR;
+  const suffix = Math.random().toString(36).slice(2, 8);
+  return `${BASE_PROFILE_DIR}-${suffix}`;
+}
 
 const VIEWPORTS = [
   { width: 1280, height: 720 },
@@ -60,15 +112,52 @@ function randomViewport() {
   return VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
 }
 
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
+];
+
+const WEBGL_RENDERERS = [
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+];
+
+function randomPick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
 async function ensureBrowser(): Promise<Page> {
   if (page && !page.isClosed()) return page;
 
   await ensureBinary();
 
+  const profileDir = getProfileDir();
   const vp = randomViewport();
+  const ua = randomPick(USER_AGENTS);
+  const gpu = randomPick(WEBGL_RENDERERS);
+  const screenW = vp.width + [0, 0, 256, 320][Math.floor(Math.random() * 4)];
+  const screenH = Math.round(screenW * (vp.height / vp.width));
+  const sessionNoise = Math.random() * 0.01;
+  const hwConcurrency = randomPick([4, 6, 8, 12, 16]);
+  const devMemory = randomPick([4, 8, 16]);
+  const netDownlink = randomPick([1.5, 3.2, 5.8, 10, 25]);
+  const netRtt = randomPick([50, 100, 150, 200, 250]);
+
+  const activeProxy = browserProxy || pickRandomProxy();
+  const geo = await resolveGeoForProxy(activeProxy);
 
   const launchOpts: Record<string, any> = {
-    userDataDir: PROFILE_DIR,
+    userDataDir: profileDir,
     headless: browserHeadless,
     humanize: true,
     humanPreset: 'careful',
@@ -76,6 +165,12 @@ async function ensureBrowser(): Promise<Page> {
     stealthArgs: true,
     colorScheme: 'light',
     viewport: vp,
+    userAgent: ua,
+    timezone: geo.timezone,
+    contextOptions: {
+      geolocation: { latitude: geo.latitude, longitude: geo.longitude },
+      permissions: ['geolocation'],
+    },
     args: [
       '--disable-webrtc',
       '--disable-rtc-sdp-logs',
@@ -88,10 +183,10 @@ async function ensureBrowser(): Promise<Page> {
       '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-default-browser-check',
+      `--window-size=${vp.width},${vp.height}`,
     ],
   };
 
-  const activeProxy = browserProxy || pickRandomProxy();
   const parts = activeProxy.split(':');
   if (parts.length >= 2) {
     const host = parts[0];
@@ -106,36 +201,104 @@ async function ensureBrowser(): Promise<Page> {
 
   context = await launchPersistentContext(launchOpts as any);
 
-  await context.addInitScript(() => {
-    const fakePc = class { constructor() {} addStream() {} createOffer() { return Promise.resolve({}); } setLocalDescription() { return Promise.resolve(); } setRemoteDescription() { return Promise.resolve(); } addIceCandidate() { return Promise.resolve(); } close() {} };
-    (window as any).RTCPeerConnection = fakePc;
-    (window as any).webkitRTCPeerConnection = fakePc;
-    (window as any).mozRTCPeerConnection = fakePc;
+  await context.addInitScript({
+    content: `(() => {
+      const gpuVendor = ${JSON.stringify(gpu.vendor)};
+      const gpuRenderer = ${JSON.stringify(gpu.renderer)};
+      const sWidth = ${screenW};
+      const sHeight = ${screenH};
+      const hwConc = ${hwConcurrency};
+      const devMem = ${devMemory};
+      const noise = ${sessionNoise};
+      const downlink = ${netDownlink};
+      const rtt = ${netRtt};
 
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      const fakePc = class { constructor() {} addStream() {} createOffer() { return Promise.resolve({}); } setLocalDescription() { return Promise.resolve(); } setRemoteDescription() { return Promise.resolve(); } addIceCandidate() { return Promise.resolve(); } close() {} };
+      window.RTCPeerConnection = fakePc;
+      window.webkitRTCPeerConnection = fakePc;
+      window.mozRTCPeerConnection = fakePc;
 
-    const hwConcurrency = [4, 6, 8, 12][Math.floor(Math.random() * 4)];
-    const devMemory = [4, 8, 16][Math.floor(Math.random() * 3)];
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => hwConcurrency });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => devMemory });
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => hwConc });
+      Object.defineProperty(navigator, 'deviceMemory', { get: () => devMem });
+      Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
 
-    const originalQuery = (window as any).Permissions?.prototype?.query;
-    if (originalQuery) {
-      (window as any).Permissions.prototype.query = (params: any) => {
-        if (params.name === 'notifications') {
-          return Promise.resolve({ state: Notification.permission });
-        }
-        return originalQuery(params);
+      Object.defineProperty(screen, 'width', { get: () => sWidth });
+      Object.defineProperty(screen, 'height', { get: () => sHeight });
+      Object.defineProperty(screen, 'availWidth', { get: () => sWidth });
+      Object.defineProperty(screen, 'availHeight', { get: () => sHeight - 40 });
+      Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+      Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+
+      if (navigator.connection) {
+        Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g' });
+        Object.defineProperty(navigator.connection, 'downlink', { get: () => downlink });
+        Object.defineProperty(navigator.connection, 'rtt', { get: () => rtt });
+        Object.defineProperty(navigator.connection, 'saveData', { get: () => false });
+      }
+
+      const getParameterOrig = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function (param) {
+        if (param === 37445) return gpuVendor;
+        if (param === 37446) return gpuRenderer;
+        return getParameterOrig.call(this, param);
       };
-    }
+      if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParameter2Orig = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function (param) {
+          if (param === 37445) return gpuVendor;
+          if (param === 37446) return gpuRenderer;
+          return getParameter2Orig.call(this, param);
+        };
+      }
 
-    const originalToString = Function.prototype.toString;
-    Function.prototype.toString = function () {
-      if (this === Function.prototype.toString) return 'function toString() { [native code] }';
-      if (this === navigator.permissions.query) return 'function query() { [native code] }';
-      return originalToString.call(this);
-    };
+      const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+      HTMLCanvasElement.prototype.toDataURL = function (type, quality) {
+        const ctx = this.getContext('2d');
+        if (ctx) {
+          const style = ctx.fillStyle;
+          ctx.fillStyle = 'rgba(0,0,0,' + noise + ')';
+          ctx.fillRect(0, 0, 1, 1);
+          ctx.fillStyle = style;
+        }
+        return origToDataURL.apply(this, [type, quality]);
+      };
+
+      const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+      CanvasRenderingContext2D.prototype.getImageData = function (sx, sy, sw, sh) {
+        const data = origGetImageData.call(this, sx, sy, sw, sh);
+        for (let i = 0; i < data.data.length; i += 4) {
+          data.data[i] ^= 1;
+        }
+        return data;
+      };
+
+      if (AudioContext.prototype.createOscillator) {
+        const origCreateOsc = AudioContext.prototype.createOscillator;
+        AudioContext.prototype.createOscillator = function () {
+          const osc = origCreateOsc.call(this);
+          osc._freqOffset = (Math.random() - 0.5) * noise * 10;
+          return osc;
+        };
+      }
+
+      if (window.Permissions && window.Permissions.prototype.query) {
+        const originalQuery = window.Permissions.prototype.query;
+        window.Permissions.prototype.query = function (params) {
+          if (params.name === 'notifications') return Promise.resolve({ state: 'default' });
+          if (params.name === 'geolocation') return Promise.resolve({ state: 'granted' });
+          return originalQuery.call(this, params);
+        };
+      }
+
+      const originalToString = Function.prototype.toString;
+      Function.prototype.toString = function () {
+        if (this === Function.prototype.toString) return 'function toString() { [native code] }';
+        if (this === WebGLRenderingContext.prototype.getParameter) return 'function getParameter() { [native code] }';
+        return originalToString.call(this);
+      };
+    })();`,
   });
 
   page = context.pages()[0] || await context.newPage();
@@ -151,7 +314,7 @@ async function closeBrowser(): Promise<void> {
 }
 
 function describePage(page: Page): string {
-  return `[Browser: Chromium] Profile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${page.title()}`;
+  return `[Browser: Chromium] Profile: ${BASE_PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${page.title()}`;
 }
 
 async function resolveLocator(p: Page, target: string) {
@@ -569,15 +732,15 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
         case 'status': {
           if (!page || page.isClosed()) {
-            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
+            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${BASE_PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
           }
           const title = await page.title();
-          return `Browser: running\nEngine: Chromium\nProfile: ${PROFILE_DIR}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
+          return `Browser: running\nEngine: Chromium\nProfile: ${BASE_PROFILE_DIR}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
         }
 
         case 'close': {
           await closeBrowser();
-          return 'Browser closed. Profile preserved at ' + PROFILE_DIR;
+          return 'Browser closed. Profile preserved at ' + BASE_PROFILE_DIR;
         }
 
         case 'navigate': {
