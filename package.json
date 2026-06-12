@@ -59,6 +59,7 @@
     "cloakbrowser": "^0.3.31",
     "js-yaml": "^4.1.0",
     "langsmith": "^0.7.5",
+    "mmdb-lib": "^3.0.2",
     "openai": "^4.70.0",
     "playwright-core": "^1.60.0",
     "qrcode": "^1.5.4",

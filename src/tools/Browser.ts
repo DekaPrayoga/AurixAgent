@@ -161,7 +161,6 @@ async function ensureBrowser(): Promise<Page> {
     headless: browserHeadless,
     humanize: true,
     humanPreset: 'careful',
-    geoip: true,
     stealthArgs: true,
     colorScheme: 'light',
     viewport: vp,
