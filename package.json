@@ -39,7 +39,7 @@
   },
   "license": "MIT",
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/build.cjs",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
     "postinstall": "node scripts/postinstall.mjs",
@@ -59,6 +59,7 @@
     "js-yaml": "^4.1.0",
     "langsmith": "^0.7.5",
     "openai": "^4.70.0",
+    "playwright": "^1.60.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-reconciler": "^0.33.0",

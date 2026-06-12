@@ -106,6 +106,15 @@ export class ContextManager {
 
       const isRecent = i >= messages.length - RECENT_KEEP;
 
+      if (!isRecent && msg.content.includes('<persisted-output>')) {
+        const filepathMatch = msg.content.match(/Full output saved to: (.+)/);
+        const filepath = filepathMatch ? filepathMatch[1] : 'disk';
+        return {
+          ...msg,
+          content: `[Old tool result persisted to ${filepath}. Use read_file to access if needed.]`,
+        };
+      }
+
       if (!isRecent && msg.content.length > MAX_TOOL_RESULT) {
         const head = msg.content.slice(0, 2000);
         const tail = msg.content.slice(msg.content.length - 2000);

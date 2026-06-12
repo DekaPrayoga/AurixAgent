@@ -1,3 +1,7 @@
+import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { randomUUID } from 'crypto';
 import type { AurixConfig } from './Config.js';
 import { buildSystemPrompt } from './Context.js';
 import type { Provider, Message, ToolCall } from '../providers/index.js';
@@ -8,6 +12,45 @@ import { ContextManager } from './ContextManager.js';
 import { MemoryEngine } from './MemoryEngine.js';
 import { ResearchPipeline } from './ResearchPipeline.js';
 import type { ResearchDepth } from './research/types.js';
+
+const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
+
+function ensureToolResultsDir(): void {
+  if (!existsSync(TOOL_RESULTS_DIR)) {
+    mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
+  }
+}
+
+function persistToolResult(content: string, toolName: string): { filepath: string; preview: string; hasMore: boolean } | null {
+  if (content.length <= 10000) return null;
+  try {
+    ensureToolResultsDir();
+    const id = randomUUID();
+    const ext = 'txt';
+    const filepath = join(TOOL_RESULTS_DIR, `${toolName}-${id}.${ext}`);
+    writeFileSync(filepath, content, 'utf-8');
+    const previewLen = 2000;
+    const preview = content.slice(0, previewLen);
+    const hasMore = content.length > previewLen;
+    return { filepath, preview, hasMore };
+  } catch {
+    return null;
+  }
+}
+
+function buildPersistedMessage(result: { filepath: string; preview: string; hasMore: boolean }, originalSize: number): string {
+  let msg = `<persisted-output>\n`;
+  msg += `Output too large (${originalSize} chars). Full output saved to: ${result.filepath}\n\n`;
+  msg += `Preview (first 2000 chars):\n`;
+  msg += result.preview;
+  msg += result.hasMore ? '\n...\n' : '\n';
+  msg += `Read the full output with: read_file(file_path="${result.filepath}")\n`;
+  msg += `</persisted-output>`;
+  return msg;
+}
+
+const WRITE_TOOLS = new Set(['file_edit', 'write_file', 'terminal']);
+const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
 
 export interface AgentEvent {
   type: 'text' | 'tool_start' | 'tool_end' | 'error' | 'done' | 'route' | 'compact' | 'research';
@@ -158,17 +201,31 @@ export class AgentLoop {
           yield { type: 'text', data: response.text };
         }
 
-        const READ_ONLY_TOOLS = new Set(['read_file', 'search_files', 'terminal_ls', 'web_search', 'research', 'research_forums']);
+        const READ_ONLY_TOOLS = new Set(['read_file', 'search_files', 'terminal_ls', 'web_search', 'research', 'research_forums', 'browser']);
         const MAX_RESULT_LEN = 8000;
 
-        const truncateResult = (result: string): string => {
-          if (result.length <= MAX_RESULT_LEN) return result;
+        const processResult = (result: string, toolName: string): string => {
+          if (result.length <= 10000) return result;
+          const persisted = persistToolResult(result, toolName);
+          if (persisted) return buildPersistedMessage(persisted, result.length);
           const headLen = Math.floor(MAX_RESULT_LEN * 0.4);
           const tailLen = Math.floor(MAX_RESULT_LEN * 0.4);
           const head = result.slice(0, headLen);
           const tail = result.slice(result.length - tailLen);
           const omitted = result.length - headLen - tailLen;
-          return `${head}\n\n... [${omitted} chars truncated — use read_file with offset/limit to read specific sections] ...\n\n${tail}`;
+          return `${head}\n\n... [${omitted} chars truncated] ...\n\n${tail}`;
+        };
+
+        const addPostExecutionHint = (result: string, toolName: string, args: Record<string, unknown>): string => {
+          if (!BUILD_HINT_TOOLS.has(toolName)) return result;
+          const filePath = (args.file_path || args.path || '') as string;
+          if (!filePath) return result;
+          const isSourceFile = /\.(ts|tsx|js|jsx|py|go|rs|java|c|cpp|rb|php|vue|svelte)$/.test(filePath);
+          const isConfigFile = /(package\.json|tsconfig|webpack|vite|rollup|\.env|Makefile|Dockerfile)$/.test(filePath);
+          if (isSourceFile || isConfigFile) {
+            return result + '\n\n[Reminder: After editing source/config files, verify the changes work — build the project (e.g. tsc, npm run build), restart services (pm2 restart, systemctl restart), and test the result before saying "done".]';
+          }
+          return result;
         };
 
         const readOnlyCalls = response.toolCalls.filter(c => READ_ONLY_TOOLS.has(c.name));
@@ -193,20 +250,20 @@ export class AgentLoop {
               return;
             }
 
-            const truncated = truncateResult(result);
-            this._outputTokens += Math.ceil(truncated.length / 4);
-            yield { type: 'tool_end', data: truncated, toolName: call.name };
-            this.messages.push({ role: 'tool', content: truncated, toolCallId: call.id });
+            const processed = processResult(result, call.name);
+            this._outputTokens += Math.ceil(processed.length / 4);
+            yield { type: 'tool_end', data: processed, toolName: call.name };
+            this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
           }
         } else if (readOnlyCalls.length === 1) {
           const call = readOnlyCalls[0];
           yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
           try {
             const result = await this.registry.execute(call.name, call.arguments);
-            const truncated = truncateResult(result);
-            this._outputTokens += Math.ceil(truncated.length / 4);
-            yield { type: 'tool_end', data: truncated, toolName: call.name };
-            this.messages.push({ role: 'tool', content: truncated, toolCallId: call.id });
+            const processed = processResult(result, call.name);
+            this._outputTokens += Math.ceil(processed.length / 4);
+            yield { type: 'tool_end', data: processed, toolName: call.name };
+            this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
           } catch (e: any) {
             const errMsg = `Error executing ${call.name}: ${e.message}\n\nIf this tool failed, diagnose why before retrying: check the file path, verify the pattern, or try an alternative approach.`;
             this._outputTokens += Math.ceil(errMsg.length / 4);
@@ -230,10 +287,11 @@ export class AgentLoop {
           } catch (e: any) {
             result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying. Check file paths, permissions, and whether the target exists.`;
           }
-          const truncated = truncateResult(result);
-          this._outputTokens += Math.ceil(truncated.length / 4);
+          result = processResult(result, call.name);
+          result = addPostExecutionHint(result, call.name, call.arguments);
+          this._outputTokens += Math.ceil(result.length / 4);
 
-          yield { type: 'tool_end', data: truncated, toolName: call.name };
+          yield { type: 'tool_end', data: result, toolName: call.name };
 
           if (this.interrupted) {
             this.interrupted = false;
@@ -243,7 +301,7 @@ export class AgentLoop {
 
           this.messages.push({
             role: 'tool',
-            content: truncated,
+            content: result,
             toolCallId: call.id,
           });
         }
