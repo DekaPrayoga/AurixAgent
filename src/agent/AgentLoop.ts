@@ -160,7 +160,7 @@ export class AgentLoop {
 
     let consecutiveEmpty = 0;
     let totalFailures = 0;
-    const MAX_EMPTY = 3;
+    const MAX_EMPTY = 5;
     const MAX_FAILURES = 5;
 
     const RETRY_DELAYS_NORMAL = [5, 15, 30, 60, 120];
@@ -231,9 +231,18 @@ export class AgentLoop {
           yield { type: 'error', data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nStopping. Try: /login, /model <id>, or /doctor.` };
           return;
         }
-        const delay = RETRY_DELAYS_NORMAL[Math.min(retryCount, RETRY_DELAYS_NORMAL.length - 1)];
-        retryCount++;
-        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — retry in ${delay}s...` };
+
+        const hints = [
+          'Continue with the task. If a previous tool returned an error, try a different approach. Use "snapshot" to see the current page state, then use the correct element selectors.',
+          'You seem stuck. Take a different approach: use "screenshot" to see what\'s on screen, then decide the next step. For form fields, use "fill" action instead of "evaluate".',
+          'Try using simpler browser actions. Instead of evaluate with JavaScript, use: click, fill, type — these auto-search all frames including iframes. Use "snapshot" first to find elements.',
+          'Last attempt. Summarize what you\'ve done so far and what went wrong, then try one more approach. If the page has iframes, elements may be inside them — click and fill actions handle this automatically.',
+        ];
+        const hint = hints[Math.min(consecutiveEmpty - 1, hints.length - 1)];
+        this.messages.push({ role: 'user', content: `[System hint] ${hint}` });
+
+        const delay = 3;
+        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — injecting recovery hint, retry in ${delay}s...` };
         for (let s = 0; s < delay; s++) {
           if (this.interrupted) {
             this.interrupted = false;
@@ -242,7 +251,6 @@ export class AgentLoop {
           }
           await new Promise(r => setTimeout(r, 1000));
         }
-        i--;
         continue;
       }
 

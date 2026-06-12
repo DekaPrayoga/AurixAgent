@@ -234,6 +234,20 @@ const baseCommands: SlashCommand[] = [
     source: 'claude-code',
   },
   {
+    name: 'browserui',
+    argumentHint: '[on|off]',
+    description: 'Toggle browser window visibility (headed/headless)',
+    group: 'config',
+    source: 'aurix',
+  },
+  {
+    name: 'proxy',
+    argumentHint: '[host:port|user:pass@host:port|off]',
+    description: 'Set browser proxy for web automation',
+    group: 'config',
+    source: 'aurix',
+  },
+  {
     name: 'effort',
     argumentHint: '<low|medium|high|xhigh|max|ultra>',
     description: 'Alias for /depth — set reasoning effort',

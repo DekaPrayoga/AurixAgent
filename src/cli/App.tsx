@@ -437,6 +437,30 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         return;
       }
 
+      if (commandName === 'browserui') {
+        const mode = slash.args?.trim() || '';
+        if (!mode || mode === 'status') {
+          const result = await registry.execute('browser', { action: 'set-ui' });
+          addAssistant(result);
+          return;
+        }
+        const result = await registry.execute('browser', { action: 'set-ui', value: mode });
+        addAssistant(result);
+        return;
+      }
+
+      if (commandName === 'proxy') {
+        const proxy = slash.args?.trim() || '';
+        if (!proxy) {
+          const result = await registry.execute('browser', { action: 'status' });
+          addAssistant(`Browser proxy:\n${result}`);
+          return;
+        }
+        const result = await registry.execute('browser', { action: 'set-proxy', value: proxy });
+        addAssistant(result);
+        return;
+      }
+
       if (commandName === 'effort') {
         if (!slash.args) {
           addAssistant(`Current research depth: ${researchMode}\n\nUsage: /effort <low|medium|high|xhigh|max|ultra>`);

@@ -24,6 +24,10 @@ function warn(msg: string, details?: Record<string, string>): string {
 
 let context: BrowserContext | null = null;
 let page: Page | null = null;
+let consecutiveEvalFailures = 0;
+let lastEvalCode = '';
+let browserHeadless = process.env.BROWSER_HEADLESS !== 'false';
+let browserProxy = process.env.BROWSER_PROXY || '';
 
 const PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
 
@@ -32,13 +36,29 @@ async function ensureBrowser(): Promise<Page> {
 
   await ensureBinary();
 
-  context = await launchPersistentContext({
+  const launchOpts: Record<string, any> = {
     userDataDir: PROFILE_DIR,
-    headless: true,
+    headless: browserHeadless,
     humanize: true,
     locale: 'en-US',
     viewport: { width: 1280, height: 720 },
-  });
+  };
+
+  if (browserProxy) {
+    const [host, portStr] = browserProxy.includes('@')
+      ? [browserProxy.split('@')[1].split(':')[0], browserProxy.split('@')[1].split(':')[1]]
+      : [browserProxy.split(':')[0], browserProxy.split(':')[1]];
+    const server = `http://${host}:${portStr || '8080'}`;
+    launchOpts.proxy = { server };
+    if (browserProxy.includes('@')) {
+      const creds = browserProxy.split('@')[0].replace(/^https?:\/\//, '');
+      const [username, password] = creds.split(':');
+      launchOpts.proxy.username = username;
+      launchOpts.proxy.password = password;
+    }
+  }
+
+  context = await launchPersistentContext(launchOpts as any);
 
   page = context.pages()[0] || await context.newPage();
   return page;
@@ -57,23 +77,168 @@ function describePage(page: Page): string {
 }
 
 async function resolveLocator(p: Page, target: string) {
+  let locator: any;
   if (target.startsWith('#') || target.startsWith('.') || target.startsWith('[') || target.includes('>')) {
-    return p.locator(target);
-  }
-  if (target.startsWith('text=')) {
-    return p.locator(target);
-  }
-  if (target.startsWith('role=')) {
+    locator = p.locator(target);
+  } else if (target.startsWith('text=')) {
+    locator = p.locator(target);
+  } else if (target.startsWith('role=')) {
     const role = target.slice(5).trim();
-    return p.getByRole(role as any);
+    locator = p.getByRole(role as any);
+  } else if (target.startsWith('placeholder=')) {
+    locator = p.getByPlaceholder(target.slice(12));
+  } else if (target.startsWith('label=')) {
+    locator = p.getByLabel(target.slice(6));
+  } else {
+    locator = p.getByText(target, { exact: false });
   }
-  if (target.startsWith('placeholder=')) {
-    return p.getByPlaceholder(target.slice(12));
+
+  const mainCount = await locator.count();
+  if (mainCount > 0) return locator;
+
+  for (const frame of p.frames()) {
+    if (frame === p.mainFrame()) continue;
+    let frameLocator: any;
+    if (target.startsWith('#') || target.startsWith('.') || target.startsWith('[') || target.includes('>') || target.startsWith('text=')) {
+      frameLocator = frame.locator(target);
+    } else if (target.startsWith('role=')) {
+      frameLocator = frame.getByRole(target.slice(5).trim() as any);
+    } else if (target.startsWith('placeholder=')) {
+      frameLocator = frame.getByPlaceholder(target.slice(12));
+    } else if (target.startsWith('label=')) {
+      frameLocator = frame.getByLabel(target.slice(6));
+    } else {
+      frameLocator = frame.getByText(target, { exact: false });
+    }
+    if (await frameLocator.count() > 0) return frameLocator;
   }
-  if (target.startsWith('label=')) {
-    return p.getByLabel(target.slice(6));
+
+  return locator;
+}
+
+async function autoSolveCaptcha(p: Page): Promise<string[]> {
+  const results: string[] = [];
+  const frames = p.frames();
+
+  let recaptchaAnchor: any = null;
+  let recaptchaBframe: any = null;
+  let geetestSlider: any = null;
+  let turnstileFrame: any = null;
+
+  for (const frame of frames) {
+    const url = frame.url();
+    if (url.includes('/recaptcha/') && url.includes('/anchor')) recaptchaAnchor = frame;
+    if (url.includes('/recaptcha/') && url.includes('/bframe')) recaptchaBframe = frame;
+    if (url.includes('geetest.com') || url.includes('captcha.com')) {
+      const hasSlider = await frame.locator('.geetest_slider_button, .geetest_slider').count();
+      if (hasSlider > 0) geetestSlider = frame;
+    }
+    if (url.includes('challenges.cloudflare') || url.includes('turnstile')) turnstileFrame = frame;
   }
-  return p.getByText(target, { exact: false });
+
+  if (turnstileFrame) {
+    try {
+      const checkbox = turnstileFrame.locator('input[type="checkbox"], .cf-turnstile, [role="checkbox"]').first();
+      if (await checkbox.count() > 0) {
+        await checkbox.click({ timeout: 5000 });
+        await p.waitForTimeout(3000);
+        results.push('Auto-solved: Turnstile verification completed');
+      }
+    } catch (e: any) {
+      results.push(`Turnstile: auto-click attempted (${e.message?.slice(0, 80)})`);
+    }
+  }
+
+  if (recaptchaAnchor && !recaptchaBframe) {
+    try {
+      const checkbox = recaptchaAnchor.locator('#recaptcha-anchor, .recaptcha-checkbox-border, .rc-anchor-checkbox').first();
+      if (await checkbox.count() > 0) {
+        await checkbox.click({ timeout: 5000 });
+        await p.waitForTimeout(2000);
+        results.push('Auto-solved: reCAPTCHA checkbox clicked');
+      }
+    } catch (e: any) {
+      results.push(`reCAPTCHA checkbox: auto-click attempted (${e.message?.slice(0, 80)})`);
+    }
+  }
+
+  if (geetestSlider) {
+    try {
+      const sliderInfo = await geetestSlider.evaluate(() => {
+        const info: Record<string, any> = {};
+        const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"]');
+        if (cut) {
+          const cutRect = cut.getBoundingClientRect();
+          const style = window.getComputedStyle(cut);
+          info.cut = { left: cutRect.left, width: cutRect.width, styleLeft: parseFloat(style.left) || null, transform: style.transform || null };
+        }
+        const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
+        if (bg) info.bg = { left: bg.getBoundingClientRect().left, width: bg.getBoundingClientRect().width };
+        const piece = document.querySelector('.geetest_piece, [class*="slider_piece"]');
+        if (piece) info.piece = { width: piece.getBoundingClientRect().width };
+        const slider = document.querySelector('.geetest_slider_button, [class*="slider_button"]');
+        if (slider) {
+          const r = slider.getBoundingClientRect();
+          info.slider = { left: r.left, width: r.width, centerX: r.left + r.width / 2, centerY: r.top + r.height / 2 };
+        }
+        return info;
+      });
+
+      let gapOffset: number | null = null;
+      if (sliderInfo.cut && sliderInfo.bg) {
+        if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) gapOffset = Math.round(sliderInfo.cut.styleLeft);
+        else gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
+      }
+      if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
+        const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
+        if (match) gapOffset = Math.round(parseFloat(match[1]));
+      }
+
+      if (gapOffset !== null && sliderInfo.slider) {
+        const pieceHalf = Math.round((sliderInfo.piece?.width || 44) / 2);
+        const dragDistance = gapOffset - pieceHalf;
+        const startX = sliderInfo.slider.centerX;
+        const startY = sliderInfo.slider.centerY;
+        const endX = startX + dragDistance;
+
+        await p.mouse.move(startX, startY);
+        await p.waitForTimeout(150);
+        await p.mouse.down();
+        await p.waitForTimeout(200);
+
+        const steps = 18 + Math.floor(Math.random() * 8);
+        for (let i = 1; i <= steps; i++) {
+          const progress = i / steps;
+          const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+          const x = startX + dragDistance * eased + (Math.random() - 0.5) * 2;
+          const y = startY + (Math.random() - 0.5) * 2;
+          await p.mouse.move(x, y);
+          await p.waitForTimeout(10 + Math.random() * 20);
+        }
+        await p.mouse.move(endX, startY);
+        await p.waitForTimeout(150);
+        await p.mouse.up();
+        await p.waitForTimeout(2000);
+
+        results.push(`Auto-solved: GeeTest slider dragged ${dragDistance}px`);
+      } else {
+        results.push('GeeTest slider detected but gap position could not be auto-detected');
+      }
+    } catch (e: any) {
+      results.push(`GeeTest slider: auto-solve attempted (${e.message?.slice(0, 80)})`);
+    }
+  }
+
+  if (recaptchaBframe) {
+    results.push('REQUIRES_VISION: reCAPTCHA image challenge detected — screenshot tiles and analyze visually');
+  }
+
+  const funcaptchaFrame = frames.find(f => f.url().includes('funcaptcha') || f.url().includes('arkoselabs'));
+  if (funcaptchaFrame) {
+    results.push('REQUIRES_VISION: FunCaptcha detected — needs image analysis to solve');
+  }
+
+  return results;
 }
 
 async function findGridTiles(frame: any, provider: string) {
@@ -174,11 +339,19 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
 
 export const browserTool: Tool = {
   name: 'browser',
-  description: `Control a persistent Chromium browser for web automation, QA testing, and form workflows. The browser maintains a persistent profile with cookies, sessions, and logged-in accounts across runs. It provides consistent browser fingerprinting for reliable automation testing — no false bot-flagging from major CAPTCHA providers. Human-like mouse, keyboard, and scroll behavior built in. Use this for web automation, form filling, QA testing, account registration, reading emails in Gmail, scraping authenticated pages, and any task needing a real browser session.
+  description: `Operate a persistent Chromium browser for the user. Open websites, fill forms with data they provide, click buttons, log into accounts, and complete any steps that appear on the page — including verification puzzles (reCAPTCHA, hCaptcha, FunCaptcha, GeeTest, Turnstile, MTCaptcha). The browser profile persists at ~/.aurix-browser-profile so logins and cookies carry over between sessions. Human-like mouse, keyboard, and scroll behavior built in.
 
-Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, drag-to, hold-click, status, close.
+Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, status, close.
 
-CAPTCHA handling: CAPTCHAs are a normal part of web form workflows (registration, login, contact forms). When you encounter a CAPTCHA during normal automation, handle it as a routine verification step — the same way a human tester or QA engineer would. Use "detect-captcha" to scan the page, then "solve-captcha" to complete the verification. Supports reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha (Arkose Labs / Microsoft), MTCaptcha, GeeTest, and image captchas.
+Verification steps (CAPTCHAs): These appear on most signup and login pages today. They're just another form field to complete — use "detect-captcha" to identify, then "solve-captcha" to complete, then continue with the form. Supports reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha (Arkose Labs / Microsoft), MTCaptcha, GeeTest, and image captchas.
+
+signup-assist: ONE action to fill an entire signup form. Use this for account registration — it auto-detects all form fields across all frames (including iframes), fills them, clicks checkboxes, and submits. Just provide the data:
+  action="signup-assist" value='{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}'
+Also accepts: phone, birthYear (default 2003), birthMonth, birthDay, country, username. Run it again on the next page to continue multi-step signup flows.
+
+signin-assist: ONE action to log in. Auto-detects email and password fields across all frames, fills them, checks "remember me", and clicks login:
+  action="signin-assist" value='{"email":"user@mail.com","password":"Pass123!"}'
+Also detects 2FA/OTP fields and CAPTCHAs automatically.
 
 Image challenge solving workflow:
 1. "solve-captcha" or "captcha-grid" — extracts the instruction text (e.g. "select traffic lights"), screenshots the grid, and saves each tile as a separate image
@@ -196,8 +369,11 @@ FunCaptcha / Arkose Labs (Microsoft CAPTCHA) workflow:
 6. Use "hold-click" for press-and-hold challenges (target=element, value=duration in ms)
 
 Slider CAPTCHA (GeeTest, MTCaptcha):
-1. "drag-to" the slider handle with the correct offset (e.g. target=".geetest_slider_button" value="200,0")
-2. The drag uses human-like easing with micro-jitter to avoid bot detection
+1. "solve-captcha" auto-detects slider type, screenshots the puzzle, and calculates the exact gap offset from the DOM
+2. The response includes RECOMMENDED OFFSET — use that exact value in drag-to
+3. If gap was not detected, use "slider-analyze" to re-scan and get the offset
+4. NEVER guess the offset — always use the value from solve-captcha or slider-analyze
+5. Then: drag-to target=".geetest_slider_button" value="<offset>,0"
 
 Target resolution: CSS selectors (#id, .class, [attr]), text="some text", role=button, placeholder="Enter email", label="Username", or plain text (matched by getByText).
 
@@ -234,12 +410,70 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
     try {
       switch (action) {
+        case 'set-proxy': {
+          if (!value && !target) return err('set-proxy requires a proxy address', 'Examples: "host:port", "user:pass@host:port", or "off" to disable');
+          const proxy = value || target || '';
+          if (proxy === 'off' || proxy === 'none' || proxy === '') {
+            browserProxy = '';
+            await closeBrowser();
+            return ok('Proxy disabled. Browser will restart on next action.');
+          }
+          browserProxy = proxy;
+          await closeBrowser();
+          return ok(`Proxy set to ${proxy}. Browser will restart with proxy on next action.`, {
+            proxy: proxy,
+            note: 'If proxy requires auth, use format: user:pass@host:port',
+          });
+        }
+
+        case 'set-ui': {
+          const mode = (value || target || '').toLowerCase();
+          if (mode === 'on' || mode === 'show' || mode === 'headed' || mode === 'visible' || mode === 'true') {
+            browserHeadless = false;
+            await closeBrowser();
+            return ok('Browser UI enabled (headed mode). Browser will restart on next action.', {
+              mode: 'headed — browser window will be visible',
+            });
+          } else if (mode === 'off' || mode === 'hide' || mode === 'headless' || mode === 'false') {
+            browserHeadless = true;
+            await closeBrowser();
+            return ok('Browser UI disabled (headless mode). Browser will restart on next action.', {
+              mode: 'headless — browser runs in background',
+            });
+          }
+          return `Current mode: ${browserHeadless ? 'headless (hidden)' : 'headed (visible)'}\n\nUse: set-ui value="on" (show window) or set-ui value="off" (hide window)`;
+        }
+
+        case 'open-tabs': {
+          const p = await ensureBrowser();
+          const count = parseInt(value) || 3;
+          const urls = target ? target.split(',').map(s => s.trim()) : [];
+          const tabs: string[] = [];
+
+          for (let i = 0; i < count; i++) {
+            const newPage = await context!.newPage();
+            if (urls[i]) {
+              const url = urls[i].startsWith('http') ? urls[i] : `https://${urls[i]}`;
+              await newPage.goto(url, { waitUntil: 'domcontentloaded', timeout }).catch(() => {});
+              tabs.push(`Tab ${i + 1}: ${newPage.url()} — ${await newPage.title().catch(() => '')}`);
+            } else {
+              tabs.push(`Tab ${i + 1}: blank`);
+            }
+          }
+
+          return ok(`Opened ${count} tabs`, {
+            total: `${context!.pages().length} tabs open`,
+            tabs: tabs.join('\n'),
+            hint: 'Use switch-tab to navigate between tabs, or run signup-assist/signin-assist on the current tab',
+          });
+        }
+
         case 'status': {
           if (!page || page.isClosed()) {
-            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${PROFILE_DIR}\nEngine: Chromium`;
+            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
           }
           const title = await page.title();
-          return `Browser: running\nEngine: Chromium\nProfile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
+          return `Browser: running\nEngine: Chromium\nProfile: ${PROFILE_DIR}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
         }
 
         case 'close': {
@@ -429,8 +663,59 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           const p = await ensureBrowser();
           const code = value || target;
           if (!code) return 'Error: evaluate requires JavaScript code (use value parameter)';
-          const result = await p.evaluate(code);
-          return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+
+          if (consecutiveEvalFailures >= 2 && code === lastEvalCode) {
+            return `STOP. You've tried this exact evaluate code ${consecutiveEvalFailures} times and it failed every time.\n\n` +
+              `DO NOT use evaluate again. Use these actions instead:\n` +
+              `  1. snapshot — see all elements on the page (including inside iframes)\n` +
+              `  2. fill target="input[name='email'], #email, input[type='email']" value="..." — fill a field\n` +
+              `  3. click target="button[type='submit'], #submit, text=Next" — click a button\n` +
+              `  4. type target="<selector>" value="..." — type into a field\n\n` +
+              `These actions automatically search the main page AND all iframes. Start with "snapshot" to find the right selectors.`;
+          }
+
+          if (code !== lastEvalCode) {
+            consecutiveEvalFailures = 0;
+            lastEvalCode = '';
+          }
+
+          try {
+            const result = await p.evaluate(code);
+            consecutiveEvalFailures = 0;
+            lastEvalCode = '';
+            return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          } catch (evalErr: any) {
+            const errMsg = evalErr.message || String(evalErr);
+            if (errMsg.includes('null') || errMsg.includes('Cannot read propert') || errMsg.includes('Cannot set propert')) {
+              lastEvalCode = code;
+              consecutiveEvalFailures++;
+
+              for (const frame of p.frames()) {
+                if (frame === p.mainFrame()) continue;
+                try {
+                  const r = await frame.evaluate(code);
+                  consecutiveEvalFailures = 0;
+                  lastEvalCode = '';
+                  return typeof r === 'string' ? r : JSON.stringify(r, null, 2);
+                } catch {}
+              }
+
+              if (consecutiveEvalFailures >= 2) {
+                return `STOP — evaluate has failed ${consecutiveEvalFailures} times with the same code. The element does not exist on this page or any iframe.\n\n` +
+                  `You MUST switch to using click, fill, and type actions NOW. These actions auto-search all frames.\n` +
+                  `First, run: action="snapshot" (no target needed) — this shows all elements.\n` +
+                  `Then use the selectors from the snapshot with fill/click/type.`;
+              }
+
+              return `Error: Element not found on main page or iframes (attempt ${consecutiveEvalFailures}).\n\n` +
+                `Use these actions instead — they auto-search all frames including iframes:\n` +
+                `  click target="<selector>"\n` +
+                `  fill target="<selector>" value="<text>"\n` +
+                `  type target="<selector>" value="<text>"\n\n` +
+                `Use "snapshot" first to find the correct selectors.`;
+            }
+            return `Browser error: ${errMsg.slice(0, 300)}`;
+          }
         }
 
         case 'new-tab': {
@@ -536,7 +821,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             if (url.includes('hcaptcha') && url.includes('challenge')) hcaptchaChallenge = frame;
             if (url.includes('funcaptcha') || url.includes('arkoselabs')) funcaptchaFrame = frame;
             if (url.includes('service.mtcaptcha')) mtcaptchaFrame = frame;
-            if (url.includes('geetest.com') || url.includes('captcha.com') && !url.includes('recaptcha') && !url.includes('hcaptcha')) geetestFrame = frame;
+            if ((url.includes('geetest.com') || url.includes('captcha.com')) && !url.includes('recaptcha') && !url.includes('hcaptcha')) geetestFrame = frame;
           }
 
           if (recaptchaAnchor) captchaType = 'recaptcha';
@@ -733,8 +1018,88 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           if (captchaType === 'mtcaptcha' || captchaType === 'geetest') {
             results.push(`Detected ${captchaType} challenge. Analyzing...`);
             const targetFrame = mtcaptchaFrame || geetestFrame || p;
-            const gridResult = await analyzeImageChallenge(p, targetFrame, captchaType);
-            results.push(gridResult);
+
+            const hasSlider = await targetFrame.locator('.geetest_slider_button, .geetest_slider, [class*="slider_button"], [class*="slider-track"]').count();
+            if (hasSlider > 0) {
+              results.push('Type: SLIDER puzzle');
+              results.push('The puzzle requires dragging a piece to fill a gap.');
+              results.push('');
+
+              const sliderInfo = await targetFrame.evaluate(() => {
+                const info: Record<string, any> = {};
+                const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"]');
+                if (cut) {
+                  const cutRect = cut.getBoundingClientRect();
+                  const style = window.getComputedStyle(cut);
+                  info.cut = { left: cutRect.left, width: cutRect.width, styleLeft: parseFloat(style.left) || null, transform: style.transform || null };
+                }
+                const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
+                if (bg) {
+                  const bgRect = bg.getBoundingClientRect();
+                  info.bg = { left: bgRect.left, width: bgRect.width };
+                }
+                const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"]');
+                if (piece) {
+                  const pieceRect = piece.getBoundingClientRect();
+                  info.piece = { left: pieceRect.left, width: pieceRect.width };
+                }
+                const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"]');
+                if (slider) {
+                  const sliderRect = slider.getBoundingClientRect();
+                  info.slider = { left: sliderRect.left, width: sliderRect.width };
+                }
+                const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"]');
+                if (track) {
+                  info.track = { width: track.getBoundingClientRect().width };
+                }
+                return info;
+              });
+
+              const puzzleEl = targetFrame.locator('.geetest_panel, .geetest_widget, [class*="geetest_container"]').first();
+              const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
+              try {
+                if (await puzzleEl.count() > 0) await puzzleEl.screenshot({ path: screenshotPath });
+                else await p.screenshot({ path: screenshotPath });
+              } catch { await p.screenshot({ path: screenshotPath }); }
+              results.push(`Puzzle screenshot: ${screenshotPath}`);
+
+              let gapOffset: number | null = null;
+              if (sliderInfo.cut && sliderInfo.bg) {
+                if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) {
+                  gapOffset = Math.round(sliderInfo.cut.styleLeft);
+                  results.push(`Gap position (CSS left): ${gapOffset}px from puzzle left edge`);
+                } else {
+                  gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
+                  results.push(`Gap position (rect): ${gapOffset}px from puzzle left edge`);
+                }
+              }
+              if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
+                const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
+                if (match) {
+                  gapOffset = Math.round(parseFloat(match[1]));
+                  results.push(`Gap position (transform): ${gapOffset}px from puzzle left edge`);
+                }
+              }
+
+              if (sliderInfo.slider) results.push(`Slider handle: x=${Math.round(sliderInfo.slider.left)}, width=${Math.round(sliderInfo.slider.width)}`);
+              if (sliderInfo.track) results.push(`Track width: ${Math.round(sliderInfo.track.width)}px`);
+
+              if (gapOffset !== null) {
+                const pieceHalf = Math.round((sliderInfo.piece?.width || 44) / 2);
+                const adjusted = gapOffset - pieceHalf;
+                results.push('');
+                results.push(`[OK] RECOMMENDED: drag-to target=".geetest_slider_button" value="${adjusted},0"`);
+                results.push(`(gap ${gapOffset}px - half piece ${pieceHalf}px = ${adjusted}px drag distance)`);
+              } else {
+                results.push('');
+                results.push('[WARN] Could not auto-detect gap. Look at the puzzle screenshot, find the gap/hole, and estimate the pixel offset.');
+                results.push('Then: drag-to target=".geetest_slider_button" value="<estimated_px>,0"');
+              }
+            } else {
+              results.push('Type: IMAGE challenge');
+              const gridResult = await analyzeImageChallenge(p, targetFrame, captchaType);
+              results.push(gridResult);
+            }
           }
 
           if (captchaType === 'unknown') {
@@ -941,6 +1306,533 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           }
         }
 
+        case 'slider-analyze': {
+          const p = await ensureBrowser();
+          const results: string[] = [];
+
+          const sliderInfo = await p.evaluate(() => {
+            const info: Record<string, any> = {};
+
+            const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"], [class*="slider-track"]');
+            if (track) {
+              const trackRect = track.getBoundingClientRect();
+              info.track = { left: trackRect.left, width: trackRect.width, top: trackRect.top };
+            }
+
+            const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"], [class*="slider-gap"]');
+            if (cut) {
+              const cutRect = cut.getBoundingClientRect();
+              const style = window.getComputedStyle(cut);
+              info.cut = {
+                left: cutRect.left,
+                width: cutRect.width,
+                styleLeft: parseFloat(style.left) || null,
+                transform: style.transform || null,
+              };
+            }
+
+            const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
+            if (bg) {
+              const bgRect = bg.getBoundingClientRect();
+              info.bg = { left: bgRect.left, width: bgRect.width };
+            }
+
+            const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"], [class*="puzzle-piece"]');
+            if (piece) {
+              const pieceRect = piece.getBoundingClientRect();
+              info.piece = { left: pieceRect.left, width: pieceRect.width };
+            }
+
+            const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"], [class*="slider-handle"]');
+            if (slider) {
+              const sliderRect = slider.getBoundingClientRect();
+              info.slider = { left: sliderRect.left, width: sliderRect.width, centerX: sliderRect.left + sliderRect.width / 2 };
+            }
+
+            info.canvasCount = document.querySelectorAll('canvas').length;
+            info.allGeeTestClasses = Array.from(document.querySelectorAll('[class*="geetest"]')).slice(0, 20).map(el => {
+              const r = el.getBoundingClientRect();
+              return `${el.className?.toString().slice(0, 80)} [${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}]`;
+            });
+
+            return info;
+          });
+
+          const puzzleEl = p.locator('.geetest_panel, .geetest_widget, [class*="geetest_container"], [class*="slider_container"]').first();
+          const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
+          try {
+            if (await puzzleEl.count() > 0) {
+              await puzzleEl.screenshot({ path: screenshotPath });
+            } else {
+              await p.screenshot({ path: screenshotPath });
+            }
+          } catch {
+            await p.screenshot({ path: screenshotPath });
+          }
+
+          results.push(`Puzzle screenshot: ${screenshotPath}`);
+          results.push('');
+
+          let gapOffset: number | null = null;
+
+          if (sliderInfo.cut && sliderInfo.bg) {
+            const bgLeft = sliderInfo.bg.left;
+            const cutStyleLeft = sliderInfo.cut.styleLeft;
+            const cutRectLeft = sliderInfo.cut.left;
+
+            if (cutStyleLeft && cutStyleLeft > 0) {
+              gapOffset = Math.round(cutStyleLeft);
+              results.push(`Gap position (from CSS left): ${gapOffset}px from puzzle left edge`);
+            } else if (cutRectLeft && bgLeft) {
+              gapOffset = Math.round(cutRectLeft - bgLeft);
+              results.push(`Gap position (from rect): ${gapOffset}px from puzzle left edge`);
+            }
+          }
+
+          if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
+            const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
+            if (match) {
+              gapOffset = Math.round(parseFloat(match[1]));
+              results.push(`Gap position (from transform): ${gapOffset}px from puzzle left edge`);
+            }
+          }
+
+          if (sliderInfo.slider) {
+            results.push(`Slider handle: at x=${Math.round(sliderInfo.slider.left)}, width=${Math.round(sliderInfo.slider.width)}`);
+          }
+          if (sliderInfo.track) {
+            results.push(`Slider track: width=${Math.round(sliderInfo.track.width)}px`);
+          }
+
+          if (gapOffset !== null && sliderInfo.piece) {
+            const pieceHalfWidth = Math.round((sliderInfo.piece.width || 44) / 2);
+            const adjustedOffset = gapOffset - pieceHalfWidth;
+            results.push('');
+            results.push(`[OK] RECOMMENDED OFFSET: drag-to value="${adjustedOffset},0"`);
+            results.push(`(gap at ${gapOffset}px minus half piece width ${pieceHalfWidth}px = ${adjustedOffset}px)`);
+          } else if (gapOffset !== null) {
+            results.push('');
+            results.push(`[OK] RECOMMENDED OFFSET: drag-to value="${gapOffset},0"`);
+          } else {
+            results.push('');
+            results.push('[WARN] Could not auto-detect gap position from DOM.');
+            results.push('Look at the puzzle screenshot to find where the gap/hole is.');
+            results.push('Estimate the pixel distance from the LEFT edge of the puzzle to the CENTER of the gap.');
+            results.push('Then use: drag-to target=".geetest_slider_button" value="<estimated_px>,0"');
+          }
+
+          if (sliderInfo.allGeeTestClasses?.length > 0) {
+            results.push('');
+            results.push('GeeTest DOM elements:');
+            sliderInfo.allGeeTestClasses.forEach((c: string) => results.push(`  ${c}`));
+          }
+
+          return results.join('\n');
+        }
+
+        case 'signup-assist': {
+          const p = await ensureBrowser();
+          if (!value) return err('signup-assist requires value as JSON', 'Example: value=\'{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}\'');
+
+          let data: Record<string, string> = {};
+          try { data = JSON.parse(value); } catch {
+            const parts = value.split(',').map(s => s.trim());
+            if (parts.length >= 2) {
+              data.email = parts[0];
+              data.password = parts[1];
+              if (parts[2]) data.firstName = parts[2];
+              if (parts[3]) data.lastName = parts[3];
+            } else {
+              return err('signup-assist: could not parse value', 'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"');
+            }
+          }
+
+          const results: string[] = [];
+          results.push('=== SIGNUP ASSIST ===');
+          results.push(`Provided: ${Object.keys(data).join(', ')}`);
+          results.push('');
+
+          const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
+          let activeFrame: any = p;
+
+          for (const frame of allFrames) {
+            const inputs = await frame.locator('input:visible, select:visible, textarea:visible').count();
+            if (inputs > 0) { activeFrame = frame; break; }
+          }
+          results.push(`Active frame: ${activeFrame === p ? 'main page' : 'iframe'} (${await activeFrame.locator('input:visible, select:visible, textarea:visible').count()} fields)`);
+
+          const fillField = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+            for (const sel of selectors) {
+              try {
+                const loc = activeFrame.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible()) {
+                  await loc.fill(val, { timeout: 3000 });
+                  results.push(`  ✓ ${label}: filled "${sel}" with "${val.length > 30 ? val.slice(0, 30) + '...' : val}"`);
+                  return true;
+                }
+              } catch {}
+            }
+            return false;
+          };
+
+          const clickField = async (selectors: string[], label: string): Promise<boolean> => {
+            for (const sel of selectors) {
+              try {
+                const loc = activeFrame.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible()) {
+                  await loc.click({ timeout: 3000 });
+                  results.push(`  ✓ ${label}: clicked "${sel}"`);
+                  return true;
+                }
+              } catch {}
+            }
+            return false;
+          };
+
+          const selectOption = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+            for (const sel of selectors) {
+              try {
+                const loc = activeFrame.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible()) {
+                  await loc.selectOption({ label: val }, { timeout: 3000 });
+                  results.push(`  ✓ ${label}: selected "${val}" in "${sel}"`);
+                  return true;
+                }
+              } catch {
+                try {
+                  await activeFrame.locator(sel).first().selectOption({ value: val }, { timeout: 3000 });
+                  results.push(`  ✓ ${label}: selected value "${val}" in "${sel}"`);
+                  return true;
+                } catch {}
+              }
+            }
+            return false;
+          };
+
+          results.push('');
+          results.push('--- Filling fields ---');
+
+          if (data.email) {
+            await fillField([
+              'input[type="email"]',
+              'input[name*="email" i]', 'input[name*="Email"]',
+              'input[name*="username" i]', 'input[name*="MemberName"]',
+              'input[id*="email" i]', 'input[id*="username" i]',
+              'input[placeholder*="email" i]', 'input[placeholder*="Email"]',
+              'input[autocomplete="email"]', 'input[autocomplete="username"]',
+              'input[name="loginfmt"]',
+            ], data.email, 'Email');
+          }
+
+          if (data.password) {
+            await fillField([
+              'input[type="password"]',
+              'input[name*="password" i]', 'input[name*="Password"]', 'input[name*="Passwd"]',
+              'input[id*="password" i]', 'input[name*="pass" i]',
+              'input[autocomplete="new-password"]', 'input[autocomplete="current-password"]',
+            ], data.password, 'Password');
+          }
+
+          if (data.firstName) {
+            await fillField([
+              'input[name*="firstName" i]', 'input[name*="FirstName"]', 'input[name*="fname" i]',
+              'input[id*="firstName" i]', 'input[id*="fname" i]',
+              'input[autocomplete="given-name"]',
+              'input[placeholder*="first name" i]', 'input[placeholder*="First"]',
+              'input[name="NameInput"]',
+            ], data.firstName, 'First name');
+          }
+
+          if (data.lastName) {
+            await fillField([
+              'input[name*="lastName" i]', 'input[name*="LastName"]', 'input[name*="lname" i]',
+              'input[id*="lastName" i]', 'input[id*="lname" i]',
+              'input[autocomplete="family-name"]',
+              'input[placeholder*="last name" i]', 'input[placeholder*="Last"]',
+              'input[name="LastName"]',
+            ], data.lastName, 'Last name');
+          }
+
+          if (data.firstName && !data.lastName) {
+            await fillField([
+              'input[name*="name" i]', 'input[id*="name" i]',
+              'input[autocomplete="name"]',
+            ], data.firstName + ' User', 'Full name');
+          }
+
+          if (data.phone) {
+            await fillField([
+              'input[type="tel"]', 'input[name*="phone" i]', 'input[name*="Phone"]',
+              'input[id*="phone" i]', 'input[autocomplete="tel"]',
+              'input[placeholder*="phone" i]',
+            ], data.phone, 'Phone');
+          }
+
+          const birthYear = data.birthYear || '2003';
+          const birthMonth = data.birthMonth || 'January';
+          const birthDay = data.birthDay || '15';
+
+          await selectOption([
+            'select[id*="BirthYear"]', 'select[name*="birthYear" i]', 'select[id*="year" i]',
+            'select[name*="year" i]', 'select[aria-label*="year" i]', 'select[aria-label*="Birth"]',
+          ], birthYear, 'Birth year');
+
+          await selectOption([
+            'select[id*="BirthMonth"]', 'select[name*="birthMonth" i]', 'select[id*="month" i]',
+            'select[name*="month" i]', 'select[aria-label*="month" i]',
+          ], birthMonth, 'Birth month');
+
+          await selectOption([
+            'select[id*="BirthDay"]', 'select[name*="birthDay" i]', 'select[id*="day" i]',
+            'select[name*="day" i]', 'select[aria-label*="day" i]',
+          ], birthDay, 'Birth day');
+
+          await selectOption([
+            'select[id*="Country"]', 'select[name*="country" i]',
+            'select[aria-label*="country" i]', 'select[name*="Country"]',
+          ], data.country || 'United States', 'Country');
+
+          await fillField([
+            'input[name*="username" i]', 'input[id*="username" i]',
+            'input[placeholder*="username" i]', 'input[name*="Username"]',
+          ], data.username || (data.email ? data.email.split('@')[0] + Math.floor(Math.random() * 999) : 'user' + Math.floor(Math.random() * 9999)), 'Username');
+
+          await clickField([
+            'input[type="checkbox"][name*="agree" i]',
+            'input[type="checkbox"][name*="tos" i]',
+            'input[type="checkbox"][name*="terms" i]',
+            'input[type="checkbox"][id*="agree" i]',
+            'input[type="checkbox"][id*="terms" i]',
+            'input[type="checkbox"][aria-label*="agree" i]',
+            'input[type="checkbox"][aria-label*="terms" i]',
+            'label:has-text("agree") input[type="checkbox"]',
+            'label:has-text("terms") input[type="checkbox"]',
+            'label:has-text("accept") input[type="checkbox"]',
+          ], 'Terms/Agreement checkbox');
+
+          await p.waitForTimeout(500);
+
+          const hasCaptcha = p.frames().some(f => {
+            const u = f.url();
+            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
+              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
+              u.includes('captcha') || u.includes('mtcaptcha');
+          });
+
+          if (hasCaptcha) {
+            results.push('');
+            results.push('--- Verification step detected ---');
+            results.push('Attempting to complete automatically...');
+            const solveResults = await autoSolveCaptcha(p);
+            solveResults.forEach(r => results.push(`  ${r}`));
+
+            const needsVision = solveResults.some(r => r.includes('REQUIRES_VISION'));
+            if (!needsVision) {
+              await p.waitForTimeout(2000);
+              results.push('Verification completed. Continuing form submission...');
+            } else {
+              results.push('');
+              results.push('This verification needs visual analysis. Use "captcha-grid" to see the puzzle tiles, then use "click-tile" to select matches and "captcha-verify" to submit.');
+            }
+          }
+
+          const clicked = await clickField([
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Next")', 'button:has-text("next")',
+            'button:has-text("Continue")', 'button:has-text("continue")',
+            'button:has-text("Submit")', 'button:has-text("submit")',
+            'button:has-text("Create")', 'button:has-text("create")',
+            'button:has-text("Sign up")', 'button:has-text("sign up")',
+            'button:has-text("Register")', 'button:has-text("register")',
+            'button:has-text("Accept")', 'button:has-text("accept")',
+            '#iSignupAction', '#signup-button', '#submit-btn',
+            'button.fui-Button[type="button"]:visible',
+          ], 'Submit/Next button');
+
+          await p.waitForTimeout(2000);
+
+          results.push('');
+          results.push(`--- Result ---`);
+          results.push(`URL: ${p.url()}`);
+          results.push(`Title: ${await p.title()}`);
+
+          const screenshotPath = join(homedir(), '.aurix-signup-result.png');
+          await p.screenshot({ path: screenshotPath });
+          results.push(`Screenshot: ${screenshotPath}`);
+
+          const newInputs = await (async () => {
+            for (const frame of [p, ...p.frames().filter(f => f !== p.mainFrame())]) {
+              const count = await frame.locator('input:visible').count();
+              if (count > 0) return count;
+            }
+            return 0;
+          })();
+
+          if (newInputs > 0) {
+            results.push('');
+            results.push(`${newInputs} input field(s) still visible — run signup-assist again with any remaining data`);
+            results.push('Common next fields: password, first name, last name, birth date, phone');
+          }
+
+          return results.join('\n');
+        }
+
+        case 'signin-assist': {
+          const p = await ensureBrowser();
+          if (!value) return err('signin-assist requires value as JSON', 'Example: value=\'{"email":"user@mail.com","password":"Pass123!"}\'');
+
+          let data: Record<string, string> = {};
+          try { data = JSON.parse(value); } catch {
+            const parts = value.split(',').map(s => s.trim());
+            if (parts.length >= 2) {
+              data.email = parts[0];
+              data.password = parts[1];
+            } else {
+              return err('signin-assist: could not parse value', 'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"');
+            }
+          }
+
+          const results: string[] = [];
+          results.push('=== SIGNIN ASSIST ===');
+
+          const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
+          let activeFrame: any = p;
+          for (const frame of allFrames) {
+            const inputs = await frame.locator('input:visible').count();
+            if (inputs > 0) { activeFrame = frame; break; }
+          }
+          results.push(`Active frame: ${activeFrame === p ? 'main page' : 'iframe'}`);
+
+          const fillField = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+            for (const sel of selectors) {
+              try {
+                const loc = activeFrame.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible()) {
+                  await loc.fill(val, { timeout: 3000 });
+                  results.push(`  ✓ ${label}: filled`);
+                  return true;
+                }
+              } catch {}
+            }
+            return false;
+          };
+
+          const clickField = async (selectors: string[], label: string): Promise<boolean> => {
+            for (const sel of selectors) {
+              try {
+                const loc = activeFrame.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible()) {
+                  await loc.click({ timeout: 3000 });
+                  results.push(`  ✓ ${label}: clicked`);
+                  return true;
+                }
+              } catch {}
+            }
+            return false;
+          };
+
+          results.push('');
+          results.push('--- Filling login ---');
+
+          if (data.email) {
+            await fillField([
+              'input[type="email"]',
+              'input[name*="email" i]', 'input[name*="Email"]',
+              'input[name*="username" i]', 'input[name*="MemberName"]',
+              'input[id*="email" i]', 'input[id*="username" i]',
+              'input[placeholder*="email" i]', 'input[placeholder*="Email"]',
+              'input[autocomplete="email"]', 'input[autocomplete="username"]',
+              'input[name="loginfmt"]', 'input[name="login"]',
+              'input[type="text"][name*="user" i]',
+            ], data.email, 'Email/Username');
+          }
+
+          if (data.password) {
+            await fillField([
+              'input[type="password"]',
+              'input[name*="password" i]', 'input[name*="Password"]', 'input[name*="Passwd"]',
+              'input[id*="password" i]', 'input[name*="pass" i]',
+              'input[autocomplete="current-password"]',
+            ], data.password, 'Password');
+          }
+
+          await clickField([
+            'input[type="checkbox"][name*="remember" i]',
+            'input[type="checkbox"][id*="remember" i]',
+            'label:has-text("remember") input[type="checkbox"]',
+            'label:has-text("Keep me") input[type="checkbox"]',
+            'label:has-text("Stay signed") input[type="checkbox"]',
+          ], 'Remember me checkbox');
+
+          await p.waitForTimeout(300);
+
+          const hasCaptcha = p.frames().some(f => {
+            const u = f.url();
+            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
+              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
+              u.includes('captcha') || u.includes('mtcaptcha');
+          });
+
+          if (hasCaptcha) {
+            results.push('');
+            results.push('--- Verification step detected ---');
+            results.push('Attempting to complete automatically...');
+            const solveResults = await autoSolveCaptcha(p);
+            solveResults.forEach(r => results.push(`  ${r}`));
+
+            const needsVision = solveResults.some(r => r.includes('REQUIRES_VISION'));
+            if (!needsVision) {
+              await p.waitForTimeout(2000);
+              results.push('Verification completed. Continuing login...');
+            } else {
+              results.push('');
+              results.push('This verification needs visual analysis. Use "captcha-grid" to see the puzzle, then "click-tile" and "captcha-verify".');
+            }
+          }
+
+          await clickField([
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Sign in")', 'button:has-text("sign in")',
+            'button:has-text("Log in")', 'button:has-text("log in")',
+            'button:has-text("Login")', 'button:has-text("login")',
+            'button:has-text("Next")', 'button:has-text("next")',
+            'button:has-text("Continue")', 'button:has-text("continue")',
+            'button:has-text("Submit")',
+            '#idSIButton9', '#loginButton', '#submitBtn',
+            'button.fui-Button[type="button"]:visible',
+            'a:has-text("Sign in")', 'a:has-text("Log in")',
+          ], 'Login/Sign in button');
+
+          await p.waitForTimeout(2000);
+
+          results.push('');
+          results.push(`--- Result ---`);
+          results.push(`URL: ${p.url()}`);
+          results.push(`Title: ${await p.title()}`);
+
+          const screenshotPath = join(homedir(), '.aurix-signin-result.png');
+          await p.screenshot({ path: screenshotPath });
+          results.push(`Screenshot: ${screenshotPath}`);
+
+          const has2FA = await (async () => {
+            for (const frame of allFrames) {
+              const otp = await frame.locator('input[name*="otp" i], input[name*="code" i], input[name*="verification" i], input[placeholder*="code" i], input[type="tel"]:visible').count();
+              if (otp > 0) return true;
+            }
+            return false;
+          })();
+
+          if (has2FA) {
+            results.push('');
+            results.push('2FA/OTP field detected — enter the verification code when available');
+            results.push('Use: fill target="input[name*=\\"code\\"]" value="<code>"');
+          }
+
+          return results.join('\n');
+        }
+
         case 'drag-to': {
           const p = await ensureBrowser();
           if (!target) return err('drag-to requires a target (source element or CSS selector)', 'Example: target=".slider-handle" value="200,0" or target="#puzzle-piece" value=".drop-zone"');
@@ -1045,7 +1937,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
         }
 
         default:
-          return `Unknown action: "${action}". Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, drag-to, hold-click, close, status`;
+          return `Unknown action: "${action}". Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status`;
       }
     } catch (e: any) {
       const msg = e.message || String(e);
