@@ -1,7 +1,7 @@
-import { type BrowserContext, type Page, firefox, chromium } from 'playwright';
+import { type BrowserContext, type Page } from 'playwright-core';
+import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
-import { existsSync } from 'fs';
 import type { Tool } from './Registry.js';
 
 let context: BrowserContext | null = null;
@@ -9,50 +9,20 @@ let page: Page | null = null;
 
 const PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
 
-function detectBrowser(): 'firefox' | 'chromium' {
-  if (existsSync('/usr/bin/firefox') || existsSync('/snap/bin/firefox')) return 'firefox';
-  return 'chromium';
-}
-
 async function ensureBrowser(): Promise<Page> {
   if (page && !page.isClosed()) return page;
 
-  const browserType = detectBrowser();
+  await ensureBinary();
 
-  context = await (browserType === 'firefox'
-    ? firefox.launchPersistentContext(PROFILE_DIR, {
-        headless: true,
-        viewport: { width: 1280, height: 720 },
-        args: ['-width=1280', '-height=720'],
-        userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0',
-      })
-    : chromium.launchPersistentContext(PROFILE_DIR, {
-        headless: true,
-        viewport: { width: 1280, height: 720 },
-        args: [
-          '--no-sandbox',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-        ],
-        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      }));
-
-  page = context.pages()[0] || await context.newPage();
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'id'] });
-    (window as any).chrome = { runtime: {} };
-    const origQuery = (window as any).Permissions?.prototype?.query;
-    if (origQuery) {
-      (window as any).Permissions.prototype.query = (params: any) =>
-        params.name === 'notifications'
-          ? Promise.resolve({ state: Notification.permission } as any)
-          : origQuery(params);
-    }
+  context = await launchPersistentContext({
+    userDataDir: PROFILE_DIR,
+    headless: true,
+    humanize: true,
+    locale: 'en-US',
+    viewport: { width: 1280, height: 720 },
   });
 
+  page = context.pages()[0] || await context.newPage();
   return page;
 }
 
@@ -65,7 +35,7 @@ async function closeBrowser(): Promise<void> {
 }
 
 function describePage(page: Page): string {
-  return `[Browser: ${detectBrowser()}] Profile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${page.title()}`;
+  return `[Browser: CloakBrowser] Profile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${page.title()}`;
 }
 
 async function resolveLocator(p: Page, target: string) {
@@ -90,17 +60,17 @@ async function resolveLocator(p: Page, target: string) {
 
 export const browserTool: Tool = {
   name: 'browser',
-  description: `Control a real browser (Firefox/Chromium) with persistent profile — cookies, sessions, and logged-in accounts survive across runs. Use this for web automation, form filling, account registration, reading emails in Gmail, scraping authenticated pages, and any task requiring a real browser session.
+  description: `Control a stealth browser (CloakBrowser - patched Chromium with source-level anti-detection) with persistent profile. Cookies, sessions, and logged-in accounts survive across runs. Built-in bot detection evasion passes reCAPTCHA scoring, Cloudflare Turnstile, BrowserScan, and fingerprint checks. Human-like mouse, keyboard, and scroll behavior included. Use this for web automation, form filling, account registration, reading emails in Gmail, scraping authenticated pages, and any task needing a real browser session.
 
-Actions: navigate, click, fill, type, screenshot, snapshot, text, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, status, close.
+Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, cookies, upload, detect-captcha, solve-captcha, status, close.
 
 Captcha solving: Use "detect-captcha" to scan for captchas on the page. Use "solve-captcha" to attempt auto-solving (supports reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha, and image captchas). Checkbox captchas are auto-clicked; image challenges are screenshot for AI vision analysis.
 
-Stealth: Browser uses anti-detection measures (spoofed webdriver, plugins, user-agent) to reduce bot detection by captcha systems.
+Stealth: CloakBrowser uses source-level Chromium patches (undetectable fingerprint spoofing, webdriver=false, spoofed plugins/languages/WebGL/canvas) - far more effective than runtime JavaScript patches.
 
 Target resolution: CSS selectors (#id, .class, [attr]), text="some text", role=button, placeholder="Enter email", label="Username", or plain text (matched by getByText).
 
-The browser profile persists at ~/.aurix-browser-profile — if the user is logged into Google/Gmail, those sessions are available automatically.`,
+The browser profile persists at ~/.aurix-browser-profile - if the user is logged into Google/Gmail, those sessions are available automatically.`,
   parameters: {
     type: 'object',
     properties: {
@@ -135,10 +105,10 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
       switch (action) {
         case 'status': {
           if (!page || page.isClosed()) {
-            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${PROFILE_DIR}\nEngine: ${detectBrowser()}`;
+            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${PROFILE_DIR}\nEngine: CloakBrowser`;
           }
           const title = await page.title();
-          return `Browser: running\nEngine: ${detectBrowser()}\nProfile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
+          return `Browser: running\nEngine: CloakBrowser (stealth Chromium)\nProfile: ${PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
         }
 
         case 'close': {
@@ -258,7 +228,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           }
           const bodyText = await p.locator('body').innerText({ timeout: 5000 });
           return bodyText.length > 10000
-            ? bodyText.slice(0, 10000) + `\n\n... [${bodyText.length - 10000} more chars — use target to get specific element text]`
+            ? bodyText.slice(0, 10000) + `\n\n... [${bodyText.length - 10000} more chars]`
             : bodyText;
         }
 
@@ -271,7 +241,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           }
           const html = await p.content();
           return html.length > 15000
-            ? html.slice(0, 15000) + `\n\n... [${html.length - 15000} more chars — use target for specific elements]`
+            ? html.slice(0, 15000) + `\n\n... [${html.length - 15000} more chars]`
             : html;
         }
 

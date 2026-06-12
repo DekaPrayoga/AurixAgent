@@ -21,3 +21,12 @@ try {
 } catch (e) {
   console.warn('[postinstall] Could not patch react-reconciler:', e.message);
 }
+
+try {
+  console.log('[postinstall] Ensuring CloakBrowser stealth Chromium binary...');
+  const { ensureBinary } = await import('cloakbrowser');
+  const binaryPath = await ensureBinary();
+  console.log('[postinstall] CloakBrowser binary ready:', binaryPath);
+} catch (e) {
+  console.warn('[postinstall] CloakBrowser binary download skipped:', e.message);
+}
