@@ -7,7 +7,7 @@ echo "  AURIX Agent — Installer"
 echo ""
 
 INSTALL_DIR="${AURIX_HOME:-$HOME/.aurix/agent}"
-REPO="${AURIX_REPO:-https://github.com/youruser/aurix-agent.git}"
+REPO="${AURIX_REPO:-https://github.com/DekaPrayoga/AurixAgent.git}"
 
 # 1. Node.js
 echo "==> Checking Node.js..."
@@ -37,7 +37,29 @@ else
   echo "  kitty ok"
 fi
 
-# 3. Clone or update
+# 2. Bun
+echo "==> Checking Bun runtime..."
+if ! command -v bun &>/dev/null; then
+  if [ -x "$HOME/.bun/bin/bun" ]; then
+    export PATH="$HOME/.bun/bin:$PATH"
+  else
+    echo "  Installing Bun..."
+    curl -fsSL https://bun.sh/install | bash
+    export PATH="$HOME/.bun/bin:$PATH"
+  fi
+fi
+echo "  Bun $(bun --version) ok"
+
+# 3. Rust (optional, for native token counter)
+echo "==> Checking Rust toolchain (optional)..."
+if command -v rustc &>/dev/null; then
+  echo "  Rust $(rustc --version | awk '{print $2}') ok"
+else
+  echo "  Rust not found — native token counter will use JS fallback"
+  echo "  Optional: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+fi
+
+# 4. Clone or update
 echo "==> Setting up AURIX Agent..."
 if [ -d "$INSTALL_DIR/.git" ]; then
   cd "$INSTALL_DIR" && git pull --quiet
