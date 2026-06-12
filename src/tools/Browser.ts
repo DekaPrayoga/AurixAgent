@@ -23,12 +23,37 @@ function warn(msg: string, details?: Record<string, string>): string {
   return lines.join('\n');
 }
 
-let context: BrowserContext | null = null;
-let page: Page | null = null;
+interface BrowserSession {
+  context: BrowserContext;
+  page: Page;
+  profileDir: string;
+}
+
+const sessions = new Map<string, BrowserSession>();
+let currentSessionKey = 'default';
 let consecutiveEvalFailures = 0;
 let lastEvalCode = '';
 let browserHeadless = process.env.BROWSER_HEADLESS !== 'false';
 let browserProxy = process.env.BROWSER_PROXY || '';
+
+export function setBrowserSession(key: string): void {
+  currentSessionKey = key;
+}
+
+export function getBrowserSession(): string {
+  return currentSessionKey;
+}
+
+function getSession(): BrowserSession | undefined {
+  return sessions.get(currentSessionKey);
+}
+
+async function closeAllSessions(): Promise<void> {
+  for (const [key, session] of sessions) {
+    await session.context.close().catch(() => {});
+  }
+  sessions.clear();
+}
 
 function getProxyPool(): string[] {
   try {
@@ -137,7 +162,8 @@ function randomPick<T>(arr: T[]): T {
 }
 
 async function ensureBrowser(): Promise<Page> {
-  if (page && !page.isClosed()) return page;
+  const existing = getSession();
+  if (existing && !existing.page.isClosed()) return existing.page;
 
   await ensureBinary();
 
@@ -208,7 +234,7 @@ async function ensureBrowser(): Promise<Page> {
     }
   }
 
-  context = await launchPersistentContext(launchOpts as any);
+  const context = await launchPersistentContext(launchOpts as any);
 
   await context.addInitScript({
     content: `(() => {
@@ -310,20 +336,24 @@ async function ensureBrowser(): Promise<Page> {
     })();`,
   });
 
-  page = context.pages()[0] || await context.newPage();
+  const page = context.pages()[0] || await context.newPage();
+  
+  sessions.set(currentSessionKey, { context, page, profileDir });
   return page;
 }
 
 async function closeBrowser(): Promise<void> {
-  if (context) {
-    await context.close().catch(() => {});
-    context = null;
-    page = null;
+  const session = getSession();
+  if (session) {
+    await session.context.close().catch(() => {});
+    sessions.delete(currentSessionKey);
   }
 }
 
 function describePage(page: Page): string {
-  return `[Browser: Chromium] Profile: ${BASE_PROFILE_DIR}\nURL: ${page.url()}\nTitle: ${page.title()}`;
+  const session = getSession();
+  const profilePath = session?.profileDir || BASE_PROFILE_DIR;
+  return `[Browser: Chromium] Profile: ${profilePath}\nURL: ${page.url()}\nTitle: ${page.title()}`;
 }
 
 async function resolveLocator(p: Page, target: string) {
@@ -717,12 +747,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
         case 'open-tabs': {
           const p = await ensureBrowser();
+          const session = getSession()!;
           const count = parseInt(value) || 3;
           const urls = target ? target.split(',').map(s => s.trim()) : [];
           const tabs: string[] = [];
 
           for (let i = 0; i < count; i++) {
-            const newPage = await context!.newPage();
+            const newPage = await session.context.newPage();
             if (urls[i]) {
               const url = urls[i].startsWith('http') ? urls[i] : `https://${urls[i]}`;
               await newPage.goto(url, { waitUntil: 'domcontentloaded', timeout }).catch(() => {});
@@ -733,23 +764,26 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           }
 
           return ok(`Opened ${count} tabs`, {
-            total: `${context!.pages().length} tabs open`,
+            total: `${session.context.pages().length} tabs open`,
             tabs: tabs.join('\n'),
             hint: 'Use switch-tab to navigate between tabs, or run signup-assist/signin-assist on the current tab',
           });
         }
 
         case 'status': {
-          if (!page || page.isClosed()) {
+          const session = getSession();
+          if (!session || session.page.isClosed()) {
             return `Browser: not running. Use action "navigate" to start it.\nProfile: ${BASE_PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
           }
-          const title = await page.title();
-          return `Browser: running\nEngine: Chromium\nProfile: ${BASE_PROFILE_DIR}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${page.url()}\nTitle: ${title}\nOpen tabs: ${context!.pages().length}`;
+          const title = await session.page.title();
+          return `Browser: running\nEngine: Chromium\nProfile: ${session.profileDir}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${session.page.url()}\nTitle: ${title}\nOpen tabs: ${session.context.pages().length}`;
         }
 
         case 'close': {
+          const session = getSession();
+          const profilePath = session?.profileDir || BASE_PROFILE_DIR;
           await closeBrowser();
-          return 'Browser closed. Profile preserved at ' + BASE_PROFILE_DIR;
+          return 'Browser closed. Profile preserved at ' + profilePath;
         }
 
         case 'navigate': {
@@ -991,40 +1025,47 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
         case 'new-tab': {
           const p = await ensureBrowser();
-          const newPage = await context!.newPage();
+          const session = getSession()!;
+          const newPage = await session.context.newPage();
           if (value) {
             const url = value.startsWith('http') ? value : `https://${value}`;
             await newPage.goto(url, { waitUntil: 'domcontentloaded', timeout });
           }
-          page = newPage;
-          return `New tab opened (${context!.pages().length} tabs total)\nURL: ${newPage.url()}`;
+          session.page = newPage;
+          sessions.set(currentSessionKey, session);
+          return `New tab opened (${session.context.pages().length} tabs total)\nURL: ${newPage.url()}`;
         }
 
         case 'switch-tab': {
           const p = await ensureBrowser();
-          const pages = context!.pages();
+          const session = getSession()!;
+          const pages = session.context.pages();
           const idx = parseInt(value) || 0;
           if (idx < 0 || idx >= pages.length) return `Error: tab index ${idx} out of range (0-${pages.length - 1})`;
-          page = pages[idx];
-          await page.bringToFront();
-          return `Switched to tab ${idx}\nURL: ${page.url()}\nTitle: ${await page.title()}`;
+          session.page = pages[idx];
+          sessions.set(currentSessionKey, session);
+          await session.page.bringToFront();
+          return `Switched to tab ${idx}\nURL: ${session.page.url()}\nTitle: ${await session.page.title()}`;
         }
 
         case 'close-tab': {
           const p = await ensureBrowser();
-          const pages = context!.pages();
+          const session = getSession()!;
+          const pages = session.context.pages();
           if (pages.length <= 1) return 'Cannot close the only tab. Use "close" to shut down the browser.';
           const idx = value ? parseInt(value) : pages.indexOf(p);
           const toClose = pages[idx];
           if (!toClose) return `Error: tab index ${idx} not found`;
           await toClose.close();
-          page = context!.pages()[0];
-          return `Closed tab ${idx}. ${context!.pages().length} tabs remaining.\nCurrent URL: ${page.url()}`;
+          session.page = session.context.pages()[0];
+          sessions.set(currentSessionKey, session);
+          return `Closed tab ${idx}. ${session.context.pages().length} tabs remaining.\nCurrent URL: ${session.page.url()}`;
         }
 
         case 'cookies': {
           const p = await ensureBrowser();
-          const cookies = await context!.cookies(value ? [value] : undefined);
+          const session = getSession()!;
+          const cookies = await session.context.cookies(value ? [value] : undefined);
           if (cookies.length === 0) return 'No cookies found';
           return cookies.map(c => `${c.domain} | ${c.name}=${c.value.slice(0, 40)}${c.value.length > 40 ? '...' : ''}`).join('\n');
         }
