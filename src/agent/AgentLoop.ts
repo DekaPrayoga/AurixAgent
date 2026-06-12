@@ -147,7 +147,6 @@ export class AgentLoop {
       }
 
       if (response.toolCalls.length > 0) {
-        // Push assistant message WITH tool calls (required by OpenAI API)
         this.messages.push({
           role: 'assistant',
           content: response.text || '',
@@ -159,7 +158,64 @@ export class AgentLoop {
           yield { type: 'text', data: response.text };
         }
 
-        for (const call of response.toolCalls) {
+        const READ_ONLY_TOOLS = new Set(['read_file', 'search_files', 'terminal_ls', 'web_search', 'research', 'research_forums']);
+        const MAX_RESULT_LEN = 8000;
+
+        const truncateResult = (result: string): string => {
+          if (result.length <= MAX_RESULT_LEN) return result;
+          const headLen = Math.floor(MAX_RESULT_LEN * 0.4);
+          const tailLen = Math.floor(MAX_RESULT_LEN * 0.4);
+          const head = result.slice(0, headLen);
+          const tail = result.slice(result.length - tailLen);
+          const omitted = result.length - headLen - tailLen;
+          return `${head}\n\n... [${omitted} chars truncated — use read_file with offset/limit to read specific sections] ...\n\n${tail}`;
+        };
+
+        const readOnlyCalls = response.toolCalls.filter(c => READ_ONLY_TOOLS.has(c.name));
+        const writeCalls = response.toolCalls.filter(c => !READ_ONLY_TOOLS.has(c.name));
+
+        if (readOnlyCalls.length > 1) {
+          yield { type: 'tool_start', data: `Executing ${readOnlyCalls.length} read operations concurrently`, toolName: 'batch' };
+
+          const results = await Promise.all(readOnlyCalls.map(async (call) => {
+            try {
+              const result = await this.registry.execute(call.name, call.arguments);
+              return { call, result };
+            } catch (e: any) {
+              return { call, result: `Error executing ${call.name}: ${e.message}\n\nIf this tool failed, try a different approach: use search_files to find the file, read_file to read it, or terminal to run commands.` };
+            }
+          }));
+
+          for (const { call, result } of results) {
+            if (this.interrupted) {
+              this.interrupted = false;
+              yield { type: 'error', data: 'Interrupted during batch tool execution.' };
+              return;
+            }
+
+            const truncated = truncateResult(result);
+            this._outputTokens += Math.ceil(truncated.length / 4);
+            yield { type: 'tool_end', data: truncated, toolName: call.name };
+            this.messages.push({ role: 'tool', content: truncated, toolCallId: call.id });
+          }
+        } else if (readOnlyCalls.length === 1) {
+          const call = readOnlyCalls[0];
+          yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
+          try {
+            const result = await this.registry.execute(call.name, call.arguments);
+            const truncated = truncateResult(result);
+            this._outputTokens += Math.ceil(truncated.length / 4);
+            yield { type: 'tool_end', data: truncated, toolName: call.name };
+            this.messages.push({ role: 'tool', content: truncated, toolCallId: call.id });
+          } catch (e: any) {
+            const errMsg = `Error executing ${call.name}: ${e.message}\n\nIf this tool failed, diagnose why before retrying: check the file path, verify the pattern, or try an alternative approach.`;
+            this._outputTokens += Math.ceil(errMsg.length / 4);
+            yield { type: 'tool_end', data: errMsg, toolName: call.name };
+            this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
+          }
+        }
+
+        for (const call of writeCalls) {
           if (this.interrupted) {
             this.interrupted = false;
             yield { type: 'error', data: 'Interrupted before tool execution.' };
@@ -168,10 +224,16 @@ export class AgentLoop {
 
           yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
 
-          const result = await this.registry.execute(call.name, call.arguments);
-          this._outputTokens += Math.ceil(result.length / 4);
+          let result: string;
+          try {
+            result = await this.registry.execute(call.name, call.arguments);
+          } catch (e: any) {
+            result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying. Check file paths, permissions, and whether the target exists.`;
+          }
+          const truncated = truncateResult(result);
+          this._outputTokens += Math.ceil(truncated.length / 4);
 
-          yield { type: 'tool_end', data: result, toolName: call.name };
+          yield { type: 'tool_end', data: truncated, toolName: call.name };
 
           if (this.interrupted) {
             this.interrupted = false;
@@ -181,7 +243,7 @@ export class AgentLoop {
 
           this.messages.push({
             role: 'tool',
-            content: result,
+            content: truncated,
             toolCallId: call.id,
           });
         }
