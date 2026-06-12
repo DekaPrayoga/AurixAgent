@@ -3,7 +3,7 @@ import type { Tool } from './Registry.js';
 
 export const terminalTool: Tool = {
   name: 'terminal',
-  description: 'Execute a shell command and return its output. Use for running commands, checking system state, installing packages, etc.',
+  description: `Execute a shell command and return its output. Use for system commands, running services, installing packages, git operations, and terminal-specific tasks. For file operations prefer dedicated tools: read_file (not cat), file_edit (not sed/awk), write_file (not echo), search_files (not grep/find).`,
   parameters: {
     type: 'object',
     properties: {

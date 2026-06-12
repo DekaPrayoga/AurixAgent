@@ -2,7 +2,15 @@ import type { Tool } from './Registry.js';
 
 export const fileEditTool: Tool = {
   name: 'file_edit',
-  description: 'Edit a file by replacing exact string matches. Supports multi-line replacements. Creates files if they don\'t exist when old_string is empty.',
+  description: `Performs exact string replacements in files.
+
+Usage:
+- You must use your read_file tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file first.
+- When editing text from read_file output, preserve the exact indentation (tabs/spaces) as it appears in the file content.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.
+- Use replace_all for replacing and renaming strings across the file. This is useful for renaming variables.
+- Use the smallest old_string that is clearly unique — usually 2-4 adjacent lines is sufficient.`,
   parameters: {
     type: 'object',
     properties: {

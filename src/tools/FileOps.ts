@@ -4,7 +4,7 @@ import type { Tool } from './Registry.js';
 
 export const readFileTool: Tool = {
   name: 'read_file',
-  description: 'Read the contents of a file. Supports text files. Returns content with line numbers.',
+  description: `Reads a file from the filesystem. You MUST read a file before editing it — the file_edit tool will reject edits to unread files. Use this tool to understand existing code before making changes. Supports reading specific line ranges with offset and limit parameters.`,
   parameters: {
     type: 'object',
     properties: {
@@ -29,7 +29,7 @@ export const readFileTool: Tool = {
 
 export const writeFileTool: Tool = {
   name: 'write_file',
-  description: 'Write content to a file. Creates the file if it does not exist, overwrites if it does.',
+  description: `Writes content to a file. Creates the file if it does not exist, overwrites if it does. IMPORTANT: Prefer editing existing files using file_edit rather than creating new files. Only use write_file when creating genuinely new files or when a complete rewrite is necessary.`,
   parameters: {
     type: 'object',
     properties: {
@@ -49,7 +49,7 @@ export const writeFileTool: Tool = {
 
 export const searchFilesTool: Tool = {
   name: 'search_files',
-  description: 'Search for a pattern in files using ripgrep (rg) or grep. Returns matching lines with file paths.',
+  description: `Search for a text pattern across files using ripgrep. Returns matching lines with file paths and line numbers. Use this tool to find where specific code, functions, routes, or patterns exist in the codebase. Essential for understanding project structure before making changes. Supports glob filtering to narrow results to specific file types.`,
   parameters: {
     type: 'object',
     properties: {

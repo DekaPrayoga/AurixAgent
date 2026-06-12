@@ -392,7 +392,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
-      if (value) {
+      const isHintText = value === 'press Ctrl+C again to exit';
+      if (value && !isHintText) {
         writeClipboard(value);
         lastCtrlCEmpty = 0;
       } else {
@@ -633,6 +634,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         <box>
           <text fg={theme.textMuted}>{homeDir}</text>
         </box>
+      </box>
+      <box paddingX={1}>
+        <text fg={theme.textMuted}>To Exit: Type /exit or Double Ctrl+C</text>
       </box>
     </box>
   );
