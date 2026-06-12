@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
+import { loadConfig, saveConfig } from '../agent/Config.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 
@@ -345,6 +346,31 @@ export class Gateway extends EventEmitter {
 
     if (!this.isUserAllowed(msg)) {
       await platform.send('🔒 Access denied. Your user ID is not in the allowed list for this bot.', msg.channelId, msg.replyTo);
+      return;
+    }
+
+    const proxyLines = text.split('\n').map(l => l.trim()).filter(l => /^\d{1,3}(\.\d{1,3}){3}:\d{1,5}(:[^:\s]+:[^:\s]+)?$/.test(l));
+    if (proxyLines.length > 0 && !cmd) {
+      try {
+        const config = loadConfig();
+        if (!config.browser) config.browser = {};
+        if (!config.browser.proxies) config.browser.proxies = [];
+        let added = 0;
+        for (const line of proxyLines) {
+          if (!config.browser.proxies.includes(line)) {
+            config.browser.proxies.push(line);
+            added++;
+          }
+        }
+        if (added > 0) {
+          saveConfig(config);
+          await platform.send(`🌐 ${added} proxy added to config (total: ${config.browser.proxies.length}).\nBrowser will use them on next session.`, msg.channelId, msg.replyTo);
+        } else {
+          await platform.send(`🌐 All proxies already in config (total: ${config.browser.proxies!.length}).`, msg.channelId, msg.replyTo);
+        }
+      } catch (e: any) {
+        await platform.send(`Failed to save proxies: ${e.message}`, msg.channelId, msg.replyTo);
+      }
       return;
     }
 

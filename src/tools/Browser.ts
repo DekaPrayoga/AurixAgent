@@ -183,6 +183,16 @@ async function ensureBrowser(): Promise<Page> {
       '--no-first-run',
       '--no-default-browser-check',
       `--window-size=${vp.width},${vp.height}`,
+      `--fingerprint=${Math.floor(Math.random() * 999999)}`,
+      '--fingerprint-platform=windows',
+      `--fingerprint-hardware-concurrency=${hwConcurrency}`,
+      `--fingerprint-device-memory=${devMemory}`,
+      `--fingerprint-screen-width=${screenW}`,
+      `--fingerprint-screen-height=${screenH}`,
+      `--fingerprint-timezone=${geo.timezone}`,
+      '--fingerprint-locale=en-US',
+      '--fingerprint-brand=Chrome',
+      '--fingerprint-webrtc-ip=auto',
     ],
   };
 
