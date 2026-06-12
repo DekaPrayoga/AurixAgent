@@ -185,8 +185,16 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'theme',
+    argumentHint: '[name]',
     aliases: ['color'],
-    description: 'Show current theme and setup command for changing it',
+    description: 'Switch color theme (pink, ocean, dark, green, sunset, nebula, etc.)',
+    group: 'config',
+    source: 'claude-code',
+  },
+  {
+    name: 'border',
+    argumentHint: '<style>',
+    description: 'Change border style (rounded, single, double, heavy, ascii)',
     group: 'config',
     source: 'claude-code',
   },

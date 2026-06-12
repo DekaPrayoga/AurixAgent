@@ -131,6 +131,12 @@ async function stepTheme(): Promise<{ name: NonNullable<AurixConfig['themeName']
       { id: 'amber', label: 'Amber Ops', desc: 'Warm command-center style' },
       { id: 'violet', label: 'Violet AI', desc: 'Purple accent, still dark' },
       { id: 'mono', label: 'Mono', desc: 'Minimal grayscale' },
+      { id: 'pink', label: 'Pink Dream', desc: 'Hot pink with rose accents' },
+      { id: 'ocean', label: 'Ocean Blue', desc: 'Deep sea cyan + blue' },
+      { id: 'dark', label: 'Dark Mode', desc: 'Ultra minimal dark gray' },
+      { id: 'green', label: 'Matrix Green', desc: 'Hacker terminal green' },
+      { id: 'sunset', label: 'Sunset Gradient', desc: 'Orange to pink warm gradient' },
+      { id: 'nebula', label: 'Nebula', desc: 'Purple + pink cosmic gradient' },
     ],
     allowSkip: true,
   });
@@ -141,6 +147,12 @@ async function stepTheme(): Promise<{ name: NonNullable<AurixConfig['themeName']
     amber: { name: 'amber', accent: '#FFB020' },
     violet: { name: 'violet', accent: '#9d7cd8' },
     mono: { name: 'mono', accent: '#eeeeee' },
+    pink: { name: 'pink', accent: '#ff6b9d' },
+    ocean: { name: 'ocean', accent: '#64ffda' },
+    dark: { name: 'dark', accent: '#c0c0c0' },
+    green: { name: 'green', accent: '#00ff41' },
+    sunset: { name: 'sunset', accent: '#ff6b35' },
+    nebula: { name: 'nebula', accent: '#bd93f9' },
   };
 
   return palette[choice] || palette.aurix;
@@ -344,7 +356,18 @@ async function stepGateway(): Promise<AurixConfig['gateway']> {
         label: 'Token:',
         masked: true,
       });
-      if (token && token !== '__back__') gateway.discord = { enabled: true, token };
+      if (token && token !== '__back__') {
+        gateway.discord = { enabled: true, token };
+        const userIds = await drawInputScreen({
+          title: 'Discord — Allowed User IDs (Optional)',
+          hint: 'Comma-separated Discord user IDs. Only these users can control the bot.\nLeave blank to allow everyone (not recommended for VPS bots).\nFind your ID: right-click your name → Copy User ID (enable Developer Mode in settings).',
+          label: 'User IDs:',
+          masked: false,
+        });
+        if (userIds && userIds !== '__back__') {
+          gateway.discord!.allowedUsers = userIds.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      }
     }
     if (platform === 'telegram') {
       const token = await drawInputScreen({
@@ -353,11 +376,31 @@ async function stepGateway(): Promise<AurixConfig['gateway']> {
         label: 'Token:',
         masked: true,
       });
-      if (token && token !== '__back__') gateway.telegram = { enabled: true, token };
+      if (token && token !== '__back__') {
+        gateway.telegram = { enabled: true, token };
+        const userIds = await drawInputScreen({
+          title: 'Telegram — Allowed User IDs (Optional)',
+          hint: 'Comma-separated Telegram user IDs. Only these users can control the bot.\nLeave blank to allow everyone.\nFind your ID: message @userinfobot or @getmyid_bot.',
+          label: 'User IDs:',
+          masked: false,
+        });
+        if (userIds && userIds !== '__back__') {
+          gateway.telegram!.allowedUsers = userIds.split(',').map(s => s.trim()).filter(Boolean);
+        }
+      }
     }
     if (platform === 'whatsapp') {
       gateway.whatsapp = { enabled: true };
       drawInfo('WhatsApp will pair via QR code on first run');
+      const phoneIds = await drawInputScreen({
+        title: 'WhatsApp — Allowed Phone Numbers (Optional)',
+        hint: 'Comma-separated phone numbers with country code (e.g. +6281234567890).\nOnly these numbers can control the bot. Leave blank to allow everyone.',
+        label: 'Phone numbers:',
+        masked: false,
+      });
+      if (phoneIds && phoneIds !== '__back__') {
+        gateway.whatsapp.allowedUsers = phoneIds.split(',').map(s => s.trim()).filter(Boolean);
+      }
     }
   }
 

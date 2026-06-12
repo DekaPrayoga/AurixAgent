@@ -11,7 +11,7 @@ import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { ConnectModal } from './ConnectModal.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
-import { theme } from './theme.js';
+import { theme, switchTheme, ALL_THEME_NAMES, type ThemeName, setBorderStyle, type BorderStyle } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { AurixConfig } from '../agent/Config.js';
@@ -763,7 +763,19 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         addAssistant('No plugins installed. Use /plugin install <source> to add plugins.');
         return;
       } else if (commandName === 'skin') {
-        addAssistant(`Current skin: ${config.themeName || 'aurix'}\nAvailable: aurix, opencode, amber, violet, mono`);
+        if (slash.args) {
+          const name = slash.args.trim().toLowerCase() as ThemeName;
+          if (!ALL_THEME_NAMES.includes(name)) {
+            addAssistant(`Unknown skin: "${name}". Available: ${ALL_THEME_NAMES.join(', ')}`);
+            return;
+          }
+          switchTheme(name);
+          config.themeName = name;
+          saveConfig(config);
+          addAssistant(`Skin switched to: ${name}`);
+          return;
+        }
+        addAssistant(`Current skin: ${config.themeName || 'aurix'}\nAvailable: ${ALL_THEME_NAMES.join(', ')}\n\nUsage: /skin <name> or /theme <name>`);
         return;
       } else if (commandName === 'personality') {
         addAssistant(slash.args ? `Personality set to: ${slash.args}` : 'No personality overlay active. Use /personality <name> to set.');
@@ -997,7 +1009,52 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       }
 
       if (commandName === 'theme') {
-        addAssistant(`Current theme: ${config.themeName || 'aurix'}\nChange it with: aurix setup`);
+        if (!slash.args) {
+          const themeDescriptions: Record<ThemeName, string> = {
+            aurix: 'Teal + Orange (default)',
+            opencode: 'Cool blue',
+            amber: 'Warm amber ops',
+            violet: 'Purple AI',
+            mono: 'Grayscale',
+            pink: 'Hot pink dream',
+            ocean: 'Deep sea cyan + blue',
+            dark: 'Ultra minimal dark',
+            green: 'Matrix hacker green',
+            sunset: 'Orange to pink warm',
+            nebula: 'Purple + pink cosmic',
+          };
+          const current = config.themeName || 'aurix';
+          const list = ALL_THEME_NAMES.map(n =>
+            n === current ? `  > ${n.padEnd(12)} ${themeDescriptions[n]}` : `    ${n.padEnd(12)} ${themeDescriptions[n]}`
+          ).join('\n');
+          addAssistant(`Current theme: ${current}\n\nAvailable themes:\n${list}\n\nUsage: /theme <name>\nExample: /theme pink`);
+          return;
+        }
+        const name = slash.args.trim().toLowerCase() as ThemeName;
+        if (!ALL_THEME_NAMES.includes(name)) {
+          addAssistant(`Unknown theme: "${name}". Available: ${ALL_THEME_NAMES.join(', ')}`);
+          return;
+        }
+        switchTheme(name);
+        config.themeName = name;
+        saveConfig(config);
+        addAssistant(`Theme switched to: ${name}\n\nAll colors updated. Use /theme to see all options.`);
+        return;
+      }
+
+      if (commandName === 'border') {
+        const styles: BorderStyle[] = ['rounded', 'single', 'double', 'heavy', 'ascii', 'none'];
+        if (!slash.args) {
+          addAssistant(`Border styles:\n${styles.map(s => `  ${s}`).join('\n')}\n\nUsage: /border <style>\nExample: /border double`);
+          return;
+        }
+        const style = slash.args.trim().toLowerCase() as BorderStyle;
+        if (!styles.includes(style)) {
+          addAssistant(`Unknown border style: "${style}". Available: ${styles.join(', ')}`);
+          return;
+        }
+        setBorderStyle(style);
+        addAssistant(`Border style set to: ${style}`);
         return;
       }
 

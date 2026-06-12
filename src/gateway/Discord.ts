@@ -5,6 +5,10 @@ const DISCORD_COMMANDS = [
   { name: 'start', description: 'Show all commands' },
   { name: 'help', description: 'Quick help' },
   { name: 'reset', description: 'Clear conversation context' },
+  { name: 'cancel', description: 'Stop current task and clear queue' },
+  { name: 'title', description: 'Name & save session (auto-random if no name)' },
+  { name: 'resume', description: 'Load a saved session' },
+  { name: 'save', description: 'Save session for later resume' },
   { name: 'model', description: 'Switch AI model' },
   { name: 'baseurl', description: 'Change API base URL' },
   { name: 'apikey', description: 'Set API key' },
@@ -17,7 +21,6 @@ const DISCORD_COMMANDS = [
   { name: 'skills', description: 'List available skills' },
   { name: 'status', description: 'Show current status' },
   { name: 'history', description: 'Show message count' },
-  { name: 'save', description: 'Save session for later resume' },
   { name: 'compress', description: 'Compress context' },
   { name: 'agents', description: 'Show active agents' },
 ];

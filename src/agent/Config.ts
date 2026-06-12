@@ -14,7 +14,7 @@ export interface AurixConfig {
   systemPrompt?: string;
   apiStyle?: 'anthropic' | 'openai' | 'auto';
   researchMode?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-  themeName?: 'aurix' | 'opencode' | 'amber' | 'violet' | 'mono';
+  themeName?: 'aurix' | 'opencode' | 'amber' | 'violet' | 'mono' | 'pink' | 'ocean' | 'dark' | 'green' | 'sunset' | 'nebula';
   accentColor?: string;
   langsmith?: {
     apiKey: string;
@@ -30,9 +30,12 @@ export interface AurixConfig {
     allowClaudeStore?: boolean;
   };
   gateway?: {
-    discord?: { enabled: boolean; token: string };
-    telegram?: { enabled: boolean; token: string };
-    whatsapp?: { enabled: boolean };
+    discord?: { enabled: boolean; token: string; allowedUsers?: string[] };
+    telegram?: { enabled: boolean; token: string; allowedUsers?: string[] };
+    whatsapp?: { enabled: boolean; allowedUsers?: string[] };
+  };
+  browser?: {
+    proxies?: string[];
   };
   tools?: {
     enabled?: string[];
@@ -85,6 +88,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,
+    browser: file.browser,
     tools: file.tools,
     features: file.features,
   };

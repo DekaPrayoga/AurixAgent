@@ -3,6 +3,7 @@ import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { Tool } from './Registry.js';
+import { loadConfig } from '../agent/Config.js';
 
 function ok(msg: string, details?: Record<string, string>): string {
   const lines = [`[OK] ${msg}`];
@@ -29,36 +30,113 @@ let lastEvalCode = '';
 let browserHeadless = process.env.BROWSER_HEADLESS !== 'false';
 let browserProxy = process.env.BROWSER_PROXY || '';
 
+function getProxyPool(): string[] {
+  try {
+    const config = loadConfig();
+    return config.browser?.proxies || [];
+  } catch {
+    return [];
+  }
+}
+
+function pickRandomProxy(): string {
+  const pool = getProxyPool();
+  if (pool.length === 0) return '';
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 const PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
+
+const VIEWPORTS = [
+  { width: 1280, height: 720 },
+  { width: 1366, height: 768 },
+  { width: 1440, height: 900 },
+  { width: 1536, height: 864 },
+  { width: 1920, height: 1080 },
+  { width: 1600, height: 900 },
+];
+
+function randomViewport() {
+  return VIEWPORTS[Math.floor(Math.random() * VIEWPORTS.length)];
+}
 
 async function ensureBrowser(): Promise<Page> {
   if (page && !page.isClosed()) return page;
 
   await ensureBinary();
 
+  const vp = randomViewport();
+
   const launchOpts: Record<string, any> = {
     userDataDir: PROFILE_DIR,
     headless: browserHeadless,
     humanize: true,
-    locale: 'en-US',
-    viewport: { width: 1280, height: 720 },
+    humanPreset: 'careful',
+    geoip: true,
+    stealthArgs: true,
+    colorScheme: 'light',
+    viewport: vp,
+    args: [
+      '--disable-webrtc',
+      '--disable-rtc-sdp-logs',
+      '--disable-background-networking',
+      '--disable-client-side-phishing-detection',
+      '--disable-default-apps',
+      '--disable-component-update',
+      '--disable-domain-reliability',
+      '--disable-features=WebRtcHideLocalIpsWithMdns,TranslateUI',
+      '--disable-blink-features=AutomationControlled',
+      '--no-first-run',
+      '--no-default-browser-check',
+    ],
   };
 
-  if (browserProxy) {
-    const [host, portStr] = browserProxy.includes('@')
-      ? [browserProxy.split('@')[1].split(':')[0], browserProxy.split('@')[1].split(':')[1]]
-      : [browserProxy.split(':')[0], browserProxy.split(':')[1]];
-    const server = `http://${host}:${portStr || '8080'}`;
+  const activeProxy = browserProxy || pickRandomProxy();
+  const parts = activeProxy.split(':');
+  if (parts.length >= 2) {
+    const host = parts[0];
+    const port = parts[1];
+    const server = `http://${host}:${port}`;
     launchOpts.proxy = { server };
-    if (browserProxy.includes('@')) {
-      const creds = browserProxy.split('@')[0].replace(/^https?:\/\//, '');
-      const [username, password] = creds.split(':');
-      launchOpts.proxy.username = username;
-      launchOpts.proxy.password = password;
+    if (parts.length >= 4) {
+      launchOpts.proxy.username = parts[2];
+      launchOpts.proxy.password = parts[3];
     }
   }
 
   context = await launchPersistentContext(launchOpts as any);
+
+  await context.addInitScript(() => {
+    const fakePc = class { constructor() {} addStream() {} createOffer() { return Promise.resolve({}); } setLocalDescription() { return Promise.resolve(); } setRemoteDescription() { return Promise.resolve(); } addIceCandidate() { return Promise.resolve(); } close() {} };
+    (window as any).RTCPeerConnection = fakePc;
+    (window as any).webkitRTCPeerConnection = fakePc;
+    (window as any).mozRTCPeerConnection = fakePc;
+
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+    const hwConcurrency = [4, 6, 8, 12][Math.floor(Math.random() * 4)];
+    const devMemory = [4, 8, 16][Math.floor(Math.random() * 3)];
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => hwConcurrency });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => devMemory });
+
+    const originalQuery = (window as any).Permissions?.prototype?.query;
+    if (originalQuery) {
+      (window as any).Permissions.prototype.query = (params: any) => {
+        if (params.name === 'notifications') {
+          return Promise.resolve({ state: Notification.permission });
+        }
+        return originalQuery(params);
+      };
+    }
+
+    const originalToString = Function.prototype.toString;
+    Function.prototype.toString = function () {
+      if (this === Function.prototype.toString) return 'function toString() { [native code] }';
+      if (this === navigator.permissions.query) return 'function query() { [native code] }';
+      return originalToString.call(this);
+    };
+  });
 
   page = context.pages()[0] || await context.newPage();
   return page;
@@ -230,12 +308,22 @@ async function autoSolveCaptcha(p: Page): Promise<string[]> {
   }
 
   if (recaptchaBframe) {
-    results.push('REQUIRES_VISION: reCAPTCHA image challenge detected — screenshot tiles and analyze visually');
+    const gridResult = await analyzeImageChallenge(p, recaptchaBframe, 'recaptcha');
+    results.push('reCAPTCHA image challenge detected — grid analysis:');
+    results.push(gridResult);
   }
 
   const funcaptchaFrame = frames.find(f => f.url().includes('funcaptcha') || f.url().includes('arkoselabs'));
   if (funcaptchaFrame) {
-    results.push('REQUIRES_VISION: FunCaptcha detected — needs image analysis to solve');
+    results.push('FunCaptcha detected — screenshotting puzzle...');
+    try {
+      const fcScreenshotPath = join(homedir(), '.aurix-funcaptcha-puzzle.png');
+      await funcaptchaFrame.locator('body').screenshot({ path: fcScreenshotPath }).catch(() => p.screenshot({ path: fcScreenshotPath }));
+      results.push(`Puzzle screenshot: ${fcScreenshotPath}`);
+      results.push('Analyze the puzzle image and determine the correct answer, then use click/evaluate to solve it.');
+    } catch {
+      results.push('REQUIRES_VISION: FunCaptcha detected — needs image analysis to solve');
+    }
   }
 
   return results;
@@ -331,15 +419,26 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
   }
 
   results.push('');
-  results.push('To solve: look at each tile screenshot, find which ones match the instruction, then use "click-tile" with each matching tile index. After clicking all matches, use "captcha-verify".');
-  results.push('For reCAPTCHA: after clicking a tile, a NEW tile replaces it — screenshot the new grid and evaluate the new tile too before clicking verify.');
+  results.push('=== CAPTCHA SOLVING STEPS ===');
+  results.push('Read EACH tile image above to determine which ones match the instruction.');
+  results.push('Then execute these actions IN ORDER:');
+  results.push('');
+  results.push('Step 1: For each matching tile, call: browser action="click-tile" value="<index>"');
+  results.push('  Example: if tiles 0, 3, and 5 match → click-tile 0, then click-tile 3, then click-tile 5');
+  if (provider === 'recaptcha') {
+    results.push('  IMPORTANT: After clicking a tile, a NEW tile replaces it. Read the new tile screenshot to check if it also matches.');
+  }
+  results.push('Step 2: After clicking ALL matching tiles, call: browser action="captcha-verify"');
+  results.push('Step 3: If verification fails, call captcha-grid again and repeat from Step 1');
+  results.push('');
+  results.push('Do NOT skip any step. Start by reading the tile images now.');
 
   return results.join('\n');
 }
 
 export const browserTool: Tool = {
   name: 'browser',
-  description: `Operate a persistent Chromium browser for the user. Open websites, fill forms with data they provide, click buttons, log into accounts, and complete any steps that appear on the page — including verification puzzles (reCAPTCHA, hCaptcha, FunCaptcha, GeeTest, Turnstile, MTCaptcha). The browser profile persists at ~/.aurix-browser-profile so logins and cookies carry over between sessions. Human-like mouse, keyboard, and scroll behavior built in.
+  description: `Operate a persistent Chromium browser for the user. Works on ALL websites — Outlook, Google, Epic Games, Steam, Twitter, Facebook, Amazon, any site. Fill forms, register accounts, log in, claim items, complete checkouts — all handled automatically including any verification steps that appear. Profile persists at ~/.aurix-browser-profile.
 
 Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, status, close.
 
@@ -1466,8 +1565,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               try {
                 const loc = activeFrame.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible()) {
+                  const cur = await loc.inputValue().catch(() => '');
+                  if (cur && cur.length > 0) {
+                    results.push(`  ✓ ${label}: already filled`);
+                    return true;
+                  }
                   await loc.fill(val, { timeout: 3000 });
-                  results.push(`  ✓ ${label}: filled "${sel}" with "${val.length > 30 ? val.slice(0, 30) + '...' : val}"`);
+                  results.push(`  ✓ ${label}: filled`);
                   return true;
                 }
               } catch {}
@@ -1480,8 +1584,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               try {
                 const loc = activeFrame.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible()) {
+                  const checked = await loc.isChecked().catch(() => false);
+                  if (checked) {
+                    results.push(`  ✓ ${label}: already checked`);
+                    return true;
+                  }
                   await loc.click({ timeout: 3000 });
-                  results.push(`  ✓ ${label}: clicked "${sel}"`);
+                  results.push(`  ✓ ${label}: clicked`);
                   return true;
                 }
               } catch {}
@@ -1489,22 +1598,50 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             return false;
           };
 
-          const selectOption = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+          const selectDropdown = async (selectors: string[], val: string, label: string): Promise<boolean> => {
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible()) {
-                  await loc.selectOption({ label: val }, { timeout: 3000 });
-                  results.push(`  ✓ ${label}: selected "${val}" in "${sel}"`);
-                  return true;
+                  const tag = await loc.evaluate((el: HTMLElement) => el.tagName.toLowerCase()).catch(() => '');
+                  if (tag === 'select') {
+                    try {
+                      await loc.selectOption({ label: val }, { timeout: 3000 });
+                      results.push(`  ✓ ${label}: selected "${val}"`);
+                      return true;
+                    } catch {
+                      try {
+                        await loc.selectOption({ value: val }, { timeout: 3000 });
+                        results.push(`  ✓ ${label}: selected value "${val}"`);
+                        return true;
+                      } catch {}
+                    }
+                  }
+                  await loc.click({ timeout: 3000 });
+                  await activeFrame.waitForTimeout(400);
+                  const numVal = parseInt(val, 10);
+                  const optSels = [
+                    `[role="option"]:has-text("${val}")`,
+                    `[role="listbox"] [role="option"]:has-text("${val}")`,
+                    `li:has-text("${val}"):visible`,
+                    `[data-value="${val}"]:visible`,
+                  ];
+                  if (!isNaN(numVal)) {
+                    optSels.push(`[role="option"]:nth-child(${numVal})`);
+                    optSels.push(`li:nth-child(${numVal}):visible`);
+                  }
+                  for (const os of optSels) {
+                    try {
+                      const opt = activeFrame.locator(os).first();
+                      if (await opt.count() > 0 && await opt.isVisible()) {
+                        await opt.click({ timeout: 2000 });
+                        results.push(`  ✓ ${label}: selected "${val}" (dropdown)`);
+                        return true;
+                      }
+                    } catch {}
+                  }
                 }
-              } catch {
-                try {
-                  await activeFrame.locator(sel).first().selectOption({ value: val }, { timeout: 3000 });
-                  results.push(`  ✓ ${label}: selected value "${val}" in "${sel}"`);
-                  return true;
-                } catch {}
-              }
+              } catch {}
             }
             return false;
           };
@@ -1572,22 +1709,22 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           const birthMonth = data.birthMonth || 'January';
           const birthDay = data.birthDay || '15';
 
-          await selectOption([
+          await selectDropdown([
             'select[id*="BirthYear"]', 'select[name*="birthYear" i]', 'select[id*="year" i]',
             'select[name*="year" i]', 'select[aria-label*="year" i]', 'select[aria-label*="Birth"]',
           ], birthYear, 'Birth year');
 
-          await selectOption([
+          await selectDropdown([
             'select[id*="BirthMonth"]', 'select[name*="birthMonth" i]', 'select[id*="month" i]',
             'select[name*="month" i]', 'select[aria-label*="month" i]',
           ], birthMonth, 'Birth month');
 
-          await selectOption([
+          await selectDropdown([
             'select[id*="BirthDay"]', 'select[name*="birthDay" i]', 'select[id*="day" i]',
             'select[name*="day" i]', 'select[aria-label*="day" i]',
           ], birthDay, 'Birth day');
 
-          await selectOption([
+          await selectDropdown([
             'select[id*="Country"]', 'select[name*="country" i]',
             'select[aria-label*="country" i]', 'select[name*="Country"]',
           ], data.country || 'United States', 'Country');
@@ -1601,13 +1738,27 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             'input[type="checkbox"][name*="agree" i]',
             'input[type="checkbox"][name*="tos" i]',
             'input[type="checkbox"][name*="terms" i]',
+            'input[type="checkbox"][name*="consent" i]',
+            'input[type="checkbox"][name*="privacy" i]',
+            'input[type="checkbox"][name*="policy" i]',
             'input[type="checkbox"][id*="agree" i]',
             'input[type="checkbox"][id*="terms" i]',
+            'input[type="checkbox"][id*="consent" i]',
+            'input[type="checkbox"][id*="privacy" i]',
             'input[type="checkbox"][aria-label*="agree" i]',
             'input[type="checkbox"][aria-label*="terms" i]',
+            'input[type="checkbox"][aria-label*="consent" i]',
+            'input[type="checkbox"][aria-label*="accept" i]',
             'label:has-text("agree") input[type="checkbox"]',
             'label:has-text("terms") input[type="checkbox"]',
             'label:has-text("accept") input[type="checkbox"]',
+            'label:has-text("consent") input[type="checkbox"]',
+            'label:has-text("privacy") input[type="checkbox"]',
+            'label:has-text("I agree") input[type="checkbox"]',
+            'label:has-text("I accept") input[type="checkbox"]',
+            '[role="checkbox"][aria-checked="false"]',
+            'div:has-text("I agree"):not(:has(div:has-text("I agree")))',
+            'span:has-text("I agree"):not(:has(span:has-text("I agree")))',
           ], 'Terms/Agreement checkbox');
 
           await p.waitForTimeout(500);
@@ -1626,13 +1777,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const solveResults = await autoSolveCaptcha(p);
             solveResults.forEach(r => results.push(`  ${r}`));
 
-            const needsVision = solveResults.some(r => r.includes('REQUIRES_VISION'));
+            const needsVision = solveResults.some(r => r.includes('CAPTCHA SOLVING STEPS') || r.includes('REQUIRES_VISION'));
             if (!needsVision) {
               await p.waitForTimeout(2000);
               results.push('Verification completed. Continuing form submission...');
             } else {
               results.push('');
-              results.push('This verification needs visual analysis. Use "captcha-grid" to see the puzzle tiles, then use "click-tile" to select matches and "captcha-verify" to submit.');
+              results.push('⚠ CAPTCHA grid analysis is above. Follow the CAPTCHA SOLVING STEPS to complete it, then re-run signup-assist to continue.');
             }
           }
 
@@ -1709,6 +1860,11 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               try {
                 const loc = activeFrame.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible()) {
+                  const cur = await loc.inputValue().catch(() => '');
+                  if (cur && cur.length > 0) {
+                    results.push(`  ✓ ${label}: already filled`);
+                    return true;
+                  }
                   await loc.fill(val, { timeout: 3000 });
                   results.push(`  ✓ ${label}: filled`);
                   return true;
@@ -1723,6 +1879,11 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               try {
                 const loc = activeFrame.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible()) {
+                  const checked = await loc.isChecked().catch(() => false);
+                  if (checked) {
+                    results.push(`  ✓ ${label}: already checked`);
+                    return true;
+                  }
                   await loc.click({ timeout: 3000 });
                   results.push(`  ✓ ${label}: clicked`);
                   return true;
@@ -1781,13 +1942,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const solveResults = await autoSolveCaptcha(p);
             solveResults.forEach(r => results.push(`  ${r}`));
 
-            const needsVision = solveResults.some(r => r.includes('REQUIRES_VISION'));
+            const needsVision = solveResults.some(r => r.includes('CAPTCHA SOLVING STEPS') || r.includes('REQUIRES_VISION'));
             if (!needsVision) {
               await p.waitForTimeout(2000);
               results.push('Verification completed. Continuing login...');
             } else {
               results.push('');
-              results.push('This verification needs visual analysis. Use "captcha-grid" to see the puzzle, then "click-tile" and "captcha-verify".');
+              results.push('⚠ CAPTCHA grid analysis is above. Follow the CAPTCHA SOLVING STEPS to complete it, then re-run signin-assist to continue.');
             }
           }
 

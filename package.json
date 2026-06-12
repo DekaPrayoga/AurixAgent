@@ -81,5 +81,10 @@
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
+  },
+  "optionalDependencies": {
+    "2": "^3.0.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "pino": "^10.3.1"
   }
 }

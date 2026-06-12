@@ -1,7 +1,12 @@
 import { EventEmitter } from 'events';
+import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { ToolRegistry } from '../tools/Registry.js';
+
+function cryptoRandomId(): string {
+  return crypto.randomBytes(6).toString('hex');
+}
 
 export interface IncomingMessage {
   platform: string;
@@ -32,9 +37,12 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   /start — Show this guide
   /help — Quick help
   /reset — Clear conversation
+  /cancel — Stop current task (unlocks queue)
+  /title [name] — Name & save session (auto-random if no name)
+  /resume [name] — Load a saved session (list if no name)
+  /save — Save current session
   /status — Model, provider, uptime
   /history — Message count
-  /save — Save conversation transcript
 
 *Configuration:*
   /model <name> — Switch AI model
@@ -85,6 +93,7 @@ const WA_COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   !ai start — Show this guide
   !ai help — Quick help
   !ai reset — Clear conversation
+  !ai cancel — Stop current task
   !ai status — Model, provider, uptime
   !ai history — Message count
 
@@ -237,6 +246,8 @@ export class Gateway extends EventEmitter {
   private startTime: number;
   private activeProcessing = new Set<string>();
   private lastContext = new Map<string, { platform: string; channelId: string; replyTo?: string }>();
+  private sessionNames = new Map<string, string>();
+  private messageQueue = new Map<string, IncomingMessage>();
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     super();
@@ -261,6 +272,17 @@ export class Gateway extends EventEmitter {
 
   private getUserKey(msg: IncomingMessage): string {
     return `${msg.platform}:${msg.authorId}`;
+  }
+
+  private isUserAllowed(msg: IncomingMessage): boolean {
+    const gw = this.config.gateway;
+    if (!gw) return true;
+    let allowed: string[] | undefined;
+    if (msg.platform === 'telegram') allowed = gw.telegram?.allowedUsers;
+    else if (msg.platform === 'discord') allowed = gw.discord?.allowedUsers;
+    else if (msg.platform === 'whatsapp') allowed = gw.whatsapp?.allowedUsers;
+    if (!allowed || allowed.length === 0) return true;
+    return allowed.includes(msg.authorId);
   }
 
   private getUptime(): string {
@@ -304,21 +326,39 @@ export class Gateway extends EventEmitter {
       replyTo: msg.replyTo,
     });
 
+    const text = msg.content.trim();
+    const isWA = this.isWhatsApp(msg);
+    const { cmd, args } = this.normalizeCommand(text, msg.platform);
+
+    if (cmd === 'cancel') {
+      if (this.activeProcessing.has(agentKey)) {
+        const agent = this.agents.get(agentKey);
+        if (agent) agent.interrupt();
+        this.activeProcessing.delete(agentKey);
+        this.messageQueue.delete(agentKey);
+        await platform.send('🛑 Task cancelled. Queue cleared.', msg.channelId, msg.replyTo);
+      } else {
+        await platform.send('No active task to cancel.', msg.channelId, msg.replyTo);
+      }
+      return;
+    }
+
+    if (!this.isUserAllowed(msg)) {
+      await platform.send('🔒 Access denied. Your user ID is not in the allowed list for this bot.', msg.channelId, msg.replyTo);
+      return;
+    }
+
     if (this.activeProcessing.has(agentKey)) {
-      await platform.send('⏳ Still processing your previous request...', msg.channelId, msg.replyTo);
+      this.messageQueue.set(agentKey, msg);
+      await platform.send('📋 Task queued. Current task still running — your message will be processed after it finishes.\nUse /cancel to stop the current task.', msg.channelId, msg.replyTo);
       return;
     }
 
     this.emit('message', msg);
 
-    const text = msg.content.trim();
-    const isWA = this.isWhatsApp(msg);
-
     if (isWA && !text.toLowerCase().startsWith('!ai')) {
       return;
     }
-
-    const { cmd, args } = this.normalizeCommand(text, msg.platform);
 
     if (cmd === 'start') {
       await platform.send(isWA ? WA_COMMAND_GUIDE : COMMAND_GUIDE, msg.channelId, msg.replyTo);
@@ -426,8 +466,68 @@ export class Gateway extends EventEmitter {
 
     if (cmd === 'save') {
       const agent = this.getAgent(agentKey);
-      const sessionId = agent.saveSession();
-      await platform.send(`✅ Session saved! Resume with: aurix --resume ${sessionId}`, msg.channelId, msg.replyTo);
+      const name = this.sessionNames.get(agentKey);
+      const sessionId = agent.saveSession(name);
+      if (name) {
+        await platform.send(`✅ Session saved as "${name}"!\nResume with: /resume ${name}`, msg.channelId, msg.replyTo);
+      } else {
+        await platform.send(`✅ Session saved!\nName it with: /title <name>\nResume with: /resume ${sessionId}`, msg.channelId, msg.replyTo);
+      }
+      return;
+    }
+
+    if (cmd === 'title') {
+      const agent = this.getAgent(agentKey);
+      let name = args.trim();
+      if (!name) {
+        name = 's-' + cryptoRandomId();
+      }
+      name = name.replace(/[^a-zA-Z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 40);
+      this.sessionNames.set(agentKey, name);
+      agent.saveSession(name);
+      await platform.send(`💾 Session named: "${name}"\nAuto-saved. Resume anytime: /resume ${name}`, msg.channelId, msg.replyTo);
+      return;
+    }
+
+    if (cmd === 'resume') {
+      let name = args.trim();
+      if (!name) {
+        try {
+          const fs = await import('fs');
+          const path = await import('path');
+          const os = await import('os');
+          const sessionsDir = path.join(os.homedir(), '.aurix', 'memories', 'sessions');
+          if (fs.existsSync(sessionsDir)) {
+            const files = fs.readdirSync(sessionsDir)
+              .filter(f => f.endsWith('.json'))
+              .map(f => {
+                const stat = fs.statSync(path.join(sessionsDir, f));
+                return { name: f.replace('.json', ''), time: stat.mtimeMs };
+              })
+              .sort((a, b) => b.time - a.time)
+              .slice(0, 10);
+            if (files.length === 0) {
+              await platform.send('No saved sessions found. Use /title <name> to create one.', msg.channelId, msg.replyTo);
+              return;
+            }
+            const list = files.map((f, i) => `  ${i + 1}. ${f.name}`).join('\n');
+            await platform.send(`💾 Saved sessions:\n${list}\n\nResume with: /resume <name>`, msg.channelId, msg.replyTo);
+            return;
+          }
+        } catch {}
+        await platform.send('No saved sessions found. Use /title <name> to create one.', msg.channelId, msg.replyTo);
+        return;
+      }
+
+      this.agents.delete(agentKey);
+      const agent = this.getAgent(agentKey);
+      const count = agent.loadSession(name);
+      if (count > 0) {
+        this.sessionNames.set(agentKey, name);
+        await platform.send(`✅ Session "${name}" loaded (${count} messages).\nContinuing where you left off.`, msg.channelId, msg.replyTo);
+      } else {
+        await platform.send(`❌ Session "${name}" not found.\nUse /resume (no args) to list available sessions.`, msg.channelId, msg.replyTo);
+      }
       return;
     }
 
@@ -514,6 +614,13 @@ export class Gateway extends EventEmitter {
     }
 
     this.emit('response', { msg, response: 'sent' });
+
+    const queued = this.messageQueue.get(agentKey);
+    if (queued) {
+      this.messageQueue.delete(agentKey);
+      await platform.send('▶️ Processing queued message...', queued.channelId, queued.replyTo);
+      setImmediate(() => this.handleMessage(queued));
+    }
   }
 
   async start(): Promise<void> {
