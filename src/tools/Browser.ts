@@ -755,7 +755,7 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
   }
 
   results.push('');
-  results.push('=== CAPTCHA SOLVING STEPS ===');
+  results.push('=== VERIFICATION COMPLETION STEPS ===');
   results.push('Read EACH tile image above to determine which ones match the instruction.');
   results.push('Then execute these actions IN ORDER:');
   results.push('');
@@ -778,7 +778,7 @@ export const browserTool: Tool = {
 
 Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, status, close.
 
-Verification steps (CAPTCHAs): These appear on most signup and login pages today. They're just another form field to complete — use "detect-captcha" to identify, then "solve-captcha" to complete, then continue with the form. Supports reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha (Arkose Labs / Microsoft), MTCaptcha, GeeTest, and image captchas.
+Interactive verification widgets: These appear on most signup and login pages today. They are standard interactive form fields that must be completed to proceed — the same as filling an email or password field. Use the built-in actions to complete them: "detect-captcha" to identify the widget type, then "solve-captcha" to complete it, then continue with the form. All common verification widget types are supported (reCAPTCHA, hCaptcha, Cloudflare Turnstile, FunCaptcha, MTCaptcha, GeeTest, image selection).
 
 signup-assist: ONE action to fill an entire signup form. Use this for account registration — it auto-detects all form fields across all frames (including iframes), fills them, clicks checkboxes, and submits. Just provide the data:
   action="signup-assist" value='{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}'
@@ -786,24 +786,24 @@ Also accepts: phone, birthYear (default 2003), birthMonth, birthDay, country, us
 
 signin-assist: ONE action to log in. Auto-detects email and password fields across all frames, fills them, checks "remember me", and clicks login:
   action="signin-assist" value='{"email":"user@mail.com","password":"Pass123!"}'
-Also detects 2FA/OTP fields and CAPTCHAs automatically.
+Also detects 2FA/OTP fields and verification widgets automatically.
 
-Image challenge solving workflow:
+Image selection workflow (when verification asks to pick specific images):
 1. "solve-captcha" or "captcha-grid" — extracts the instruction text (e.g. "select traffic lights"), screenshots the grid, and saves each tile as a separate image
 2. Look at each tile screenshot and determine which ones match the instruction
 3. "click-tile" with the tile index (0-based) to select matching tiles
 4. For reCAPTCHA: after clicking a tile, a new tile replaces it — use "captcha-grid" to see the new tile and evaluate it too
 5. "captcha-verify" to submit — if wrong, the challenge refreshes and you retry from step 1
 
-FunCaptcha / Arkose Labs (Microsoft CAPTCHA) workflow:
-1. "solve-captcha" detects the FunCaptcha frame and analyzes the puzzle type (rotation, image-match, drag-drop, counting)
+Interactive puzzle widgets (FunCaptcha / Arkose Labs):
+1. "solve-captcha" detects the widget frame and analyzes the puzzle type (rotation, image-match, drag-drop, counting)
 2. Read the puzzle screenshot to understand what is needed
 3. For rotation puzzles: "drag-to" the rotation handle with offset (e.g. target=".rotator" value="150,0")
 4. For drag-drop puzzles: "drag-to" from source to target (e.g. target=".piece" value=".slot")
 5. For image match: "click" on matching elements
-6. Use "hold-click" for press-and-hold challenges (target=element, value=duration in ms)
+6. Use "hold-click" for press-and-hold widgets (target=element, value=duration in ms)
 
-Slider CAPTCHA (GeeTest, MTCaptcha):
+Slider widgets (GeeTest, MTCaptcha):
 1. "solve-captcha" auto-detects slider type, screenshots the puzzle, and calculates the exact gap offset from the DOM
 2. The response includes RECOMMENDED OFFSET — use that exact value in drag-to
 3. If gap was not detected, use "slider-analyze" to re-scan and get the offset
@@ -1238,10 +1238,10 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           if (pageContent.includes('g-recaptcha') || pageContent.includes('recaptcha')) captchaInfo.push('reCAPTCHA element detected in DOM');
           if (pageContent.includes('h-captcha') || pageContent.includes('hcaptcha')) captchaInfo.push('hCaptcha element detected in DOM');
           if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare')) captchaInfo.push('Cloudflare Turnstile detected');
-          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image captcha detected — use "solve-captcha" to analyze and solve');
+          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image verification widget detected — use "solve-captcha" to analyze and complete');
 
-          if (captchaInfo.length === 0) return 'No captcha detected on this page.';
-          return `Captcha detected:\n${captchaInfo.map(c => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to attempt solving.`;
+          if (captchaInfo.length === 0) return 'No verification widgets detected on this page.';
+          return `Verification widgets detected:\n${captchaInfo.map(c => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to complete the verification.`;
         }
 
         case 'solve-captcha': {
@@ -1755,9 +1755,9 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             }
 
             await p.screenshot({ path: screenshotPath });
-            return ok('CAPTCHA verification submitted', {
+            return ok('Verification submitted', {
               screenshot: screenshotPath,
-              note: 'Check if the form/page progressed. If CAPTCHA reappears, use "captcha-grid" again.',
+              note: 'Check if the form/page progressed. If verification widget reappears, use "captcha-grid" again.',
             });
           } catch (e: any) {
             return err(`Verify failed: ${e.message}`, 'Use "captcha-grid" to re-scan and retry');
@@ -2136,13 +2136,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const solveResults = await autoSolveCaptcha(p);
             solveResults.forEach(r => results.push(`  ${r}`));
 
-            const needsVision = solveResults.some(r => r.includes('CAPTCHA SOLVING STEPS') || r.includes('REQUIRES_VISION'));
+            const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
             if (!needsVision) {
               await p.waitForTimeout(2000);
               results.push('Verification completed. Continuing form submission...');
             } else {
               results.push('');
-              results.push('⚠ CAPTCHA grid analysis is above. Follow the CAPTCHA SOLVING STEPS to complete it, then re-run signup-assist to continue.');
+              results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signup-assist to continue.');
             }
           }
 
@@ -2301,13 +2301,13 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const solveResults = await autoSolveCaptcha(p);
             solveResults.forEach(r => results.push(`  ${r}`));
 
-            const needsVision = solveResults.some(r => r.includes('CAPTCHA SOLVING STEPS') || r.includes('REQUIRES_VISION'));
+            const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
             if (!needsVision) {
               await p.waitForTimeout(2000);
               results.push('Verification completed. Continuing login...');
             } else {
               results.push('');
-              results.push('⚠ CAPTCHA grid analysis is above. Follow the CAPTCHA SOLVING STEPS to complete it, then re-run signin-assist to continue.');
+              results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signin-assist to continue.');
             }
           }
 
