@@ -357,6 +357,26 @@ export class AgentLoop {
 
         const READ_ONLY_TOOLS = new Set(['read_file', 'search_files', 'terminal_ls', 'web_search', 'research', 'research_forums', 'browser']);
         const MAX_RESULT_LEN = 8000;
+        const DEFAULT_TIMEOUT = 180_000;
+        const HEAVY_TIMEOUT = 600_000;
+
+        const HEAVY_PATTERNS = /gradle|cargo\s+build|docker\s+build|npm\s+(run\s+)?build|webpack|vite\s+build|tsc\s+--|make\s+|cmake|mvn\s+|bazel|gcc\s+|g\+\+\s+|rustc|apt\s+install|brew\s+install|pip\s+install|yarn\s+build|bun\s+build|esbuild|rollup|flutter\s+build|react-native\s+run|assembleDebug|assembleRelease/i;
+
+        const getToolTimeout = (name: string, args: Record<string, any>): number => {
+          if (name === 'terminal' || name === 'backend' || name === 'vps' || name === 'deploy' || name === 'cloud') {
+            const cmd = (args.command || args.cmd || '') as string;
+            if (HEAVY_PATTERNS.test(cmd)) return HEAVY_TIMEOUT;
+          }
+          if (name === 'research' || name === 'research_forums') return HEAVY_TIMEOUT;
+          return DEFAULT_TIMEOUT;
+        };
+
+        const withTimeout = <T>(promise: Promise<T>, ms: number, name: string): Promise<T> => {
+          return new Promise<T>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${Math.round(ms / 1000)}s. If this is a heavy process, it may need more time — try running it in the background.`)), ms);
+            promise.then(v => { clearTimeout(timer); resolve(v); }).catch(e => { clearTimeout(timer); reject(e); });
+          });
+        };
 
         const processResult = (result: string, toolName: string): string => {
           if (result.length <= 10000) return result;
@@ -390,7 +410,7 @@ export class AgentLoop {
             const call = readOnlyCalls[0];
             yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
             try {
-              const result = await this.registry.execute(call.name, call.arguments);
+              const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
               const processed = processResult(result, call.name);
               this._outputTokens += countTokens(processed);
               yield { type: 'tool_end', data: processed, toolName: call.name };
@@ -406,7 +426,7 @@ export class AgentLoop {
 
             const results = await Promise.all(readOnlyCalls.map(async (call) => {
               try {
-                const result = await this.registry.execute(call.name, call.arguments);
+                const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
                 return { call, result, error: null as any };
               } catch (e: any) {
                 return { call, result: '', error: e };
@@ -448,7 +468,7 @@ export class AgentLoop {
 
           let result: string;
           try {
-            result = await this.registry.execute(call.name, call.arguments);
+            result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
           } catch (e: any) {
             result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying.`;
           }

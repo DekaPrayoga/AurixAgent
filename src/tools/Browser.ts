@@ -90,22 +90,27 @@ async function humanMove(x: number, y: number, page: Page): Promise<void> {
   }
 }
 
+let lastWarmupTime = 0;
+
 async function warmupBehavior(page: Page): Promise<void> {
+  const now = Date.now();
+  if (now - lastWarmupTime < 30000) return;
+  lastWarmupTime = now;
+
   const vp = page.viewportSize() || { width: 1280, height: 720 };
-  const spots = 3 + Math.floor(Math.random() * 3);
+  const spots = 1 + Math.floor(Math.random() * 2);
 
   for (let i = 0; i < spots; i++) {
     const rx = Math.random() * vp.width;
     const ry = Math.random() * vp.height;
     await humanMove(rx, ry, page);
-    await page.waitForTimeout(200 + Math.random() * 600);
+    await page.waitForTimeout(150 + Math.random() * 300);
   }
 
-  // Small scroll
-  if (Math.random() > 0.4) {
-    const scrollDelta = Math.floor(Math.random() * 200) - 100;
+  if (Math.random() > 0.5) {
+    const scrollDelta = Math.floor(Math.random() * 150) - 75;
     await page.mouse.wheel(0, scrollDelta);
-    await page.waitForTimeout(300 + Math.random() * 500);
+    await page.waitForTimeout(200 + Math.random() * 300);
   }
 }
 
@@ -2446,8 +2451,8 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           const p = await ensureBrowser();
           if (!target) return err('hold-click requires a target element');
 
-          const baseDuration = parseInt(value) || 5000;
-          const duration = baseDuration + Math.floor(Math.random() * 3000) - 1000;
+          const baseDuration = Math.min(parseInt(value) || 5000, 12000);
+          const duration = Math.max(2000, baseDuration + Math.floor(Math.random() * 2000) - 1000);
           try {
             const el = p.locator(target).first();
             const box = await el.boundingBox();
@@ -2464,7 +2469,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             await p.waitForTimeout(100 + Math.random() * 200);
 
             // Human-like hold with breathing movements
-            await humanHold(x, y, Math.max(2000, duration), p);
+            await humanHold(x, y, duration, p);
             await p.waitForTimeout(300 + Math.random() * 400);
 
             const screenshotPath = join(homedir(), '.aurix-hold-result.png');

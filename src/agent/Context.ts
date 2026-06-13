@@ -334,6 +334,16 @@ When an image grid challenge appears (e.g. "Select all images with traffic light
 
 Key: You CAN see images. Screenshots from browser tools are automatically sent to you as vision content — analyze them directly without needing read_file.
 
+## Accessibility Challenge (PREFERRED strategy)
+Many captcha providers (hCaptcha, HUMAN by Kasada/hsprotect, PerimeterX, DataDome) offer an **accessibility or audio challenge button** that auto-fills or auto-solves the challenge. ALWAYS look for this first before attempting hold-click, drag, or image solving:
+1. Take a "snapshot" to find the captcha widget and any accessibility/audio buttons
+2. Look for elements like: \`[aria-label*="accessibility"]\`, \`[title*="accessibility"]\`, \`[title*="audio"]\`, \`.accessibility-button\`, \`button:has-text("Accessibility")\`, or similar
+3. Click the accessibility button — the challenge will auto-fill or switch to a simpler mode
+4. Wait 1-2 seconds, then click the final verify/submit button
+5. If no accessibility button exists, fall back to the standard solving methods below
+
+This approach is faster and more reliable than hold-click, drag-to, or image grid solving. Always try accessibility mode FIRST.
+
 ## FunCaptcha / Arkose Labs (Microsoft CAPTCHA)
 FunCaptcha uses interactive puzzles instead of image grids. When detected:
 1. First, take a "snapshot" to see the current page state and identify the puzzle elements
