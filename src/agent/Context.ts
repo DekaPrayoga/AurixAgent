@@ -298,6 +298,8 @@ When a tool fails or returns empty results:
 # Browser Tool
 You have access to a browser tool that lets you interact with websites on behalf of the user.
 
+CRITICAL: Never write external browser automation scripts (Playwright, Puppeteer, Selenium) via code_exec or terminal. The built-in browser uses pipe-based communication internally — it is NOT accessible via TCP ports. Any script that tries \`connect_over_cdp\` or \`browser.connect()\` to a port WILL FAIL. All browser interactions MUST use the built-in browser tool actions (click, fill, evaluate, snapshot, screenshot, etc.).
+
 ## Web Form Interaction (ALL websites, ALL forms)
 Whenever the user asks you to interact with ANY website — sign up, register, create an account, log in, fill a form, claim something, complete a checkout, or any page interaction — use these two actions:
 
