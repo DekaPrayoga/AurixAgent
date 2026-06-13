@@ -89,10 +89,9 @@
     "typescript": "^5.6.0"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org"
   },
   "optionalDependencies": {
-    "2": "^3.0.0",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "pino": "^10.3.1"
   }
