@@ -137,6 +137,21 @@ async function humanHold(x: number, y: number, duration: number, page: Page): Pr
   await mouse.up();
 }
 
+async function humanClick(locator: any, page: Page): Promise<void> {
+  const box = await locator.first().boundingBox();
+  if (box) {
+    const clickX = box.x + box.width * (0.3 + Math.random() * 0.4);
+    const clickY = box.y + box.height * (0.3 + Math.random() * 0.4);
+    await humanMove(clickX, clickY, page);
+    await page.waitForTimeout(60 + Math.random() * 100);
+    await page.mouse.down();
+    await page.waitForTimeout(50 + Math.random() * 80);
+    await page.mouse.up();
+  } else {
+    await locator.first().click({ force: true });
+  }
+}
+
 interface BrowserSession {
   context: BrowserContext;
   page: Page;
@@ -1283,7 +1298,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                 const checkbox = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox');
                 if (await checkbox.count() > 0) {
                   await p.waitForTimeout(1000 + Math.random() * 1500);
-                  await checkbox.first().click({ force: true });
+                  await humanClick(checkbox, p);
                   await p.waitForTimeout(3000);
 
                   const updatedFrames = p.frames();
@@ -1302,7 +1317,8 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                   }
                 } else {
                   results.push(warn('reCAPTCHA anchor frame found but checkbox element missing', { action: 'trying click on anchor body' }));
-                  await checkboxFrame.locator('#recaptcha-anchor').click({ force: true }).catch(() => {});
+                  const anchor = checkboxFrame.locator('#recaptcha-anchor');
+                  await humanClick(anchor, p).catch(() => {});
                   await p.waitForTimeout(3000);
                   results.push('Use "captcha-grid" to check for image challenge.');
                 }
@@ -1310,7 +1326,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                 results.push(warn('No reCAPTCHA anchor frame found', { action: 'trying main page widget' }));
                 const mainCheckbox = p.locator('.g-recaptcha, [data-sitekey]');
                 if (await mainCheckbox.count() > 0) {
-                  await mainCheckbox.first().click({ force: true });
+                  await humanClick(mainCheckbox, p);
                   await p.waitForTimeout(3000);
                   results.push('Clicked reCAPTCHA widget. Use "captcha-grid" if image challenge appeared.');
                 } else {
@@ -1330,7 +1346,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                 const checkbox = checkboxFrame.locator('#checkbox, .check');
                 if (await checkbox.count() > 0) {
                   await p.waitForTimeout(800 + Math.random() * 1200);
-                  await checkbox.first().click({ force: true });
+                  await humanClick(checkbox, p);
                   await p.waitForTimeout(3000);
 
                   const updatedFrames = p.frames();
@@ -1366,7 +1382,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                 await p.waitForTimeout(1500 + Math.random() * 1000);
                 const cb = turnstileFrame.locator('input[type="checkbox"], .cb-lb');
                 if (await cb.count() > 0) {
-                  await cb.first().click({ force: true });
+                  await humanClick(cb, p);
                   await p.waitForTimeout(3000);
                   results.push(ok('Turnstile checkbox clicked'));
                 } else {
@@ -1634,7 +1650,18 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           try {
             const tile = tiles[tileIndex];
-            await tile.click({ force: true });
+            const tileBox = await tile.boundingBox();
+            if (tileBox) {
+              const clickX = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
+              const clickY = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
+              await humanMove(clickX, clickY, p);
+              await p.waitForTimeout(80 + Math.random() * 120);
+              await p.mouse.down();
+              await p.waitForTimeout(60 + Math.random() * 100);
+              await p.mouse.up();
+            } else {
+              await tile.click({ force: true });
+            }
             await p.waitForTimeout(500 + Math.random() * 400);
 
             const isRecaptcha = provider === 'recaptcha';
@@ -1700,7 +1727,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               return err('No verify button found', 'Use "captcha-grid" to analyze the challenge first');
             }
 
-            await verifyBtn.first().click({ force: true });
+            await humanClick(verifyBtn, p);
             await p.waitForTimeout(3000);
 
             const screenshotPath = join(homedir(), '.aurix-captcha-verify-result.png');
