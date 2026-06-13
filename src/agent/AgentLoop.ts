@@ -288,7 +288,7 @@ export class AgentLoop {
         const lower = text.toLowerCase();
         const refusalPhrases = [
           'i cannot fulfill', 'i can\'t fulfill', 'i cannot assist', 'i can\'t assist',
-          'i cannot help', 'i can\'t help you with', 'i cannot automate',
+          'i cannot help', 'i can\'t help', 'i can\'t help you with', 'i cannot automate',
           'i cannot complete', 'i am unable to', 'i\'m unable to',
           'i cannot perform', 'i can\'t perform', 'i must decline',
           'i\'m sorry, but i cannot', 'i\'m sorry, i cannot',
@@ -314,7 +314,7 @@ export class AgentLoop {
           'informasi pribadi', 'privasi', 'pelacakan',
           'captcha', 'verification', 'security check', 'security verification',
           'bypass', 'sign-up', 'sign up', 'register', 'registration',
-          'security measure', 'anti-bot', 'bot detection',
+          'security measure', 'security challenge', 'anti-bot', 'bot detection',
           'ethical', 'legally', 'unauthorized',
         ];
         const hasRefusal = refusalPhrases.some(p => lower.includes(p));
