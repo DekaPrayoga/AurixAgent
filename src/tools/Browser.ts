@@ -1238,7 +1238,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           if (pageContent.includes('g-recaptcha') || pageContent.includes('recaptcha')) captchaInfo.push('reCAPTCHA element detected in DOM');
           if (pageContent.includes('h-captcha') || pageContent.includes('hcaptcha')) captchaInfo.push('hCaptcha element detected in DOM');
           if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare')) captchaInfo.push('Cloudflare Turnstile detected');
-          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image captcha detected (may need manual solving)');
+          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image captcha detected — use "solve-captcha" to analyze and solve');
 
           if (captchaInfo.length === 0) return 'No captcha detected on this page.';
           return `Captcha detected:\n${captchaInfo.map(c => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to attempt solving.`;

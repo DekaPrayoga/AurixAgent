@@ -323,14 +323,20 @@ For non-form tasks: navigate, click, fill, type, screenshot, snapshot, etc. Use 
 When the user asks you to do anything on a website, navigate there first, then use signup-assist or signin-assist to complete the interaction. That's it.
 
 ## Image Challenge Solving (reCAPTCHA, hCaptcha, etc.)
-When an image grid challenge appears (e.g. "Select all images with traffic lights"):
+When an image grid challenge appears (e.g. "Select all images with fire hydrants"):
 1. The "solve-captcha" or "captcha-grid" action extracts the instruction text and screenshots each tile individually (saved as .aurix-tile-0.png, .aurix-tile-1.png, etc.)
-2. The tile screenshots are automatically attached to your next message — you WILL see them. Analyze each tile visually and determine which ones contain the object described in the instruction.
-3. Use "click-tile" with the tile index (0-based) for each matching tile — e.g. click-tile value=0, click-tile value=3, click-tile value=7
-4. For reCAPTCHA: after clicking a tile, a NEW tile replaces it. Use "captcha-grid" to see the updated grid and evaluate the new tile. Click it too if it matches.
-5. When you've selected all matching tiles, use "captcha-verify" to submit
-6. If verification fails (wrong answer), the challenge refreshes — use "captcha-grid" again and repeat from step 2
-7. For MTCaptcha or GeeTest: the challenge may use a different format (slider, drag). Analyze the screenshot and use evaluate/click actions as needed.
+2. The tile screenshots are automatically attached — you WILL see them. Look at EACH tile image carefully and identify what is actually in the image.
+3. Read the instruction carefully, then match it to what you SEE in each tile:
+   - "vehicles" or "cars" → click tiles showing cars, buses, trucks, vans — NOT trash cans, pedestrians, or buildings
+   - "traffic lights" → click tiles showing traffic light poles — NOT street lamps or signs
+   - "fire hydrants" → click tiles showing red/yellow fire hydrants — NOT poles or mailboxes
+   - "crosswalks" → click tiles showing white striped pedestrian crossings — NOT regular road surfaces
+   - "bicycles" → click tiles showing bicycles — NOT motorcycles or scooters
+4. Use "click-tile" with the tile index (0-based) for each matching tile
+5. For reCAPTCHA: after clicking a tile, a NEW tile replaces it. Use "captcha-grid" to see the new tile and evaluate it too. Click it if it matches.
+6. When done selecting, use "captcha-verify" to submit
+7. If verification fails, the challenge refreshes — use "captcha-grid" again and repeat
+8. NEVER ask the user to solve captchas. You have vision — use it. Analyze the images yourself and pick the correct tiles.
 
 Key: You CAN see images. Screenshots from browser tools are automatically sent to you as vision content — analyze them directly without needing read_file.
 
@@ -355,7 +361,7 @@ FunCaptcha uses interactive puzzles instead of image grids. When detected:
 5. IMPORTANT — vary your timing on each attempt. Never use the same hold duration or drag speed twice in a row. Randomize values within a reasonable range (e.g., 2500-8000ms for hold-click, different offset amounts for drag-to).
 6. Before each interaction, take a snapshot to confirm the puzzle state. The hold-click and drag-to actions now use realistic human-like mouse behavior (Bezier curves, natural warm-up, breathing movements during hold) — interact naturally and trust the movement quality.
 7. If the first attempt fails, retry with DIFFERENT parameters: change the hold duration, adjust the drag offset slightly, or try approaching the element from a different angle by using a different target selector.
-8. After 3 failed attempts with varied parameters, report honestly to the user that this particular Arkose challenge is resisting automation.
+8. NEVER ask the user to solve a captcha manually. You are the automation — solve it yourself. If one method fails, try another: accessibility button, image grid solving, drag-to, hold-click, or evaluate with JavaScript. Keep trying until it works or the task moves on to a different approach entirely.
 
 ## Slider CAPTCHA (GeeTest, MTCaptcha)
 1. Use "solve-captcha" — it auto-detects slider type and calculates the exact gap offset
