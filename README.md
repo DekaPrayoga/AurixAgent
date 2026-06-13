@@ -2,7 +2,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT" />
-  <img src="https://img.shields.io/badge/runtime-Bun-black?style=for-the-badge&logo=bun" alt="Bun" />
+  <img src="https://img.shields.io/npm/v/aurix-ai?style=for-the-badge&color=cb3837&logo=npm&logoColor=white" alt="npm" />
+  <img src="https://img.shields.io/badge/runtime-Node.js%20%7C%20Bun-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Runtime" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/native-Rust-dea584?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" />
   <img src="https://img.shields.io/badge/interface-Terminal%20%2B%20Chat-7c3aed?style=for-the-badge" alt="Interface" />
@@ -118,7 +119,7 @@ Imported 100+ CTF and penetration testing skills from `ljagiello/ctf-skills`:
 - **1000 iteration limit** (up from 200) — agents can work on complex tasks without stopping prematurely
 - **Structured tool responses** — `[OK]` / `[ERROR]` / `[WARN]` prefixes for unambiguous agent feedback
 - **30 browser actions** — from basic navigation to full CAPTCHA solving workflows
-- **Multi-platform installers** — One-line install for Linux, macOS, and Windows
+- **One-command install** — `npm install -g aurix-ai` and you're ready to go
 
 ## Real-World Use Cases
 
@@ -160,55 +161,65 @@ AURIX is powered by a LangGraph-based architecture that orchestrates multiple sp
 
 ### Requirements
 
-- [Bun](https://bun.sh) v1.0+ or Node.js 22+
+- **Node.js 22+** or [Bun](https://bun.sh) v1.0+
 - API key for at least one LLM provider (OpenAI, Anthropic, or others)
 - Rust toolchain (optional — improves token counting accuracy)
 - Python 3.12+ (optional, for research-forums skill)
 
-### One-Line Install
+### Install via npm (Recommended)
 
-All scripts pull the latest version from the repo automatically — your install stays up to date.
+The fastest way to get started. Works on any machine with Node.js 22+.
 
-**Linux:**
 ```bash
-curl -fsSL https://api.haikz.me/install.sh | bash
+npm install -g aurix-ai
 ```
 
-**macOS:**
+Then run:
 ```bash
-curl -fsSL https://api.haikz.me/install.mac.sh | bash
+aurix setup     # Configure LLM provider + API key (first time only)
+aurix           # Launch the terminal AI workspace
 ```
 
-**Windows (PowerShell):**
-```powershell
-irm https://api.haikz.me/install.ps1 | iex
+That's it. The `aurix` command is now available globally in your terminal.
+
+To update later:
+```bash
+npm update -g aurix-ai
 ```
 
-**Windows (CMD):**
-```cmd
-curl -fsSL -o install.bat https://api.haikz.me/install.bat && install.bat
-```
+### Install via Git Clone (For Development)
 
-*These scripts automatically install Bun (if missing), clone the repository, build the project, and link the `aurix` command to your terminal.*
-
-### Manual Install
+Use this method if you want to modify the source code or contribute.
 
 ```bash
 git clone https://github.com/DekaPrayoga/AurixAgent.git
 cd AurixAgent
-bun install        # or npm install
-bun run build      # or npm run build
-npm link           # link bin/aurix to PATH
+npm install         # installs dependencies + builds Rust token counter
+npm run build       # compiles TypeScript
+npm link            # links `aurix` command to your PATH
 ```
 
-### From Source (with Rust token counter)
+After linking, `aurix` works from any directory:
+```bash
+aurix setup
+aurix
+```
+
+### Building the Rust Token Counter (Optional)
+
+The npm package ships with a pre-built `.node` binary (7.2 MB). If you install from source and have Rust installed, the postinstall script automatically builds it via napi-rs.
+
+**Why does the Rust build directory take ~150 MB?** The `target/release/deps/` folder contains ~147 MB of intermediate `.rlib` compilation files — one for every crate in the dependency tree (tiktoken-rs embeds the full BPE vocabulary of 100k+ tokens). The final compiled binary is only 7.2 MB, and that's the only file included in the npm package.
+
+If Rust is not available, the agent falls back to a JS-based token counter automatically — no functionality is lost, just slightly less accurate counting.
 
 ```bash
-git clone https://github.com/DekaPrayoga/AurixAgent.git
-cd AurixAgent
-npm install        # postinstall auto-builds Rust module
-npm run build
-npm link
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Then rebuild the native module
+cd native/token-counter
+npx napi build --release --platform
 ```
 
 ## Usage
