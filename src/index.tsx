@@ -43,6 +43,7 @@ import { humanizerTool } from './tools/Humanizer.js';
 import { mapsTool } from './tools/Maps.js';
 import { notifierTool } from './tools/Notifier.js';
 import { diagramTool } from './tools/Diagram.js';
+import { archiveReaderTool } from './tools/ArchiveReader.js';
 
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
@@ -62,6 +63,7 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(todoTool);
   registry.register(musicTool);
   registry.register(memoryTool);
+  registry.register(archiveReaderTool);
 
   const f = features || [];
   const all = f.length === 0;

@@ -61,6 +61,7 @@ export function App({ config, registry, resumeId }: AppProps) {
   const agentRef = React.useRef<AgentLoop | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingImagesRef = React.useRef<string[]>([]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -610,7 +611,17 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         addAssistant('YOLO mode ON — all tool calls auto-approved. Use /permissions mode ask to revert.');
         return;
       } else if (commandName === 'image') {
-        addAssistant(slash.args ? `Image attached: ${slash.args}` : 'Usage: /image <path>');
+        if (slash.args) {
+          const imgPath = path.resolve(slash.args.trim());
+          if (fs.existsSync(imgPath) && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(imgPath)) {
+            pendingImagesRef.current.push(imgPath);
+            addAssistant(`Image attached: ${path.basename(imgPath)} (${pendingImagesRef.current.length} image${pendingImagesRef.current.length > 1 ? 's' : ''} queued). Send a message to include it.`);
+          } else {
+            addAssistant('File not found or unsupported format. Use: /image <path-to-image>');
+          }
+        } else {
+          addAssistant('Usage: /image <path>');
+        }
         return;
       } else if (commandName === 'sessions') {
         const sessionsDir = path.join(os.homedir(), '.aurix', 'memories', 'sessions');
@@ -1109,7 +1120,10 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         return;
       }
 
-      for await (const event of currentAgent.run(outboundText)) {
+      const images = pendingImagesRef.current.length > 0 ? [...pendingImagesRef.current] : undefined;
+      pendingImagesRef.current = [];
+
+      for await (const event of currentAgent.run(outboundText, images)) {
         switch (event.type) {
           case 'text':
             setMessages(prev => [...prev, {

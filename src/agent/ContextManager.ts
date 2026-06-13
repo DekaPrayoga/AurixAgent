@@ -42,6 +42,7 @@ export class ContextManager {
       total += countTokens(msg.content);
       if (msg.role === 'system') total += 4;
       if (msg.toolCallId) total += 7;
+      if (msg.images?.length) total += msg.images.length * 85;
     }
     total += 3;
     return total;
@@ -103,6 +104,10 @@ export class ContextManager {
     const MAX_TOOL_RESULT = 12000;
 
     return messages.map((msg, i) => {
+      if (msg.images && i < messages.length - RECENT_KEEP) {
+        msg = { ...msg, images: undefined };
+      }
+
       if (msg.role !== 'tool' || !msg.toolCallId) return msg;
 
       const isRecent = i >= messages.length - RECENT_KEEP;

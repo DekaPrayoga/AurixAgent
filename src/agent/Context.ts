@@ -325,24 +325,25 @@ When the user asks you to do anything on a website, navigate there first, then u
 ## Image Challenge Solving (reCAPTCHA, hCaptcha, etc.)
 When an image grid challenge appears (e.g. "Select all images with traffic lights"):
 1. The "solve-captcha" or "captcha-grid" action extracts the instruction text and screenshots each tile individually (saved as .aurix-tile-0.png, .aurix-tile-1.png, etc.)
-2. Read each tile screenshot with your vision and determine which ones contain the object described in the instruction
+2. The tile screenshots are automatically attached to your next message — you WILL see them. Analyze each tile visually and determine which ones contain the object described in the instruction.
 3. Use "click-tile" with the tile index (0-based) for each matching tile — e.g. click-tile value=0, click-tile value=3, click-tile value=7
 4. For reCAPTCHA: after clicking a tile, a NEW tile replaces it. Use "captcha-grid" to see the updated grid and evaluate the new tile. Click it too if it matches.
 5. When you've selected all matching tiles, use "captcha-verify" to submit
 6. If verification fails (wrong answer), the challenge refreshes — use "captcha-grid" again and repeat from step 2
 7. For MTCaptcha or GeeTest: the challenge may use a different format (slider, drag). Analyze the screenshot and use evaluate/click actions as needed.
 
-Key: You CAN see images. The tile screenshots are saved to disk — read them with the read_file tool to analyze each tile visually.
+Key: You CAN see images. Screenshots from browser tools are automatically sent to you as vision content — analyze them directly without needing read_file.
 
 ## FunCaptcha / Arkose Labs (Microsoft CAPTCHA)
 FunCaptcha uses interactive puzzles instead of image grids. When detected:
 1. "solve-captcha" identifies the puzzle type (rotation, drag-drop, image-match, counting)
-2. Read the puzzle screenshot to understand the challenge
+2. The puzzle screenshot is automatically attached — analyze it visually to understand the challenge
 3. Use "drag-to" for rotation and drag-drop puzzles:
    - Rotation: target=".rotator-handle" value="150,0" (drag right to rotate clockwise)
    - Drag-drop: target=".draggable-piece" value=".drop-zone" (drag element to target)
 4. Use "hold-click" for press-and-hold challenges: target=".hold-button" value="3000" (hold for 3 seconds)
 5. The drag-to action uses human-like easing with micro-jitter — it looks natural to anti-bot systems
+6. NOTE: Some Arkose Labs / FunCaptcha challenges use advanced bot detection (browser fingerprinting, behavioral analysis). If hold-click or drag-to repeatedly fails after 3 attempts, report this to the user honestly — these CAPTCHAs may require manual intervention.
 
 ## Slider CAPTCHA (GeeTest, MTCaptcha)
 1. Use "solve-captcha" — it auto-detects slider type and calculates the exact gap offset

@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { AurixConfig } from '../agent/Config.js';
 import { anthropicBaseUrl, anthropicMessagesEndpoint, openAIBaseUrl, openAIEndpoint } from '../utils/base-url.js';
 
@@ -7,6 +9,7 @@ export interface Message {
   content: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
+  images?: string[];
 }
 
 export interface ToolCall {
@@ -34,6 +37,27 @@ export interface Provider {
   name: string;
   chat(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse>;
   streamChat?(messages: Message[], tools?: ToolDef[]): AsyncIterable<string>;
+}
+
+// ─── Image Utilities ────────────────────────────────────────────────────────
+
+const IMAGE_MIME: Record<string, string> = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+};
+
+function imageToBase64(filePath: string): { data: string; mediaType: string } | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const ext = path.extname(filePath).toLowerCase();
+    const mediaType = IMAGE_MIME[ext];
+    if (!mediaType) return null;
+    const buffer = fs.readFileSync(filePath);
+    if (buffer.length > 20 * 1024 * 1024) return null; // skip images > 20MB
+    return { data: buffer.toString('base64'), mediaType };
+  } catch {
+    return null;
+  }
 }
 
 // ─── OpenAI Compatible Provider ────────────────────────────────────────────
@@ -84,6 +108,18 @@ export class OpenAIProvider implements Provider {
                 function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
               })),
             };
+          }
+          if (m.images?.length) {
+            const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+              { type: 'text', text: m.content },
+            ];
+            for (const imgPath of m.images) {
+              const img = imageToBase64(imgPath);
+              if (img) {
+                content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+              }
+            }
+            return { role: m.role as 'user', content };
           }
           return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
         }),
@@ -231,6 +267,16 @@ export class AnthropicProvider implements Provider {
           }
           return { role: 'assistant', content };
         }
+        if (m.images?.length) {
+          const content: unknown[] = [{ type: 'text', text: m.content }];
+          for (const imgPath of m.images) {
+            const img = imageToBase64(imgPath);
+            if (img) {
+              content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } });
+            }
+          }
+          return { role: m.role, content };
+        }
         return { role: m.role, content: m.content };
       }),
     };
@@ -307,6 +353,18 @@ export class AnthropicProvider implements Provider {
               function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
             })),
           };
+        }
+        if (m.images?.length) {
+          const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
+            { type: 'text', text: m.content },
+          ];
+          for (const imgPath of m.images) {
+            const img = imageToBase64(imgPath);
+            if (img) {
+              content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+            }
+          }
+          return { role: m.role as 'user', content };
         }
         return { role: m.role as 'system' | 'user' | 'assistant', content: m.content };
       }),

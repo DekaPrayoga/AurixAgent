@@ -592,8 +592,14 @@ export class Gateway extends EventEmitter {
 
     const platformTag = `[sent from ${msg.platform}]`;
     const forwardTag = msg.forwardedFrom ? ` [forwarded from ${msg.forwardedFrom}]` : '';
+    const imagePaths: string[] = [];
     const attachTag = msg.attachments?.length
-      ? ' ' + msg.attachments.map(a => `[image: ${a.filename || a.url || 'attached'}]`).join(' ')
+      ? ' ' + msg.attachments.map(a => {
+          if (a.url && /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(a.url)) {
+            imagePaths.push(a.url);
+          }
+          return `[image: ${a.filename || a.url || 'attached'}]`;
+        }).join(' ')
       : '';
     const taggedPrompt = `${platformTag}${forwardTag}${attachTag} ${userPrompt}`;
 
@@ -608,7 +614,7 @@ export class Gateway extends EventEmitter {
       let lastStatusUpdate = Date.now();
       let lastToolStatus = '';
 
-      for await (const event of agent.run(taggedPrompt)) {
+      for await (const event of agent.run(taggedPrompt, imagePaths.length > 0 ? imagePaths : undefined)) {
         if (event.type === 'tool_start') {
           const newStatus = formatToolStatus(event.toolName || event.data, event.toolArgs);
           if (newStatus !== lastToolStatus) {
