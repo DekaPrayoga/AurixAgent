@@ -13,7 +13,7 @@ function ok(msg: string, details?: Record<string, string>): string {
 
 function err(msg: string, suggestion?: string): string {
   const lines = [`[ERROR] ${msg}`];
-  if (suggestion) lines.push(`  suggestion: ${suggestion}`);
+  if (suggestion) lines.push(`  fix: ${suggestion}`);
   return lines.join('\n');
 }
 
@@ -21,6 +21,13 @@ function warn(msg: string, details?: Record<string, string>): string {
   const lines = [`[WARN] ${msg}`];
   if (details) for (const [k, v] of Object.entries(details)) lines.push(`  ${k}: ${v}`);
   return lines.join('\n');
+}
+
+let _lastActionScreenshot = '';
+async function autoScreenshot(p: Page, label: string): Promise<string> {
+  const path = join(homedir(), '.aurix-last-action.png');
+  try { await p.screenshot({ path }); _lastActionScreenshot = path; } catch {}
+  return path;
 }
 
 // ─── Human-Like Mouse Utilities ────────────────────────────────────────────
@@ -932,47 +939,97 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
         case 'click': {
           const p = await ensureBrowser();
-          if (!target) return 'Error: click requires a target element';
-          const locator = await resolveLocator(p, target);
-          await locator.first().click({ timeout });
-          await p.waitForTimeout(500);
-          return `Clicked: ${target}\nURL: ${p.url()}\nTitle: ${await p.title()}`;
+          if (!target) return err('click requires a target element', 'Use a CSS selector, text="...", role=, or placeholder=');
+          try {
+            const locator = await resolveLocator(p, target);
+            await locator.first().click({ timeout });
+            await p.waitForTimeout(500);
+            const ss = await autoScreenshot(p, 'click');
+            return ok(`Clicked: ${target}`, {
+              url: p.url(),
+              title: await p.title(),
+              screenshot: ss,
+            });
+          } catch (e: any) {
+            const msg = e.message || String(e);
+            if (msg.includes('Timeout')) return err(`Element "${target}" not found within timeout`, 'Use "snapshot" to see available elements, or "wait" to wait for page load');
+            if (msg.includes('not visible') || msg.includes('intercepts pointer')) return err(`Element "${target}" is hidden or covered by another element`, 'Try a different selector, use "evaluate" with JS click, or scroll to the element first');
+            if (msg.includes('strict mode') || msg.includes('more than one')) return err(`Multiple elements matched "${target}"`, 'Use a more specific selector or add .first()/.nth(0)');
+            return err(`Click failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+          }
         }
 
         case 'fill': {
           const p = await ensureBrowser();
-          if (!target) return 'Error: fill requires a target element';
-          if (value === undefined) return 'Error: fill requires a value';
-          const locator = await resolveLocator(p, target);
-          await locator.first().fill(value, { timeout });
-          return `Filled "${target}" with "${value.length > 50 ? value.slice(0, 50) + '...' : value}"`;
+          if (!target) return err('fill requires a target element', 'Use a CSS selector, placeholder="...", or label="..."');
+          if (value === undefined) return err('fill requires a value', 'Provide the text to fill via the value parameter');
+          try {
+            const locator = await resolveLocator(p, target);
+            await locator.first().fill(value, { timeout });
+            const ss = await autoScreenshot(p, 'fill');
+            return ok(`Filled "${target}"`, {
+              value: value.length > 50 ? value.slice(0, 50) + '...' : value,
+              screenshot: ss,
+            });
+          } catch (e: any) {
+            const msg = e.message || String(e);
+            if (msg.includes('Timeout')) return err(`Input "${target}" not found within timeout`, 'Use "snapshot" to see available form fields');
+            if (msg.includes('not an input')) return err(`"${target}" is not a fillable input element`, 'Use "type" for non-input elements, or find the correct input selector');
+            return err(`Fill failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+          }
         }
 
         case 'type': {
           const p = await ensureBrowser();
-          if (!target) return 'Error: type requires a target element';
-          if (value === undefined) return 'Error: type requires a value';
-          const locator = await resolveLocator(p, target);
-          await locator.first().pressSequentially(value, { delay: 50 });
-          return `Typed "${value.length > 50 ? value.slice(0, 50) + '...' : value}" into "${target}"`;
+          if (!target) return err('type requires a target element', 'Use a CSS selector, placeholder="...", or label="..."');
+          if (value === undefined) return err('type requires a value', 'Provide the text to type via the value parameter');
+          try {
+            const locator = await resolveLocator(p, target);
+            await locator.first().pressSequentially(value, { delay: 50 });
+            const ss = await autoScreenshot(p, 'type');
+            return ok(`Typed into "${target}"`, {
+              value: value.length > 50 ? value.slice(0, 50) + '...' : value,
+              screenshot: ss,
+            });
+          } catch (e: any) {
+            const msg = e.message || String(e);
+            if (msg.includes('Timeout')) return err(`Element "${target}" not found within timeout`, 'Use "snapshot" to see available elements');
+            return err(`Type failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+          }
         }
 
         case 'press-key': {
           const p = await ensureBrowser();
           const key = value || target;
-          if (!key) return 'Error: press-key requires a key (e.g. "Enter", "Tab", "Escape", "Control+a")';
-          await p.keyboard.press(key);
-          await p.waitForTimeout(300);
-          return `Pressed key: ${key}\nURL: ${p.url()}`;
+          if (!key) return err('press-key requires a key', 'Examples: "Enter", "Tab", "Escape", "Control+a"');
+          try {
+            await p.keyboard.press(key);
+            await p.waitForTimeout(300);
+            const ss = await autoScreenshot(p, 'press-key');
+            return ok(`Pressed key: ${key}`, {
+              url: p.url(),
+              screenshot: ss,
+            });
+          } catch (e: any) {
+            return err(`Key press failed: ${e.message.slice(0, 150)}`, 'Check valid key names at Playwright docs (e.g. "Enter", "Tab", "Control+a")');
+          }
         }
 
         case 'select': {
           const p = await ensureBrowser();
-          if (!target) return 'Error: select requires a target <select> element';
-          if (value === undefined) return 'Error: select requires a value (option value)';
-          const locator = await resolveLocator(p, target);
-          await locator.first().selectOption(value, { timeout });
-          return `Selected "${value}" in "${target}"`;
+          if (!target) return err('select requires a target <select> element', 'Use a CSS selector for the <select> element');
+          if (value === undefined) return err('select requires a value (option value)', 'Provide the option value to select');
+          try {
+            const locator = await resolveLocator(p, target);
+            await locator.first().selectOption(value, { timeout });
+            const ss = await autoScreenshot(p, 'select');
+            return ok(`Selected "${value}" in "${target}"`, { screenshot: ss });
+          } catch (e: any) {
+            const msg = e.message || String(e);
+            if (msg.includes('Timeout')) return err(`Select element "${target}" not found`, 'Use "snapshot" to find the correct selector');
+            if (msg.includes('not a <select>')) return err(`"${target}" is not a <select> element`, 'Find the correct <select> element with "snapshot"');
+            return err(`Select failed: ${msg.slice(0, 150)}`, 'Use "snapshot" to check available options');
+          }
         }
 
         case 'screenshot': {
@@ -1686,8 +1743,10 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               });
             }
 
+            const ss = await autoScreenshot(p, 'click-tile');
             return ok(`Clicked tile ${tileIndex}`, {
               selected: `${selectedCount} tile(s)`,
+              screenshot: ss,
               next: 'Continue clicking matching tiles, then use "captcha-verify"',
             });
           } catch (e: any) {
@@ -2485,17 +2544,41 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
         }
 
         default:
-          return `Unknown action: "${action}". Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status`;
+          return err(`Unknown action: "${action}"`, `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status`);
       }
     } catch (e: any) {
       const msg = e.message || String(e);
-      if (msg.includes('Timeout')) {
-        return `Browser timeout: ${msg}\n\nTry: increase timeout in options, use "wait" action first, or check if the element exists with "snapshot".`;
+      if (msg.includes('Timeout') || msg.includes('timeout')) {
+        return err(`Timeout waiting for element or page load: ${msg.slice(0, 120)}`, 'Use "wait" to wait for page load, "snapshot" to check current state, or verify the element exists');
       }
       if (msg.includes('strict mode') || msg.includes('more than one')) {
-        return `Multiple elements matched "${target}". Use a more specific selector (CSS, role=, placeholder=) or add .first()/.nth(0).`;
+        return err(`Multiple elements matched "${target || '(unknown)'}"`, 'Use a more specific selector (CSS #id, [attr]), or .first()/.nth(0)');
       }
-      return `Browser error: ${msg}`;
+      if (msg.includes('not visible') || msg.includes('element is not visible')) {
+        return err(`Element "${target || '(unknown)'}" is not visible on the page`, 'Scroll to the element, wait for it to appear, or use "evaluate" for JS-based interaction');
+      }
+      if (msg.includes('detached') || msg.includes('was removed')) {
+        return err(`Element was removed from the page during interaction`, 'The page updated while interacting. Use "snapshot" to get fresh elements and retry');
+      }
+      if (msg.includes('intercepts pointer') || msg.includes('overlapped')) {
+        return err(`Another element is covering "${target || '(unknown)'}"`, 'Use "evaluate" with JavaScript click: document.querySelector(selector).click(), or scroll to reveal the element');
+      }
+      if (msg.includes('frame was detached') || msg.includes('Frame was detached')) {
+        return err('The iframe was detached or reloaded during interaction', 'Re-detect frames with "detect-captcha" or "snapshot" and retry');
+      }
+      if (msg.includes('Navigation') || msg.includes('navigated')) {
+        return err(`Page navigation interrupted the action: ${msg.slice(0, 120)}`, 'Wait for navigation to complete with "wait" action, then retry');
+      }
+      if (msg.includes('closed') || msg.includes('Target closed') || msg.includes('browser has been closed')) {
+        return err('Browser or page was closed unexpectedly', 'Re-open the browser with action="navigate" to the target URL');
+      }
+      if (msg.includes('net::') || msg.includes('ERR_')) {
+        return err(`Network error: ${msg.slice(0, 150)}`, 'Check internet connection, proxy settings (action="set-proxy"), or if the URL is accessible');
+      }
+      if (msg.includes('Execution context was destroyed')) {
+        return err('Page JavaScript context was destroyed (page navigated or reloaded)', 'Use "wait" to let the page settle, then "snapshot" to check state before retrying');
+      }
+      return err(`Browser error: ${msg.slice(0, 200)}`, 'Use "snapshot" to check current page state, or "screenshot" to see what the page looks like');
     }
   },
 };
