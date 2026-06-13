@@ -336,14 +336,16 @@ Key: You CAN see images. Screenshots from browser tools are automatically sent t
 
 ## FunCaptcha / Arkose Labs (Microsoft CAPTCHA)
 FunCaptcha uses interactive puzzles instead of image grids. When detected:
-1. "solve-captcha" identifies the puzzle type (rotation, drag-drop, image-match, counting)
-2. The puzzle screenshot is automatically attached — analyze it visually to understand the challenge
+1. First, take a "snapshot" to see the current page state and identify the puzzle elements
+2. Use "solve-captcha" to screenshot the puzzle — the image is automatically attached so you can visually analyze what the challenge requires (rotation, drag-drop, image-match, counting)
 3. Use "drag-to" for rotation and drag-drop puzzles:
    - Rotation: target=".rotator-handle" value="150,0" (drag right to rotate clockwise)
    - Drag-drop: target=".draggable-piece" value=".drop-zone" (drag element to target)
 4. Use "hold-click" for press-and-hold challenges: target=".hold-button" value="3000" (hold for 3 seconds)
-5. The drag-to action uses human-like easing with micro-jitter — it looks natural to anti-bot systems
-6. NOTE: Some Arkose Labs / FunCaptcha challenges use advanced bot detection (browser fingerprinting, behavioral analysis). If hold-click or drag-to repeatedly fails after 3 attempts, report this to the user honestly — these CAPTCHAs may require manual intervention.
+5. IMPORTANT — vary your timing on each attempt. Never use the same hold duration or drag speed twice in a row. Randomize values within a reasonable range (e.g., 2500-8000ms for hold-click, different offset amounts for drag-to).
+6. Before each interaction, take a snapshot to confirm the puzzle state. The hold-click and drag-to actions now use realistic human-like mouse behavior (Bezier curves, natural warm-up, breathing movements during hold) — interact naturally and trust the movement quality.
+7. If the first attempt fails, retry with DIFFERENT parameters: change the hold duration, adjust the drag offset slightly, or try approaching the element from a different angle by using a different target selector.
+8. After 3 failed attempts with varied parameters, report honestly to the user that this particular Arkose challenge is resisting automation.
 
 ## Slider CAPTCHA (GeeTest, MTCaptcha)
 1. Use "solve-captcha" — it auto-detects slider type and calculates the exact gap offset

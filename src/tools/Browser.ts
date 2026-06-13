@@ -23,6 +23,120 @@ function warn(msg: string, details?: Record<string, string>): string {
   return lines.join('\n');
 }
 
+// ─── Human-Like Mouse Utilities ────────────────────────────────────────────
+
+function bezierPoint(t: number, points: [number, number][]): [number, number] {
+  if (points.length === 1) return points[0];
+  const next: [number, number][] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    next.push([
+      points[i][0] + (points[i + 1][0] - points[i][0]) * t,
+      points[i][1] + (points[i + 1][1] - points[i][1]) * t,
+    ]);
+  }
+  return bezierPoint(t, next);
+}
+
+function easeInOut(t: number): number {
+  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+async function humanMove(x: number, y: number, page: Page): Promise<void> {
+  const mouse = page.mouse;
+  const vp = page.viewportSize() || { width: 1280, height: 720 };
+
+  // Start from a random position if we don't know current pos
+  const startX = Math.random() * vp.width * 0.3;
+  const startY = Math.random() * vp.height * 0.3;
+
+  // Generate 2-4 control points for bezier curve
+  const numControls = 2 + Math.floor(Math.random() * 3);
+  const controlPoints: [number, number][] = [[startX, startY]];
+  for (let i = 0; i < numControls; i++) {
+    const frac = (i + 1) / (numControls + 1);
+    const cx = startX + (x - startX) * frac + (Math.random() - 0.5) * 80;
+    const cy = startY + (y - startY) * frac + (Math.random() - 0.5) * 60;
+    controlPoints.push([cx, cy]);
+  }
+  controlPoints.push([x, y]);
+
+  // Step through the curve with eased timing
+  const totalSteps = 25 + Math.floor(Math.random() * 20);
+  for (let step = 0; step <= totalSteps; step++) {
+    const rawT = step / totalSteps;
+    const t = easeInOut(rawT);
+    const [px, py] = bezierPoint(t, controlPoints);
+
+    // Sine-wave micro-tremor (not uniform random)
+    const tremor = Math.sin(step * 0.3 + Math.random() * 0.5) * 0.4;
+    const tremorY = Math.cos(step * 0.25 + Math.random() * 0.5) * 0.3;
+
+    await mouse.move(px + tremor, py + tremorY);
+
+    // Variable step delay: faster in middle, slower at start/end
+    const speedFactor = 1 - Math.abs(rawT - 0.5) * 2;
+    const delay = 8 + Math.random() * 12 + speedFactor * 5;
+    await page.waitForTimeout(delay);
+  }
+
+  // Occasional overshoot + correction
+  if (Math.random() > 0.6) {
+    const overX = x + (Math.random() - 0.5) * 8;
+    const overY = y + (Math.random() - 0.5) * 8;
+    await mouse.move(overX, overY);
+    await page.waitForTimeout(30 + Math.random() * 40);
+    await mouse.move(x, y);
+    await page.waitForTimeout(20 + Math.random() * 30);
+  }
+}
+
+async function warmupBehavior(page: Page): Promise<void> {
+  const vp = page.viewportSize() || { width: 1280, height: 720 };
+  const spots = 3 + Math.floor(Math.random() * 3);
+
+  for (let i = 0; i < spots; i++) {
+    const rx = Math.random() * vp.width;
+    const ry = Math.random() * vp.height;
+    await humanMove(rx, ry, page);
+    await page.waitForTimeout(200 + Math.random() * 600);
+  }
+
+  // Small scroll
+  if (Math.random() > 0.4) {
+    const scrollDelta = Math.floor(Math.random() * 200) - 100;
+    await page.mouse.wheel(0, scrollDelta);
+    await page.waitForTimeout(300 + Math.random() * 500);
+  }
+}
+
+async function humanHold(x: number, y: number, duration: number, page: Page): Promise<void> {
+  const mouse = page.mouse;
+  const holdSteps = Math.floor(duration / 80);
+  const breathFreq = 0.15 + Math.random() * 0.1;
+  const breathAmpX = 0.3 + Math.random() * 0.4;
+  const breathAmpY = 0.2 + Math.random() * 0.3;
+
+  await mouse.down();
+
+  for (let i = 0; i < holdSteps; i++) {
+    // Sine-wave breathing movement (natural hand tremor)
+    const breathX = Math.sin(i * breathFreq) * breathAmpX;
+    const breathY = Math.cos(i * breathFreq * 0.7) * breathAmpY;
+
+    // Occasional micro-adjustment
+    const adjX = Math.random() > 0.95 ? (Math.random() - 0.5) * 2 : 0;
+    const adjY = Math.random() > 0.95 ? (Math.random() - 0.5) * 2 : 0;
+
+    await mouse.move(x + breathX + adjX, y + breathY + adjY);
+    await page.waitForTimeout(60 + Math.random() * 40);
+  }
+
+  // Release with slight upward drift
+  await mouse.move(x + (Math.random() - 0.5) * 3, y - 1 - Math.random() * 2);
+  await page.waitForTimeout(30 + Math.random() * 50);
+  await mouse.up();
+}
+
 interface BrowserSession {
   context: BrowserContext;
   page: Page;
@@ -2217,8 +2331,8 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const sourceBox = await sourceEl.boundingBox();
             if (!sourceBox) return err(`Source element "${target}" not found or not visible`);
 
-            const startX = sourceBox.x + sourceBox.width / 2;
-            const startY = sourceBox.y + sourceBox.height / 2;
+            const startX = sourceBox.x + sourceBox.width * (0.3 + Math.random() * 0.4);
+            const startY = sourceBox.y + sourceBox.height * (0.3 + Math.random() * 0.4);
 
             let endX: number, endY: number;
 
@@ -2230,31 +2344,62 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               const targetEl = p.locator(value).first();
               const targetBox = await targetEl.boundingBox();
               if (!targetBox) return err(`Target element "${value}" not found or not visible`);
-              endX = targetBox.x + targetBox.width / 2;
-              endY = targetBox.y + targetBox.height / 2;
+              endX = targetBox.x + targetBox.width * (0.3 + Math.random() * 0.4);
+              endY = targetBox.y + targetBox.height * (0.3 + Math.random() * 0.4);
             }
 
-            await p.mouse.move(startX, startY);
-            await p.waitForTimeout(100 + Math.random() * 150);
+            await warmupBehavior(p);
+
+            await humanMove(startX, startY, p);
+            await p.waitForTimeout(150 + Math.random() * 250);
+
             await p.mouse.down();
-            await p.waitForTimeout(200 + Math.random() * 200);
+            await p.waitForTimeout(200 + Math.random() * 300);
 
-            const steps = 15 + Math.floor(Math.random() * 10);
-            for (let i = 1; i <= steps; i++) {
-              const progress = i / steps;
-              const eased = progress < 0.5
-                ? 2 * progress * progress
-                : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-              const x = startX + (endX - startX) * eased + (Math.random() - 0.5) * 2;
-              const y = startY + (endY - startY) * eased + (Math.random() - 0.5) * 2;
-              await p.mouse.move(x, y);
-              await p.waitForTimeout(10 + Math.random() * 25);
+            const distance = Math.sqrt((endX - startX) ** 2 + (endY - startY) ** 2);
+            const numControls = distance > 200 ? 3 : 2;
+            const dragPoints: [number, number][] = [[startX, startY]];
+            for (let i = 0; i < numControls; i++) {
+              const frac = (i + 1) / (numControls + 1);
+              const perpX = -(endY - startY) / distance;
+              const perpY = (endX - startX) / distance;
+              const offset = (Math.random() - 0.5) * Math.min(distance * 0.15, 40);
+              const cx = startX + (endX - startX) * frac + perpX * offset;
+              const cy = startY + (endY - startY) * frac + perpY * offset;
+              dragPoints.push([cx, cy]);
+            }
+            dragPoints.push([endX, endY]);
+
+            const dragSteps = 25 + Math.floor(Math.random() * 20);
+            for (let step = 0; step <= dragSteps; step++) {
+              const rawT = step / dragSteps;
+              const t = easeInOut(rawT);
+              const [px, py] = bezierPoint(t, dragPoints);
+
+              const tremor = Math.sin(step * 0.35 + Math.random() * 0.5) * 0.5;
+              const tremorY = Math.cos(step * 0.3 + Math.random() * 0.5) * 0.4;
+
+              await p.mouse.move(px + tremor, py + tremorY);
+
+              const speedFactor = 1 - Math.abs(rawT - 0.5) * 2;
+              const delay = 10 + Math.random() * 15 + speedFactor * 8;
+              await p.waitForTimeout(delay);
             }
 
-            await p.mouse.move(endX, endY);
-            await p.waitForTimeout(100 + Math.random() * 200);
+            if (Math.random() > 0.5) {
+              const overX = endX + (Math.random() - 0.5) * 6;
+              const overY = endY + (Math.random() - 0.5) * 6;
+              await p.mouse.move(overX, overY);
+              await p.waitForTimeout(40 + Math.random() * 60);
+              await p.mouse.move(endX, endY);
+              await p.waitForTimeout(30 + Math.random() * 50);
+            }
+
+            await p.waitForTimeout(80 + Math.random() * 150);
+            await p.mouse.move(endX + (Math.random() - 0.5) * 2, endY - 1 - Math.random());
+            await p.waitForTimeout(30 + Math.random() * 40);
             await p.mouse.up();
-            await p.waitForTimeout(500);
+            await p.waitForTimeout(400 + Math.random() * 300);
 
             const screenshotPath = join(homedir(), '.aurix-drag-result.png');
             await p.screenshot({ path: screenshotPath });
@@ -2274,34 +2419,31 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           const p = await ensureBrowser();
           if (!target) return err('hold-click requires a target element');
 
-          const duration = parseInt(value) || 3000;
+          const baseDuration = parseInt(value) || 5000;
+          const duration = baseDuration + Math.floor(Math.random() * 3000) - 1000;
           try {
             const el = p.locator(target).first();
             const box = await el.boundingBox();
             if (!box) return err(`Element "${target}" not found or not visible`);
 
-            const x = box.x + box.width / 2;
-            const y = box.y + box.height / 2;
+            const x = box.x + box.width / 2 + (Math.random() - 0.5) * box.width * 0.3;
+            const y = box.y + box.height / 2 + (Math.random() - 0.5) * box.height * 0.3;
 
-            await p.mouse.move(x, y);
-            await p.waitForTimeout(100 + Math.random() * 100);
-            await p.mouse.down();
+            // Pre-interaction warmup: move mouse around naturally
+            await warmupBehavior(p);
 
-            const holdSteps = Math.floor(duration / 100);
-            for (let i = 0; i < holdSteps; i++) {
-              const jitterX = x + (Math.random() - 0.5) * 3;
-              const jitterY = y + (Math.random() - 0.5) * 3;
-              await p.mouse.move(jitterX, jitterY);
-              await p.waitForTimeout(80 + Math.random() * 40);
-            }
+            // Bezier curve approach to target
+            await humanMove(x, y, p);
+            await p.waitForTimeout(100 + Math.random() * 200);
 
-            await p.mouse.up();
-            await p.waitForTimeout(500);
+            // Human-like hold with breathing movements
+            await humanHold(x, y, Math.max(2000, duration), p);
+            await p.waitForTimeout(300 + Math.random() * 400);
 
             const screenshotPath = join(homedir(), '.aurix-hold-result.png');
             await p.screenshot({ path: screenshotPath });
 
-            return ok(`Held click on "${target}" for ${duration}ms`, {
+            return ok(`Held click on "${target}" for ${Math.round(duration)}ms (human-like)`, {
               position: `(${Math.round(x)}, ${Math.round(y)})`,
               screenshot: screenshotPath,
             });
