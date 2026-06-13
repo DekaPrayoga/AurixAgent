@@ -492,7 +492,8 @@ export class AgentLoop {
         }
 
         for (const call of response.toolCalls) {
-          const sig = `${call.name}:${(call.arguments as any)?.action || ''}:${((call.arguments as any)?.value || '').toString().slice(0, 40)}`;
+          const a = call.arguments as any;
+          const sig = `${call.name}:${a?.action || ''}:${a?.command || ''}:${a?.target || ''}:${(a?.value || '').toString().slice(0, 40)}`;
           recentToolSignatures.push(sig);
           if (recentToolSignatures.length > MAX_RECENT) recentToolSignatures.shift();
         }
@@ -529,20 +530,13 @@ export class AgentLoop {
           return count;
         })();
 
-        if (repeatCount >= 5) {
-          yield { type: 'error', data: `Agent looped ${repeatCount}x on the same action. Stopping to prevent wasted tokens. Rephrase your request or break it into smaller steps.` };
-          return;
-        } else if (repeatCount >= 3) {
+        if (repeatCount >= 2) {
+          const urgency = repeatCount >= 5 ? '[FINAL WARNING]' : repeatCount >= 3 ? '[CRITICAL SYSTEM]' : '[System hint]';
           this.messages.push({
             role: 'user',
-            content: `[CRITICAL SYSTEM] You have repeated the EXACT same action ${repeatCount} times. This is a loop. STOP and do something DIFFERENT:\n- If clicking the same element didn't work, try a DIFFERENT selector or use "evaluate" with JavaScript\n- If filling the same field didn't work, the field may already be filled — use "snapshot" to check\n- If screenshot → action → screenshot → same action, the action isn't working. Try a completely different approach.\n- Use "snapshot" (DOM tree) instead of screenshot to find correct selectors\nDo NOT repeat the same action again.`,
+            content: `${urgency} You have repeated the EXACT same action ${repeatCount} times. This is likely a loop. Try something DIFFERENT:\n- If a terminal command returned a huge output, DON'T run it again — use a more specific command (e.g. "ps aux | grep chrome | wc -l" instead of "ps aux")\n- If clicking the same element didn't work, try a DIFFERENT selector or use "evaluate" with JavaScript\n- If filling the same field didn't work, the field may already be filled — use "snapshot" to check\n- If a browser connection failed, don't retry the same connection — use "browser action=navigate" to start fresh\n- Try a completely different approach or tool\nConsider: is this action actually making progress? If not, switch tactics.`,
           });
-          yield { type: 'text', data: `🔄 Loop detected (${repeatCount}x same action) — injected anti-loop hint` };
-        } else if (repeatCount >= 2) {
-          this.messages.push({
-            role: 'user',
-            content: `[System hint] You just repeated the same action twice. Before repeating it again, check: did the previous attempt actually work? Use "snapshot" to verify the current state, then choose the correct next action. Do NOT repeat a failed action.`,
-          });
+          yield { type: 'text', data: `🔄 Loop warning (${repeatCount}x same action) — injected anti-loop hint, agent continuing...` };
         }
 
         continue;
