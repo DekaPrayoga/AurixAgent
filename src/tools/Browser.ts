@@ -2,7 +2,7 @@ import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, unlinkSync } from 'fs';
+import { readdirSync, readFileSync, unlinkSync } from 'fs';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
 
@@ -29,6 +29,228 @@ async function autoScreenshot(p: Page, label: string): Promise<string> {
   const path = join(homedir(), '.aurix-last-action.png');
   try { await p.screenshot({ path }); _lastActionScreenshot = path; } catch {}
   return path;
+}
+
+// ─── Vision-Based Captcha Auto-Solve ──────────────────────────────────────
+
+let _lastGridAnalyzeTime = 0;
+
+function readFileBase64(path: string): string {
+  return readFileSync(path).toString('base64');
+}
+
+async function visionClassify(imageBase64: string, prompt: string): Promise<string> {
+  const config = loadConfig();
+  const model = config.model || 'gpt-4o';
+  const body = {
+    model,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
+      ],
+    }],
+    max_tokens: 100,
+  };
+
+  const resp = await fetch(`${config.baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!resp.ok) throw new Error(`Vision API error: ${resp.status}`);
+
+  const text = await resp.text();
+
+  if (text.includes('data: ')) {
+    let content = '';
+    for (const line of text.split('\n')) {
+      if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
+        try {
+          const ev = JSON.parse(line.slice(6));
+          const delta = ev.choices?.[0]?.delta;
+          if (delta?.content) content += delta.content;
+          if (delta?.text) content += delta.text;
+          if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
+        } catch {}
+      }
+    }
+    return content.trim();
+  }
+
+  const json = JSON.parse(text);
+  return (json.choices?.[0]?.message?.content || '').trim();
+}
+
+async function solveCaptchaGrid(page: any, frame: any, provider: string): Promise<string> {
+  const results: string[] = [];
+  const isRecaptcha = provider === 'recaptcha';
+
+  let instruction = '';
+  try {
+    const instrEl = frame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h, .geetest_tip_content, .mtcaptcha-label');
+    if (await instrEl.count() > 0) {
+      instruction = (await instrEl.first().textContent() || '').trim();
+    }
+    if (!instruction) {
+      const strongText = frame.locator('strong').first();
+      if (await strongText.count() > 0) instruction = (await strongText.textContent() || '').trim();
+    }
+  } catch {}
+
+  if (!instruction) {
+    results.push('[WARN] Could not extract captcha instruction, cannot auto-solve');
+    return results.join('\n');
+  }
+
+  results.push(`Auto-solving: "${instruction}"`);
+
+  try {
+    const home = homedir();
+    for (const f of readdirSync(home)) {
+      if (/^\.aurix-tile-(\d+|after-\d+)\.png$/.test(f)) {
+        try { unlinkSync(join(home, f)); } catch {}
+      }
+    }
+  } catch {}
+
+  const tiles = await findGridTiles(frame, provider);
+  const gridScreenshotPath = join(homedir(), '.aurix-captcha-grid.png');
+  try {
+    const gridEl = frame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, .task, .challenge-view, table').first();
+    if (await gridEl.count() > 0) await gridEl.screenshot({ path: gridScreenshotPath });
+    else await frame.locator('body').screenshot({ path: gridScreenshotPath });
+  } catch {
+    try { await page.screenshot({ path: gridScreenshotPath }); } catch {}
+  }
+
+  for (let i = 0; i < tiles.length; i++) {
+    try { await tiles[i].screenshot({ path: join(homedir(), `.aurix-tile-${i}.png`) }); } catch {}
+  }
+
+  const classifyPrompt = `Look at this captcha grid image. The instruction is: "${instruction}". Which tile images match this instruction? Reply with ONLY the 0-based indices separated by commas (e.g. "0,3,5"). If none match, reply "none".`;
+
+  let matchedIndices: number[] = [];
+  try {
+    const gridBase64 = readFileBase64(gridScreenshotPath);
+    const response = await visionClassify(gridBase64, classifyPrompt);
+    results.push(`Vision model: "${response}"`);
+
+    if (response.toLowerCase().includes('none')) {
+      results.push('Vision: no matching tiles, clicking verify directly');
+    } else {
+      matchedIndices = response.split(',')
+        .map(s => parseInt(s.trim()))
+        .filter(n => !isNaN(n) && n >= 0 && n < tiles.length);
+    }
+  } catch (e: any) {
+    results.push(`[WARN] Vision model failed: ${e.message}`);
+    results.push('Auto-solve requires a vision-capable model. Falling back to manual mode.');
+    results.push('Use "captcha-grid" to see tiles and "click-tile" to select them manually.');
+    return results.join('\n');
+  }
+
+  if (matchedIndices.length === 0) {
+    results.push('No matching tiles found, attempting verify directly');
+  }
+
+  for (const idx of matchedIndices) {
+    try {
+      const currentTiles = await findGridTiles(frame, provider);
+      if (idx >= currentTiles.length) continue;
+      const tile = currentTiles[idx];
+      const tileBox = await tile.boundingBox();
+      if (tileBox) {
+        const cx = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
+        const cy = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
+        await humanMove(cx, cy, page);
+        await page.waitForTimeout(80 + Math.random() * 120);
+        await page.mouse.down();
+        await page.waitForTimeout(60 + Math.random() * 100);
+        await page.mouse.up();
+      } else {
+        await tile.click({ force: true });
+      }
+      results.push(`  Clicked tile ${idx}`);
+
+      if (isRecaptcha) {
+        await page.waitForTimeout(1500 + Math.random() * 1000);
+
+        const newTiles = await findGridTiles(frame, provider);
+        if (idx < newTiles.length) {
+          const tilePath = join(homedir(), `.aurix-tile-after-${idx}.png`);
+          try {
+            await newTiles[idx].screenshot({ path: tilePath });
+            const newBase64 = readFileBase64(tilePath);
+            const newResponse = await visionClassify(newBase64, `Does this image contain ${instruction}? Reply YES or NO only.`);
+            if (newResponse.toLowerCase().includes('yes')) {
+              const newTile = newTiles[idx];
+              const newBox = await newTile.boundingBox();
+              if (newBox) {
+                const nx = newBox.x + newBox.width * (0.3 + Math.random() * 0.4);
+                const ny = newBox.y + newBox.height * (0.3 + Math.random() * 0.4);
+                await humanMove(nx, ny, page);
+                await page.waitForTimeout(80 + Math.random() * 120);
+                await page.mouse.down();
+                await page.waitForTimeout(60 + Math.random() * 100);
+                await page.mouse.up();
+                results.push(`  Also clicked replacement tile ${idx} (matched)`);
+                await page.waitForTimeout(1500 + Math.random() * 1000);
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch (e: any) {
+      results.push(`  Failed to click tile ${idx}: ${e.message}`);
+    }
+  }
+
+  results.push('Clicking verify...');
+  try {
+    let verifyBtn = frame.locator('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]');
+    if (await verifyBtn.count() === 0) {
+      verifyBtn = frame.locator('button:has-text("Verify"), button:has-text("Next"), button:has-text("Submit")');
+    }
+
+    if (await verifyBtn.count() > 0) {
+      await humanClick(verifyBtn, page);
+      await page.waitForTimeout(3000);
+
+      const errorText = await frame.locator('.rc-imageselect-incorrect-response, .error-message, .incorrect').count();
+      if (errorText > 0) {
+        results.push('Verification failed, challenge will retry');
+        return results.join('\n');
+      }
+
+      const newChallenge = await frame.locator('.rc-imageselect-instructions, .prompt-text').count();
+      if (newChallenge > 0) {
+        const newInstr = (await frame.locator('.rc-imageselect-instructions, .prompt-text').first().textContent() || '').trim();
+        if (newInstr !== instruction) {
+          results.push(`New challenge appeared: "${newInstr}"`);
+          return results.join('\n');
+        }
+        results.push('Same challenge still present');
+        return results.join('\n');
+      }
+
+      const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
+      await page.screenshot({ path: verifyResultPath }).catch(() => {});
+      results.push(`[OK] Captcha solved! Screenshot: ${verifyResultPath}`);
+      return results.join('\n');
+    } else {
+      results.push('[WARN] No verify button found');
+      return results.join('\n');
+    }
+  } catch (e: any) {
+    results.push(`Verify failed: ${e.message}`);
+    return results.join('\n');
+  }
 }
 
 // ─── Human-Like Mouse Utilities ────────────────────────────────────────────
@@ -741,7 +963,9 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
   }
 
   const tiles = await findGridTiles(frame, provider);
-  results.push(`Grid: ${tiles.length} tiles found`);
+  const gridSize = tiles.length <= 9 ? '3x3' : tiles.length <= 16 ? '4x4' : `${tiles.length}-tile`;
+  results.push(`Grid: ${gridSize} (${tiles.length} tiles found)`);
+  _lastGridAnalyzeTime = Date.now();
 
   // Clear stale tile screenshots from a previous challenge so the model never
   // reads an old .aurix-tile-N.png that no longer matches the current grid.
@@ -821,11 +1045,10 @@ signin-assist: ONE action to log in. Auto-detects email and password fields acro
 Also detects OTP code input fields and extra form elements automatically.
 
 Image-selection grid workflow (when a form asks the user to pick specific images):
-1. "solve-captcha" or "captcha-grid" — extracts the instruction text (e.g. "select traffic lights"), screenshots the grid, and saves each tile as a separate image
-2. Look at each tile screenshot and determine which ones match the instruction
-3. "click-tile" with the tile index (0-based) to select matching tiles
-4. Some grids replace a clicked tile with a new one — use "captcha-grid" again to see the new tile and evaluate it too
-5. "captcha-verify" to submit the selection — if the grid refreshes, repeat from step 1
+1. "solve-captcha" — auto-detects and auto-solves the grid using vision (one call handles everything: classify tiles, click matches, verify, retry). If auto-solve fails, falls back to manual:
+2. "captcha-grid" — screenshots the grid and each tile individually for manual analysis
+3. "click-tile" with comma-separated indices (e.g. value="0,3,5") to batch-click matching tiles. Replacement tiles are auto-evaluated.
+4. "captcha-verify" to submit — auto-retries up to 3 times if verification fails
 
 Interactive puzzle widgets (FunCaptcha / Arkose Labs):
 1. "solve-captcha" detects the widget frame and analyzes the puzzle type (rotation, image-match, drag-drop, counting)
@@ -1411,9 +1634,35 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                   const updatedFrames = p.frames();
                   const challengeFrame = updatedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
                   if (challengeFrame) {
-                    results.push('Image challenge appeared. Analyzing grid...');
-                    const gridResult = await analyzeImageChallenge(p, challengeFrame, 'recaptcha');
-                    results.push(gridResult);
+                    results.push('Image challenge appeared. Auto-solving...');
+                    const maxRetries = 3;
+                    let solved = false;
+                    for (let attempt = 0; attempt < maxRetries; attempt++) {
+                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
+                      results.push(solveResult);
+
+                      if (solveResult.includes('Captcha solved!')) {
+                        solved = true;
+                        break;
+                      }
+
+                      if (solveResult.includes('Falling back to manual mode')) {
+                        break;
+                      }
+
+                      await p.waitForTimeout(2000);
+                      const refreshedFrames = p.frames();
+                      const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                      if (!newChallenge) {
+                        results.push('Challenge frame disappeared, captcha may be solved');
+                        solved = true;
+                        break;
+                      }
+                    }
+                    if (!solved && !results.some(r => r.includes('Falling back'))) {
+                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+                    }
                   } else {
                     const checkmark = checkboxFrame.locator('.recaptcha-checkbox-checked, .rc-anchor-checkbox-checked');
                     if (await checkmark.count() > 0) {
@@ -1459,9 +1708,35 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                   const updatedFrames = p.frames();
                   const challengeFrame = updatedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
                   if (challengeFrame) {
-                    results.push('Image challenge appeared. Analyzing grid...');
-                    const gridResult = await analyzeImageChallenge(p, challengeFrame, 'hcaptcha');
-                    results.push(gridResult);
+                    results.push('Image challenge appeared. Auto-solving...');
+                    const maxRetries = 3;
+                    let solved = false;
+                    for (let attempt = 0; attempt < maxRetries; attempt++) {
+                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'hcaptcha');
+                      results.push(solveResult);
+
+                      if (solveResult.includes('Captcha solved!')) {
+                        solved = true;
+                        break;
+                      }
+
+                      if (solveResult.includes('Falling back to manual mode')) {
+                        break;
+                      }
+
+                      await p.waitForTimeout(2000);
+                      const refreshedFrames = p.frames();
+                      const newChallenge = refreshedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
+                      if (!newChallenge) {
+                        results.push('Challenge frame disappeared, captcha may be solved');
+                        solved = true;
+                        break;
+                      }
+                    }
+                    if (!solved && !results.some(r => r.includes('Falling back'))) {
+                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+                    }
                   } else {
                     const checkmark = checkboxFrame.locator('.check.solved, #checkbox[aria-checked="true"]');
                     if (await checkmark.count() > 0) {
@@ -1724,7 +1999,8 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
         case 'click-tile': {
           const p = await ensureBrowser();
-          const tileIndex = parseInt(value || target || '0');
+          const rawValue = (value || target || '0').toString();
+          const tileIndices = rawValue.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
           const frames = p.frames();
 
           let challengeFrame: any = null;
@@ -1751,59 +2027,109 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           if (!challengeFrame) challengeFrame = p;
 
-          const tiles = await findGridTiles(challengeFrame, provider);
-          if (tiles.length === 0) return err('No grid tiles found', 'Use "captcha-grid" to scan the challenge first');
-          if (tileIndex < 0 || tileIndex >= tiles.length) return err(`Tile index ${tileIndex} out of range (0-${tiles.length - 1})`);
-
-          try {
-            const tile = tiles[tileIndex];
-            const isRecaptcha = provider === 'recaptcha';
-            const selectedClass = isRecaptcha
-              ? '.rc-imageselect-tileselected, .rc-imageselect-dynamic-selected, .rc-imageselect-tile.rc-imageselect-tileselected'
-              : '.task-image.selected, .task .selected';
-            const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
-            const tileBox = await tile.boundingBox();
-            if (tileBox) {
-              const clickX = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
-              const clickY = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
-              await humanMove(clickX, clickY, p);
-              await p.waitForTimeout(80 + Math.random() * 120);
-              await p.mouse.down();
-              await p.waitForTimeout(60 + Math.random() * 100);
-              await p.mouse.up();
-            } else {
-              await tile.click({ force: true });
-            }
-            await p.waitForTimeout(500 + Math.random() * 400);
-
-            const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
-            const selectionChanged = selectedCount !== selectedBefore;
-            const clickStatus = selectionChanged
-              ? `selection changed (${selectedBefore} → ${selectedCount})`
-              : `selection unchanged (${selectedCount}) — click may not have registered, or this tile toggled off`;
-
-            if (isRecaptcha) {
-              await p.waitForTimeout(1500 + Math.random() * 1000);
-              const newTiles = await findGridTiles(challengeFrame, provider);
-              const screenshotPath = join(homedir(), `.aurix-tile-after-${tileIndex}.png`);
-              await challengeFrame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, table').first().screenshot({ path: screenshotPath }).catch(() => p.screenshot({ path: screenshotPath }));
-              return ok(`Clicked tile ${tileIndex}`, {
-                selection: clickStatus,
-                'new tile': 'appeared — check screenshot and evaluate',
-                screenshot: screenshotPath,
-                next: 'Use "click-tile" for next matching tile, or "captcha-verify" when done',
-              });
-            }
-
-            const ss = await autoScreenshot(p, 'click-tile');
-            return ok(`Clicked tile ${tileIndex}`, {
-              selection: clickStatus,
-              screenshot: ss,
-              next: 'Continue clicking matching tiles, then use "captcha-verify"',
-            });
-          } catch (e: any) {
-            return err(`Failed to click tile ${tileIndex}: ${e.message}`, 'Use "captcha-grid" to re-scan the challenge');
+          const initialTiles = await findGridTiles(challengeFrame, provider);
+          if (initialTiles.length === 0) return err('No grid tiles found', 'Use "captcha-grid" to scan the challenge first');
+          for (const idx of tileIndices) {
+            if (idx < 0 || idx >= initialTiles.length) return err(`Tile index ${idx} out of range (0-${initialTiles.length - 1})`);
           }
+
+          const isRecaptcha = provider === 'recaptcha';
+          const selectedClass = isRecaptcha
+            ? '.rc-imageselect-tileselected, .rc-imageselect-dynamic-selected, .rc-imageselect-tile.rc-imageselect-tileselected'
+            : '.task-image.selected, .task .selected';
+
+          let instruction = '';
+          if (isRecaptcha) {
+            try {
+              const instrEl = challengeFrame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h');
+              if (await instrEl.count() > 0) instruction = (await instrEl.first().textContent() || '').trim();
+              if (!instruction) {
+                const st = challengeFrame.locator('strong').first();
+                if (await st.count() > 0) instruction = (await st.textContent() || '').trim();
+              }
+            } catch {}
+          }
+
+          const results: string[] = [];
+          results.push(`Clicking ${tileIndices.length} tile(s): [${tileIndices.join(', ')}]`);
+
+          for (const tileIndex of tileIndices) {
+            try {
+              const currentTiles = await findGridTiles(challengeFrame, provider);
+              if (tileIndex >= currentTiles.length) {
+                results.push(`  Tile ${tileIndex}: out of range (${currentTiles.length} tiles now), skipping`);
+                continue;
+              }
+
+              const tile = currentTiles[tileIndex];
+              const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
+              const tileBox = await tile.boundingBox();
+              if (tileBox) {
+                const clickX = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
+                const clickY = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
+                await humanMove(clickX, clickY, p);
+                await p.waitForTimeout(80 + Math.random() * 120);
+                await p.mouse.down();
+                await p.waitForTimeout(60 + Math.random() * 100);
+                await p.mouse.up();
+              } else {
+                await tile.click({ force: true });
+              }
+              await p.waitForTimeout(500 + Math.random() * 400);
+
+              const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
+              const clickStatus = selectedCount !== selectedBefore
+                ? `selected (${selectedBefore} → ${selectedCount})`
+                : `unchanged (${selectedCount})`;
+              results.push(`  Tile ${tileIndex}: ${clickStatus}`);
+
+              if (isRecaptcha) {
+                await p.waitForTimeout(1500 + Math.random() * 1000);
+                const newTiles = await findGridTiles(challengeFrame, provider);
+                const afterPath = join(homedir(), `.aurix-tile-after-${tileIndex}.png`);
+                try {
+                  await challengeFrame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, table').first().screenshot({ path: afterPath }).catch(() => p.screenshot({ path: afterPath }));
+                } catch {}
+
+                if (tileIndex < newTiles.length && instruction) {
+                  try {
+                    await newTiles[tileIndex].screenshot({ path: afterPath });
+                    const newBase64 = readFileBase64(afterPath);
+                    const newResp = await visionClassify(newBase64, `Does this image contain ${instruction}? Reply YES or NO only.`);
+                    if (newResp.toLowerCase().includes('yes')) {
+                      const newTile = newTiles[tileIndex];
+                      const newBox = await newTile.boundingBox();
+                      if (newBox) {
+                        const nx = newBox.x + newBox.width * (0.3 + Math.random() * 0.4);
+                        const ny = newBox.y + newBox.height * (0.3 + Math.random() * 0.4);
+                        await humanMove(nx, ny, p);
+                        await p.waitForTimeout(80 + Math.random() * 120);
+                        await p.mouse.down();
+                        await p.waitForTimeout(60 + Math.random() * 100);
+                        await p.mouse.up();
+                        results.push(`  → Replacement tile ${tileIndex} also matched, clicked`);
+                        await p.waitForTimeout(1500 + Math.random() * 1000);
+                      }
+                    } else {
+                      results.push(`  → Replacement tile ${tileIndex} doesn't match`);
+                    }
+                  } catch {}
+                }
+              }
+            } catch (e: any) {
+              results.push(`  Tile ${tileIndex}: FAILED — ${e.message}`);
+            }
+          }
+
+          if (isRecaptcha) {
+            results.push('');
+            results.push('Use "captcha-verify" when all matching tiles are clicked, or "captcha-grid" to re-analyze.');
+          } else {
+            const ss = await autoScreenshot(p, 'click-tile');
+            results.push(`Screenshot: ${ss}`);
+            results.push('Continue clicking matching tiles, then use "captcha-verify"');
+          }
+          return results.join('\n');
         }
 
         case 'captcha-verify': {
@@ -1834,6 +2160,18 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           if (!challengeFrame) challengeFrame = p;
 
+          const timeSinceAnalyze = _lastGridAnalyzeTime > 0 ? Date.now() - _lastGridAnalyzeTime : 0;
+          if (timeSinceAnalyze > 90_000 && _lastGridAnalyzeTime > 0) {
+            const results: string[] = [];
+            results.push(`[WARN] Grid was analyzed ${Math.round(timeSinceAnalyze / 1000)}s ago — challenge likely refreshed.`);
+            results.push('Re-analyzing before verify...');
+            try {
+              const reAnalyze = await analyzeImageChallenge(p, challengeFrame, provider);
+              results.push(reAnalyze);
+            } catch {}
+            return results.join('\n');
+          }
+
           try {
             let verifyBtn = challengeFrame.locator('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]');
             if (await verifyBtn.count() === 0) {
@@ -1852,26 +2190,80 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             if (errorText > 0) {
               const errorMsg = await challengeFrame.locator('.rc-imageselect-incorrect-response, .error-message').first().textContent().catch(() => 'Incorrect answer');
               await p.screenshot({ path: screenshotPath });
-              return err(`Verification failed: "${errorMsg}"`, `Challenge refreshed. Use "captcha-grid" to re-analyze, then click matching tiles again. Screenshot: ${screenshotPath}`);
+
+              const results: string[] = [];
+              results.push(`Verification failed: "${errorMsg}". Auto-retrying...`);
+
+              const maxRetries = 3;
+              for (let attempt = 0; attempt < maxRetries; attempt++) {
+                results.push(`\nRetry ${attempt + 1}/${maxRetries}...`);
+                await p.waitForTimeout(2000);
+
+                const currentFrames = p.frames();
+                const retryFrame = currentFrames.find((f: any) => {
+                  const u = f.url();
+                  return (u.includes('/recaptcha/') && u.includes('/bframe')) ||
+                         (u.includes('hcaptcha') && u.includes('challenge'));
+                });
+
+                if (!retryFrame) {
+                  results.push('Challenge frame gone — captcha may be solved');
+                  await p.screenshot({ path: screenshotPath });
+                  return results.join('\n');
+                }
+
+                const retryProvider = retryFrame.url().includes('hcaptcha') ? 'hcaptcha' : 'recaptcha';
+                const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
+                results.push(solveResult);
+
+                if (solveResult.includes('Captcha solved!')) {
+                  return results.join('\n');
+                }
+              }
+
+              results.push(`\nAuto-retry exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+              return results.join('\n');
             }
 
             const newChallenge = await challengeFrame.locator('.rc-imageselect-instructions, .prompt-text').count();
             if (newChallenge > 0) {
               const instruction = await challengeFrame.locator('.rc-imageselect-instructions, .prompt-text').first().textContent().catch(() => '');
               await p.screenshot({ path: screenshotPath });
-              return warn(`New challenge appeared: "${instruction}"`, {
-                screenshot: screenshotPath,
-                next: 'Use "captcha-grid" to analyze and "click-tile" to solve',
-              });
+
+              const results: string[] = [];
+              results.push(`New challenge appeared: "${instruction}". Auto-solving...`);
+
+              const maxRetries = 3;
+              for (let attempt = 0; attempt < maxRetries; attempt++) {
+                if (attempt > 0) results.push(`\nRetry ${attempt}/${maxRetries - 1}...`);
+                const currentFrames = p.frames();
+                const retryFrame = currentFrames.find((f: any) => {
+                  const u = f.url();
+                  return (u.includes('/recaptcha/') && u.includes('/bframe')) ||
+                         (u.includes('hcaptcha') && u.includes('challenge'));
+                });
+                if (!retryFrame) {
+                  results.push('Challenge frame gone — captcha may be solved');
+                  return results.join('\n');
+                }
+                const retryProvider = retryFrame.url().includes('hcaptcha') ? 'hcaptcha' : 'recaptcha';
+                const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
+                results.push(solveResult);
+                if (solveResult.includes('Captcha solved!')) return results.join('\n');
+                await p.waitForTimeout(2000);
+              }
+
+              results.push(`\nAuto-solve exhausted. Use "captcha-grid" and "click-tile" manually.`);
+              return results.join('\n');
             }
 
             await p.screenshot({ path: screenshotPath });
             return ok('Verification submitted', {
               screenshot: screenshotPath,
-              note: 'Check if the form/page progressed. If verification widget reappears, use "captcha-grid" again.',
+              note: 'Check if the form/page progressed. If verification widget reappears, use "solve-captcha" again.',
             });
           } catch (e: any) {
-            return err(`Verify failed: ${e.message}`, 'Use "captcha-grid" to re-scan and retry');
+            return err(`Verify failed: ${e.message}`, 'Use "solve-captcha" to retry automatically');
           }
         }
 
