@@ -11,6 +11,8 @@ import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { ConnectModal } from './ConnectModal.js';
 import { RewindPicker, type RewindMode } from './RewindPicker.js';
+import { CommandPalette } from './CommandPalette.js';
+import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
 import { theme, switchTheme, ALL_THEME_NAMES, type ThemeName, setBorderStyle, type BorderStyle } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
@@ -62,6 +64,8 @@ export function App({ config, registry, resumeId }: AppProps) {
   const agentRef = React.useRef<AgentLoop | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showRewind, setShowRewind] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingImagesRef = React.useRef<string[]>([]);
 
@@ -177,6 +181,12 @@ export function App({ config, registry, resumeId }: AppProps) {
       setMessages([]);
       setShowBanner(true);
       setScrollOffset(0);
+      return;
+    }
+
+    if (evt.ctrl && name === 'p' && !isProcessing && !showRewind) {
+      evt.preventDefault();
+      setShowPalette(true);
       return;
     }
 
@@ -720,20 +730,14 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         }
         return;
       } else if (commandName === 'sessions') {
-        const sessionsDir = path.join(os.homedir(), '.aurix', 'memories', 'sessions');
-        if (!fs.existsSync(sessionsDir)) { addAssistant('No past sessions found.'); return; }
-        const files = fs.readdirSync(sessionsDir)
-          .filter(f => f.endsWith('.json') || f.endsWith('.md'))
-          .sort().reverse().slice(0, 15);
-        if (files.length === 0) { addAssistant('No past sessions found.'); return; }
-        const list = files.map(f => {
-          const ext = path.extname(f);
-          const name = path.basename(f, ext);
-          const stat = fs.statSync(path.join(sessionsDir, f));
-          const date = stat.mtime.toISOString().slice(0, 16).replace('T', ' ');
-          return `  ${name.padEnd(20)} ${date}`;
-        });
-        addAssistant(`Saved sessions (${files.length}):\n${list.join('\n')}\n\nResume with: aurix --resume <name>`);
+        try {
+          const { MemoryEngine } = await import('../agent/MemoryEngine.js');
+          const list = new MemoryEngine().listSessions();
+          if (list.length === 0) { addAssistant('No past sessions found.'); return; }
+          setSessionList(list);
+        } catch {
+          addAssistant('Could not read sessions.');
+        }
         return;
       } else if (commandName === 'copy') {
         const n = parseInt(slash.args || '1', 10);
@@ -1417,6 +1421,42 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                     messages={messages}
                     onRestore={handleRewind}
                     onCancel={() => setShowRewind(false)}
+                  />
+                )}
+                {showPalette && (
+                  <CommandPalette
+                    commands={commands}
+                    onSelect={(cmdName) => {
+                      setShowPalette(false);
+                      handleSubmit(`/${cmdName}`);
+                    }}
+                    onCancel={() => setShowPalette(false)}
+                  />
+                )}
+                {sessionList && (
+                  <SessionBrowser
+                    sessions={sessionList}
+                    onSelect={(id) => {
+                      setSessionList(null);
+                      try {
+                        const count = agent.loadSession(id);
+                        if (count > 0) {
+                          const loaded = agent.getMessages();
+                          setMessages(loaded.filter(m => m.role !== 'system').map(m => ({
+                            role: m.role as 'user' | 'assistant' | 'tool' | 'system',
+                            content: m.content,
+                            timestamp: new Date(),
+                          })));
+                          setShowBanner(false);
+                          setScrollOffset(0);
+                        } else {
+                          setMessages(prev => [...prev, { role: 'system', content: `Session "${id}" could not be loaded.`, timestamp: new Date() }]);
+                        }
+                      } catch {
+                        setMessages(prev => [...prev, { role: 'system', content: 'Failed to resume session.', timestamp: new Date() }]);
+                      }
+                    }}
+                    onCancel={() => setSessionList(null)}
                   />
                 )}
                 {connectModal && (

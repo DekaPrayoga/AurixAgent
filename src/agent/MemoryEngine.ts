@@ -122,6 +122,30 @@ export class MemoryEngine {
     return id;
   }
 
+  listSessions(): { id: string; savedAt: string; messageCount: number; preview: string }[] {
+    try {
+      ensureDirs();
+      const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json') && !f.endsWith('.memory.json'));
+      const out: { id: string; savedAt: string; messageCount: number; preview: string }[] = [];
+      for (const file of files) {
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8'));
+          const msgs: any[] = Array.isArray(raw.messages) ? raw.messages : [];
+          const firstUser = msgs.find(m => m.role === 'user');
+          out.push({
+            id: raw.id || file.replace(/\.json$/, ''),
+            savedAt: raw.savedAt || '',
+            messageCount: msgs.length,
+            preview: (firstUser?.content || '(empty)').replace(/\n+/g, ' ').slice(0, 50),
+          });
+        } catch {}
+      }
+      return out.sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
+    } catch {
+      return [];
+    }
+  }
+
   loadSession(sessionId: string): Message[] {
     ensureDirs();
 
