@@ -2,6 +2,7 @@ import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readdirSync, unlinkSync } from 'fs';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
 
@@ -563,7 +564,12 @@ async function autoSolveCaptcha(p: Page): Promise<string[]> {
       if (await checkbox.count() > 0) {
         await checkbox.click({ timeout: 5000 });
         await p.waitForTimeout(3000);
-        results.push('Auto-solved: Turnstile verification completed');
+        // Don't claim "solved" — verify the widget actually reported success.
+        const tsOk = await turnstileFrame.locator('input[type="hidden"][name="cf-turnstile-response"], [data-state="success"], .success').count().catch(() => 0);
+        const tsError = await turnstileFrame.locator('.error, [data-state="error"], [data-state="failed"]').count().catch(() => 0);
+        if (tsOk > 0) results.push('Turnstile: checkbox clicked, widget reports success');
+        else if (tsError > 0) results.push('Turnstile: checkbox clicked but widget shows an error — may need a screenshot to inspect');
+        else results.push('Turnstile: checkbox clicked, outcome unconfirmed — take a screenshot to verify the page advanced before submitting');
       }
     } catch (e: any) {
       results.push(`Turnstile: auto-click attempted (${e.message?.slice(0, 80)})`);
@@ -576,7 +582,13 @@ async function autoSolveCaptcha(p: Page): Promise<string[]> {
       if (await checkbox.count() > 0) {
         await checkbox.click({ timeout: 5000 });
         await p.waitForTimeout(2000);
-        results.push('Auto-solved: reCAPTCHA checkbox clicked');
+        // The checkbox click may pass instantly OR pop an image challenge.
+        // Report which actually happened instead of claiming success.
+        const checked = await recaptchaAnchor.locator('.recaptcha-checkbox-checked, .rc-anchor-checkbox-checked').count().catch(() => 0);
+        const challengeOpened = p.frames().some((f: any) => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+        if (checked > 0) results.push('reCAPTCHA: checkbox verified (checked) — no image challenge');
+        else if (challengeOpened) results.push('reCAPTCHA: checkbox clicked, image challenge appeared — use captcha-grid to solve it');
+        else results.push('reCAPTCHA: checkbox clicked, outcome unconfirmed — take a screenshot to verify before submitting');
       }
     } catch (e: any) {
       results.push(`reCAPTCHA checkbox: auto-click attempted (${e.message?.slice(0, 80)})`);
@@ -641,7 +653,7 @@ async function autoSolveCaptcha(p: Page): Promise<string[]> {
         await p.mouse.up();
         await p.waitForTimeout(2000);
 
-        results.push(`Auto-solved: GeeTest slider dragged ${dragDistance}px`);
+        results.push(`GeeTest: slider dragged ${dragDistance}px — outcome unconfirmed, take a screenshot to verify the gap was matched`);
       } else {
         results.push('GeeTest slider detected but gap position could not be auto-detected');
       }
@@ -728,6 +740,17 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
 
   const tiles = await findGridTiles(frame, provider);
   results.push(`Grid: ${tiles.length} tiles found`);
+
+  // Clear stale tile screenshots from a previous challenge so the model never
+  // reads an old .aurix-tile-N.png that no longer matches the current grid.
+  try {
+    const home = homedir();
+    for (const f of readdirSync(home)) {
+      if (/^\.aurix-tile-(\d+|after-\d+)\.png$/.test(f)) {
+        try { unlinkSync(join(home, f)); } catch {}
+      }
+    }
+  } catch {}
 
   const screenshotPath = join(homedir(), '.aurix-captcha-grid.png');
   try {
@@ -1643,7 +1666,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           for (const frame of frames) {
             const url = frame.url();
-            if (url.includes('bframe') || url.includes('recaptcha')) {
+            if (url.includes('/recaptcha/') && url.includes('/bframe')) {
               challengeFrame = frame;
               provider = 'recaptcha';
               break;
@@ -1687,7 +1710,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           for (const frame of frames) {
             const url = frame.url();
-            if (url.includes('bframe') || url.includes('recaptcha')) {
+            if (url.includes('/recaptcha/') && url.includes('/bframe')) {
               challengeFrame = frame;
               provider = 'recaptcha';
               break;
@@ -1712,6 +1735,11 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           try {
             const tile = tiles[tileIndex];
+            const isRecaptcha = provider === 'recaptcha';
+            const selectedClass = isRecaptcha
+              ? '.rc-imageselect-tileselected, .rc-imageselect-dynamic-selected, .rc-imageselect-tile.rc-imageselect-tileselected'
+              : '.task-image.selected, .task .selected';
+            const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
             const tileBox = await tile.boundingBox();
             if (tileBox) {
               const clickX = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
@@ -1726,9 +1754,11 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             }
             await p.waitForTimeout(500 + Math.random() * 400);
 
-            const isRecaptcha = provider === 'recaptcha';
-            const selectedClass = isRecaptcha ? '.rc-imageselect-dynamic-selected' : '.task-image.selected, .task .selected';
-            const selectedCount = await challengeFrame.locator(selectedClass).count();
+            const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
+            const selectionChanged = selectedCount !== selectedBefore;
+            const clickStatus = selectionChanged
+              ? `selection changed (${selectedBefore} → ${selectedCount})`
+              : `selection unchanged (${selectedCount}) — click may not have registered, or this tile toggled off`;
 
             if (isRecaptcha) {
               await p.waitForTimeout(1500 + Math.random() * 1000);
@@ -1736,7 +1766,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               const screenshotPath = join(homedir(), `.aurix-tile-after-${tileIndex}.png`);
               await challengeFrame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, table').first().screenshot({ path: screenshotPath }).catch(() => p.screenshot({ path: screenshotPath }));
               return ok(`Clicked tile ${tileIndex}`, {
-                selected: `${selectedCount} tile(s)`,
+                selection: clickStatus,
                 'new tile': 'appeared — check screenshot and evaluate',
                 screenshot: screenshotPath,
                 next: 'Use "click-tile" for next matching tile, or "captcha-verify" when done',
@@ -1745,7 +1775,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
             const ss = await autoScreenshot(p, 'click-tile');
             return ok(`Clicked tile ${tileIndex}`, {
-              selected: `${selectedCount} tile(s)`,
+              selection: clickStatus,
               screenshot: ss,
               next: 'Continue clicking matching tiles, then use "captcha-verify"',
             });
@@ -1763,7 +1793,7 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
 
           for (const frame of frames) {
             const url = frame.url();
-            if (url.includes('bframe') || url.includes('recaptcha')) {
+            if (url.includes('/recaptcha/') && url.includes('/bframe')) {
               challengeFrame = frame;
               provider = 'recaptcha';
               break;
@@ -2196,12 +2226,15 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             solveResults.forEach(r => results.push(`  ${r}`));
 
             const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
-            if (!needsVision) {
-              await p.waitForTimeout(2000);
-              results.push('Verification completed. Continuing form submission...');
-            } else {
+            const unconfirmed = solveResults.some(r => /unconfirmed|shows an error/i.test(r));
+            if (needsVision) {
               results.push('');
               results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signup-assist to continue.');
+            } else if (unconfirmed) {
+              results.push('Verification attempted but NOT confirmed — take a screenshot to check the widget passed before relying on submission.');
+            } else {
+              await p.waitForTimeout(2000);
+              results.push('Verification confirmed. Continuing form submission...');
             }
           }
 
@@ -2361,12 +2394,15 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             solveResults.forEach(r => results.push(`  ${r}`));
 
             const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
-            if (!needsVision) {
-              await p.waitForTimeout(2000);
-              results.push('Verification completed. Continuing login...');
-            } else {
+            const unconfirmed = solveResults.some(r => /unconfirmed|shows an error/i.test(r));
+            if (needsVision) {
               results.push('');
               results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signin-assist to continue.');
+            } else if (unconfirmed) {
+              results.push('Verification attempted but NOT confirmed — take a screenshot to check the widget passed before relying on login.');
+            } else {
+              await p.waitForTimeout(2000);
+              results.push('Verification confirmed. Continuing login...');
             }
           }
 
