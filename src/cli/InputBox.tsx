@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
+import { filterFiles } from './fileList.js';
 
 function runCmd(cmd: string, args: string[], input?: string, env?: Record<string, string>): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -334,6 +335,26 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   const suggestionsVisible = suggestions.length > 0;
   useEffect(() => { setSelectedCommand(0); }, [commandQuery]);
 
+  // @-mention: detect a trailing @token (no whitespace after the @) to attach a file.
+  const atQuery = (() => {
+    const m = value.match(/(?:^|\s)@([^\s]*)$/);
+    return m ? m[1] : null;
+  })();
+  const fileSuggestions = useMemo(() => {
+    if (atQuery === null) return [];
+    return filterFiles(atQuery, 12);
+  }, [atQuery]);
+  const fileSuggestionsVisible = fileSuggestions.length > 0;
+  useEffect(() => { setSelectedCommand(0); }, [atQuery]);
+
+  function applyFileCompletion(index = selectedCommand) {
+    const file = fileSuggestions[index];
+    if (!file) return;
+    const next = value.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `);
+    setValue(next);
+    setCursor(next.length);
+  }
+
   function applyCommandCompletion(index = selectedCommand) {
     const command = suggestions[index];
     if (!command) return;
@@ -372,6 +393,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       lastPasteStart = -1;
       lastPasteLen = 0;
       if (suggestionsVisible) { applyCommandCompletion(); return; }
+      if (fileSuggestionsVisible) { applyFileCompletion(); return; }
       const trimmed = value.trim();
       if (trimmed) {
         let expanded = trimmed;
@@ -392,6 +414,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       evt.stopPropagation();
       if (evt.shift && onModeCycle) { onModeCycle(); return; }
       if (suggestionsVisible) { applyCommandCompletion(); return; }
+      if (fileSuggestionsVisible) { applyFileCompletion(); return; }
       return;
     }
     if (evt.ctrl && name === 'p') {
@@ -489,6 +512,18 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       setCursor(Math.min(value.length, cursor + 1));
       return;
     }
+    if (fileSuggestionsVisible && name === 'up') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      setSelectedCommand(prev => prev <= 0 ? fileSuggestions.length - 1 : prev - 1);
+      return;
+    }
+    if (fileSuggestionsVisible && name === 'down') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      setSelectedCommand(prev => (prev + 1) % fileSuggestions.length);
+      return;
+    }
     if (suggestionsVisible && name === 'up') {
       evt.preventDefault();
       evt.stopPropagation();
@@ -578,9 +613,12 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     const boxWidth = Math.min(termWidth - 4, 72);
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
-        <box flexDirection="column" border={suggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
+        <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
           {suggestionsVisible && (
             <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
+          )}
+          {fileSuggestionsVisible && (
+            <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
           )}
           <box
             paddingX={2}
@@ -613,9 +651,12 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-      <box flexDirection="column" border={suggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
+      <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
         {suggestionsVisible && (
           <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
+        )}
+        {fileSuggestionsVisible && (
+          <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
         )}
         <box
           paddingX={2}
@@ -650,6 +691,27 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       <box paddingX={1}>
         <text fg={theme.textMuted}>To Exit: Type /exit or Double Ctrl+C</text>
       </box>
+    </box>
+  );
+}
+
+function FileSuggestions({ files, selected }: { files: string[]; selected: number }) {
+  return (
+    <box flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={1}>
+      {files.map((file, index) => {
+        const isSelected = index === selected;
+        return (
+          <box key={file}>
+            <text
+              fg={isSelected ? theme.bg : theme.primary}
+              bg={isSelected ? theme.primary : undefined}
+            >
+              {` @${file} `}
+            </text>
+          </box>
+        );
+      })}
+      <box><text fg={theme.border}>{'─'.repeat(40)}</text></box>
     </box>
   );
 }
