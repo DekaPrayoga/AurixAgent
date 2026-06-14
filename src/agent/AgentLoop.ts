@@ -6,7 +6,7 @@ import type { AurixConfig } from './Config.js';
 import { buildSystemPrompt } from './Context.js';
 import type { Provider, Message } from '../providers/index.js';
 import { createProvider } from '../providers/index.js';
-import { countTokens } from './TokenCounter.js';
+import { countTokens, TokenLedger } from './TokenCounter.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
 import { ContextManager } from './ContextManager.js';
@@ -99,8 +99,7 @@ export class AgentLoop {
   private memoryEngine: MemoryEngine;
   private researchPipeline?: ResearchPipeline;
   private interrupted = false;
-  private _inputTokens = 0;
-  private _outputTokens = 0;
+  private ledger = new TokenLedger();
   private _safetyRefusalCount = 0;
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
@@ -111,6 +110,7 @@ export class AgentLoop {
     this.memoryEngine = new MemoryEngine(this.provider);
 
     const systemPrompt = buildSystemPrompt(config, registry.list());
+    this.ledger.set('systemPrompt', countTokens(systemPrompt));
     this.messages.push({ role: 'system', content: systemPrompt });
   }
 
@@ -138,14 +138,21 @@ export class AgentLoop {
     return this.contextManager.getStats(this.messages);
   }
 
-  getTokenStats(): { input: number; output: number; total: number; pct: number } {
+  getTokenStats(): { input: number; output: number; total: number; pct: number; ledger: Record<string, number>; apiInput: number; apiOutput: number } {
     const ctx = this.contextManager.getStats(this.messages);
     return {
-      input: this._inputTokens,
-      output: this._outputTokens,
+      input: this.ledger.get('systemPrompt') + this.ledger.get('userInput') + this.ledger.get('toolResults'),
+      output: this.ledger.get('agentText') + this.ledger.get('toolCalls'),
       total: ctx.totalTokens,
       pct: ctx.estimatedPct,
+      ledger: this.ledger.getAll(),
+      apiInput: this.ledger.getApiInput(),
+      apiOutput: this.ledger.getApiOutput(),
     };
+  }
+
+  getLedger(): TokenLedger {
+    return this.ledger;
   }
 
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
@@ -159,7 +166,7 @@ export class AgentLoop {
     const msg: Message = { role: 'user', content: userMessage };
     if (images?.length) msg.images = images;
     this.messages.push(msg);
-    this._inputTokens += countTokens(userMessage);
+    this.ledger.add('userInput', userMessage);
 
     if (this.contextManager.shouldCompact(this.messages)) {
       yield { type: 'compact', data: 'Context nearing limit — compacting history...' };
@@ -380,11 +387,13 @@ export class AgentLoop {
       this._safetyRefusalCount = 0;
 
       if (response.usage) {
-        this._inputTokens = response.usage.promptTokens;
-        this._outputTokens += response.usage.completionTokens;
+        this.ledger.setApiUsage(response.usage.promptTokens, response.usage.completionTokens);
       }
 
       if (response.toolCalls.length > 0) {
+        for (const tc of response.toolCalls) {
+          this.ledger.add('toolCalls', `${tc.name} ${JSON.stringify(tc.arguments)}`);
+        }
         this.messages.push({
           role: 'assistant',
           content: response.text || '',
@@ -392,7 +401,7 @@ export class AgentLoop {
         });
 
         if (response.text) {
-          this._outputTokens += countTokens(response.text);
+          this.ledger.add('agentText', response.text);
           yield { type: 'text', data: response.text };
         }
 
@@ -453,12 +462,12 @@ export class AgentLoop {
             try {
               const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
               const processed = processResult(result, call.name);
-              this._outputTokens += countTokens(processed);
+              this.ledger.add('toolResults', processed);
               yield { type: 'tool_end', data: processed, toolName: call.name };
               this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
             } catch (e: any) {
               const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
-              this._outputTokens += countTokens(errMsg);
+              this.ledger.add('toolResults', errMsg);
               yield { type: 'tool_end', data: errMsg, toolName: call.name };
               this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
             }
@@ -485,12 +494,12 @@ export class AgentLoop {
 
               if (error) {
                 const errMsg = `Error executing ${call.name}: ${error.message}\n\nTry a different approach.`;
-                this._outputTokens += countTokens(errMsg);
+                this.ledger.add('toolResults', errMsg);
                 yield { type: 'tool_end', data: errMsg, toolName: call.name };
                 this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
               } else {
                 const processed = processResult(result, call.name);
-                this._outputTokens += countTokens(processed);
+                this.ledger.add('toolResults', processed);
                 yield { type: 'tool_end', data: processed, toolName: call.name };
                 this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
               }
@@ -515,7 +524,11 @@ export class AgentLoop {
           }
           result = processResult(result, call.name);
           result = addPostExecutionHint(result, call.name, call.arguments);
-          this._outputTokens += countTokens(result);
+          if (call.name === 'skill_loader' && call.arguments?.action === 'load') {
+            this.ledger.add('skills', result);
+          } else {
+            this.ledger.add('toolResults', result);
+          }
 
           yield { type: 'tool_end', data: result, toolName: call.name };
 
@@ -584,6 +597,7 @@ export class AgentLoop {
       }
 
       this.messages.push({ role: 'assistant', content: response.text });
+      this.ledger.add('agentText', response.text);
       yield { type: 'text', data: response.text };
       yield { type: 'done', data: '' };
       return;

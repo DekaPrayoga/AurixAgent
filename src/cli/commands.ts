@@ -249,6 +249,13 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
+    name: 'skill',
+    argumentHint: '[number|off]',
+    description: 'Limit additional skills (core always active). E.g. /skill 50',
+    group: 'config',
+    source: 'aurix',
+  },
+  {
     name: 'proxy',
     argumentHint: '[host:port|user:pass@host:port|off]',
     description: 'Set browser proxy for web automation',

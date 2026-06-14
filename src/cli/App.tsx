@@ -418,7 +418,25 @@ Supervisor auto-routes tasks to the right specialist(s).`);
       if (commandName === 'cost') {
         const stats = agent.getContextStats();
         const tokens = agent.getTokenStats();
-        addAssistant(`Session token usage:\n  Input tokens:  ${tokens.input.toLocaleString()}\n  Output tokens: ${tokens.output.toLocaleString()}\n  Context:       ${tokens.total.toLocaleString()} (~${tokens.pct}%)\n  Messages:      ${stats.messageCount} (${stats.compactedCount} compactions)\n\nActual cost depends on your provider's pricing.`);
+        const ledger = tokens.ledger;
+        const maxLabel = 15;
+        const fmt = (n: number) => n.toLocaleString().padStart(8);
+        addAssistant(
+          `Session Token Ledger:\n` +
+          `  ${'System prompt'.padEnd(maxLabel)}: ${fmt(ledger.systemPrompt)} (cached)\n` +
+          `  ${'User input'.padEnd(maxLabel)}: ${fmt(ledger.userInput)}\n` +
+          `  ${'Tool calls'.padEnd(maxLabel)}: ${fmt(ledger.toolCalls)}\n` +
+          `  ${'Tool results'.padEnd(maxLabel)}: ${fmt(ledger.toolResults)}\n` +
+          `  ${'Agent text'.padEnd(maxLabel)}: ${fmt(ledger.agentText)}\n` +
+          `  ${'Skills'.padEnd(maxLabel)}: ${fmt(ledger.skills)}\n` +
+          `  ${'─'.repeat(maxLabel + 10)}\n` +
+          `  ${'Total tracked'.padEnd(maxLabel)}: ${fmt(Object.values(ledger).reduce((a: number, b: number) => a + b, 0) as number)}\n` +
+          `  ${'API input'.padEnd(maxLabel)}: ${fmt(tokens.apiInput)}\n` +
+          `  ${'API output'.padEnd(maxLabel)}: ${fmt(tokens.apiOutput)}\n` +
+          `  ${'Context window'.padEnd(maxLabel)}: ${fmt(stats.totalTokens)} (~${stats.estimatedPct}%)\n` +
+          `  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)\n\n` +
+          `Actual cost depends on your provider's pricing.`
+        );
         return;
       }
 
@@ -447,6 +465,45 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         }
         const result = await registry.execute('browser', { action: 'set-ui', value: mode });
         addAssistant(result);
+        return;
+      }
+
+      if (commandName === 'skill') {
+        const { setSkillLimit, getSkillCounts, getSkillLimit } = await import('../tools/SkillLoader.js');
+        const arg = slash.args?.trim() || '';
+
+        if (!arg || arg === 'status') {
+          const counts = getSkillCounts();
+          const limit = getSkillLimit();
+          addAssistant(
+            `Skill Management:\n` +
+            `  Total: ${counts.total}\n` +
+            `  Core (always active): ${counts.core}\n` +
+            `  Additional: ${counts.additional}\n` +
+            `  Visible: ${counts.visible}\n` +
+            `  Limit: ${limit === null ? 'no limit' : limit + ' additional'}\n\n` +
+            `Usage: /skill <number> — limit additional skills\n` +
+            `       /skill off — remove limit (show all)`
+          );
+          return;
+        }
+
+        if (arg === 'off' || arg === '0' || arg === 'all') {
+          setSkillLimit(null);
+          const counts = getSkillCounts();
+          addAssistant(`Skill limit removed. All ${counts.total} skills are now available.`);
+          return;
+        }
+
+        const num = parseInt(arg, 10);
+        if (isNaN(num) || num < 1) {
+          addAssistant('Usage: /skill <number> or /skill off\nExample: /skill 50 — show 50 additional skills + core');
+          return;
+        }
+
+        setSkillLimit(num);
+        const counts = getSkillCounts();
+        addAssistant(`Skill limit set to ${num} additional skills (+ ${counts.core} core = ${counts.core + num} visible out of ${counts.total} total).`);
         return;
       }
 
@@ -734,7 +791,8 @@ Supervisor auto-routes tasks to the right specialist(s).`);
       } else if (commandName === 'usage') {
         const stats = agent.getContextStats();
         const tokens = agent.getTokenStats();
-        addAssistant(`Token usage:\n  Input:  ${tokens.input.toLocaleString()}\n  Output: ${tokens.output.toLocaleString()}\n  Context: ${tokens.total.toLocaleString()} (~${tokens.pct}%)\n  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)`);
+        const ledger = tokens.ledger;
+        addAssistant(agent.getLedger().format(stats.totalTokens, stats.estimatedPct) + `\n  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)`);
         return;
       } else if (commandName === 'agents' || commandName === 'tasks') {
         if (agent.isMultiAgent()) {
