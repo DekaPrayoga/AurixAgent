@@ -172,6 +172,8 @@ interface BrowserSession {
 }
 
 const sessions = new Map<string, BrowserSession>();
+const sessionProxies = new Map<string, string>();
+const MAX_BROWSER_SESSIONS = 3;
 let currentSessionKey = 'default';
 let consecutiveEvalFailures = 0;
 let lastEvalCode = '';
@@ -862,6 +864,14 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
         type: 'string',
         description: 'Additional options as JSON string, e.g. \'{"timeout": 5000}\' or \'{"selector": ".class"}\'',
       },
+      session: {
+        type: 'string',
+        description: 'Browser session key (default: "default"). Use distinct keys (e.g. "a", "b", "c") to drive up to 3 independent browsers in parallel — each has its own profile, cookies, and proxy.',
+      },
+      proxy: {
+        type: 'string',
+        description: 'Optional proxy for THIS session, e.g. "host:port" or "host:port:user:pass". If omitted, a proxy is auto-picked from config. Each session may use a different proxy.',
+      },
     },
     required: ['action'],
   },
@@ -872,6 +882,18 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
     const value = args.value as string;
     const options = args.options ? JSON.parse(args.options as string) : {};
     const timeout = options.timeout || 15000;
+
+    // Multi-session: route this call to the requested browser (default "default").
+    const sessionKey = (args.session as string)?.trim() || 'default';
+    if (!sessions.has(sessionKey) && sessions.size >= MAX_BROWSER_SESSIONS && !['close', 'close-all', 'status'].includes(action)) {
+      return err(`Max ${MAX_BROWSER_SESSIONS} concurrent browser sessions reached`, `Active: ${[...sessions.keys()].join(', ')}. Reuse one or close it with action="close" session="<key>".`);
+    }
+    setBrowserSession(sessionKey);
+    // Per-session proxy: explicit arg wins; otherwise pick one for a fresh session.
+    if (args.proxy) {
+      sessionProxies.set(sessionKey, String(args.proxy));
+    }
+    browserProxy = sessionProxies.get(sessionKey) || (args.proxy ? String(args.proxy) : '');
 
     try {
       switch (action) {
