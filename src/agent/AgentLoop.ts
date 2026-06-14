@@ -53,13 +53,13 @@ function buildPersistedMessage(result: { filepath: string; preview: string; hasM
 const WRITE_TOOLS = new Set(['file_edit', 'write_file', 'terminal']);
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
 
-type ErrorType = 'rate_limit' | 'auth' | 'context_length' | 'network' | 'unknown';
+type ErrorType = 'rate_limit' | 'auth' | 'context_length' | 'network' | 'server_error' | 'proxy_error' | 'unknown';
 
 function classifyError(e: any): ErrorType {
   const msg = (e.message || e.error?.message || String(e)).toLowerCase();
   const status = e.status || e.statusCode || e.response?.status || e.error?.status;
 
-  if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('quota exceeded')) {
+  if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('quota exceeded') || msg.includes('monthly_request_count')) {
     return 'rate_limit';
   }
   if (status === 401 || status === 403 || msg.includes('invalid api key') || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('authentication')) {
@@ -68,8 +68,14 @@ function classifyError(e: any): ErrorType {
   if (msg.includes('context length') || msg.includes('too many tokens') || msg.includes('maximum context') || msg.includes('reduce your prompt') || msg.includes('max_tokens')) {
     return 'context_length';
   }
-  if (msg.includes('econnrefused') || msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('network') || msg.includes('socket hang up') || msg.includes('dns') || msg.includes('fetch failed')) {
+  if (status === 502 || status === 503 || status === 504 || msg.includes('bad gateway') || msg.includes('service unavailable') || msg.includes('gateway timeout') || msg.includes('upstream')) {
+    return 'server_error';
+  }
+  if (msg.includes('econnrefused') || msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('network') || msg.includes('socket hang up') || msg.includes('dns') || msg.includes('fetch failed') || msg.includes('getaddrinfo')) {
     return 'network';
+  }
+  if (msg.includes('stream') || msg.includes('event:') || msg.includes('data:') || msg.includes('failed to parse') || msg.includes('unexpected token') || msg.includes('invalid json') || msg.includes('sse')) {
+    return 'proxy_error';
   }
   return 'unknown';
 }
@@ -169,8 +175,27 @@ export class AgentLoop {
     const recentToolSignatures: string[] = [];
     const MAX_RECENT = 6;
 
-    const RETRY_DELAYS_NORMAL = [5, 15, 30, 60, 120];
-    const RETRY_DELAYS_RATE_LIMIT = [60, 120, 300, 600];
+    const RETRY_DELAYS: Record<string, number[]> = {
+      rate_limit: [60, 120, 300, 600],
+      server_error: [2, 5, 10, 30],
+      proxy_error: [3, 10, 30, 60],
+      network: [5, 15, 30, 60, 120],
+      unknown: [5, 15, 30, 60, 120],
+    };
+    const ERROR_LABELS: Record<string, string> = {
+      rate_limit: 'rate limited',
+      server_error: 'server error',
+      proxy_error: 'proxy error',
+      network: 'network error',
+      unknown: 'error',
+    };
+    const FINAL_MESSAGES: Record<string, (msg: string) => string> = {
+      rate_limit: (msg) => `Rate limit exceeded after retries.\nLast error: ${msg}\nTry: wait a few minutes, /login with a different key, or /model <id> to switch models.`,
+      server_error: (msg) => `Provider server temporarily unavailable.\nLast error: ${msg}\nTry: wait 30s and retry, /login with a different provider, or /model <id>.`,
+      proxy_error: (msg) => `Proxy returned an incompatible or malformed response.\nLast error: ${msg}\nFix: check your proxy URL and model ID. The proxy may not support this model. Try /model <id> with a different model.`,
+      network: (msg) => `Network connection failed.\nLast error: ${msg}\nFix: check your internet connection and proxy URL. Try /login to reconfigure.`,
+      unknown: (msg) => `Provider failed after retries.\nLast error: ${msg}\nTry: /login, /model <id>, or /doctor.`,
+    };
     let retryCount = 0;
 
     for (let i = 0; i < this.maxIterations; i++) {
@@ -184,7 +209,9 @@ export class AgentLoop {
       } catch (e: any) {
         totalFailures++;
         if (totalFailures >= MAX_FAILURES) {
-          yield { type: 'error', data: `Provider failed ${totalFailures} times. Last error: ${e.message}\nStopping. Try: /login, /model <id>, or /doctor.` };
+          const errType = classifyError(e);
+          const finalFn = FINAL_MESSAGES[errType] || FINAL_MESSAGES.unknown;
+          yield { type: 'error', data: `Provider failed ${totalFailures} times.\n${finalFn(e.message)}` };
           return;
         }
 
@@ -202,15 +229,16 @@ export class AgentLoop {
           continue;
         }
 
-        const delays = errType === 'rate_limit' ? RETRY_DELAYS_RATE_LIMIT : RETRY_DELAYS_NORMAL;
+        const delays = RETRY_DELAYS[errType] || RETRY_DELAYS.unknown;
         if (retryCount >= delays.length) {
-          yield { type: 'error', data: `Provider failed after ${retryCount} retries. Error: ${e.message}\nStopping.` };
+          const finalFn = FINAL_MESSAGES[errType] || FINAL_MESSAGES.unknown;
+          yield { type: 'error', data: finalFn(e.message) };
           return;
         }
 
         const delay = delays[retryCount];
         retryCount++;
-        const label = errType === 'rate_limit' ? 'rate limited' : errType === 'network' ? 'network error' : 'error';
+        const label = ERROR_LABELS[errType] || 'error';
         yield { type: 'text', data: `⏳ ${label} — retry ${retryCount}/${delays.length}, waiting ${delay}s...` };
 
         for (let s = 0; s < delay; s++) {

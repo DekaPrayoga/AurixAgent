@@ -248,6 +248,7 @@ export class AnthropicProvider implements Provider {
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: this.maxTokens,
+      stream: false,
       messages: nonSystem.map(m => {
         if (m.role === 'tool') {
           return {
@@ -308,7 +309,25 @@ export class AnthropicProvider implements Provider {
       throw new Error(`Anthropic API error (${res.status}): ${errText}`);
     }
 
-    const data = await res.json() as any;
+    let data: any;
+    const rawText = await res.text();
+    const trimmed = rawText.trim();
+    if (trimmed.startsWith('data:') || trimmed.startsWith('event:')) {
+      const lines = trimmed.split('\n');
+      for (const line of lines) {
+        const d = line.replace(/^data:\s*/, '').trim();
+        if (d && d !== '[DONE]') {
+          try { data = JSON.parse(d); break; } catch {}
+        }
+      }
+      if (!data) throw new Error('Proxy returned SSE stream but no valid JSON data found. Try a different proxy or add stream:false to your proxy config.');
+    } else {
+      try {
+        data = JSON.parse(trimmed);
+      } catch {
+        throw new Error(`Proxy returned non-JSON response: ${trimmed.slice(0, 200)}. Check your proxy URL and model ID.`);
+      }
+    }
     this.endpointMode = 'anthropic';
 
     const toolCalls: ToolCall[] = [];
