@@ -324,6 +324,7 @@ export class AgentLoop {
       const isSafetyRefusal = (text: string): boolean => {
         const lower = text.toLowerCase();
         const refusalPhrases = [
+          // English — explicit declination
           'i cannot fulfill', 'i can\'t fulfill', 'i cannot assist', 'i can\'t assist',
           'i cannot help', 'i can\'t help', 'i can\'t help you with', 'i cannot automate',
           'i cannot complete', 'i am unable to', 'i\'m unable to',
@@ -338,10 +339,35 @@ export class AgentLoop {
           'framing doesn\'t change', 'relabeling', 'reframing doesn\'t change',
           'doesn\'t change what\'s being asked', 'doesn\'t change what is being asked',
           'doesn\'t change what it is', 'still no', 'won\'t do that', 'i won\'t do that',
+          // Indonesian + Malay
           'maaf, saya tidak dapat', 'maaf, saya tidak bisa',
           'saya tidak dapat memenuhi', 'saya tidak dapat melakukan',
           'saya tidak dapat membantu', 'saya tidak dapat mengotomatiskan',
           'saya tidak dapat memecahkan', 'saya tidak dapat melanjutkan',
+          'maaf saya tidak bisa', 'saya tidak bisa melakukan',
+          // Spanish
+          'no puedo cumplir', 'no puedo ayudar', 'no puedo asistir', 'lo siento, no puedo',
+          'no puedo realizar', 'no estoy autorizado', 'debo rechazar',
+          // French
+          'je ne peux pas', 'je ne suis pas en mesure', 'je dois refuser',
+          'je ne peux pas vous aider', 'désolé, je ne peux',
+          // German
+          'ich kann nicht', 'ich darf nicht', 'ich muss ablehnen',
+          'es tut mir leid, aber ich kann',
+          // Russian
+          'я не могу', 'не могу выполнить', 'не могу помочь', 'я вынужден отказать',
+          // Chinese
+          '我无法', '我不能', '很抱歉，我不能', '无法完成', '无法满足', '不能协助',
+          // Japanese
+          'できません', 'お手伝いできません', 'お断り', '申し訳ありませんが',
+          // Arabic
+          'لا أستطيع', 'لا يمكنني', 'أعتذر',
+          // Portuguese
+          'não posso', 'não consigo', 'não posso ajudar', 'sinto muito, não posso',
+          // Italian
+          'non posso', 'non sono in grado', 'mi dispiace, non posso',
+          // Dutch
+          'ik kan niet', 'ik moet weigeren', 'het spijt me, ik kan',
         ];
         // Gate on a genuine SAFETY OBJECTION, not bare topic words. Words like
         // 'captcha'/'register'/'phone number' appear in normal progress narration
@@ -375,10 +401,81 @@ export class AgentLoop {
           'doxing', 'doxxing', 'stalking', 'harassment', 'surveillance',
           // Indonesian
           'pembuatan akun massal', 'melanggar ketentuan', 'tidak etis', 'tanpa izin',
+          // Indonesian automation-task refusal (only appear when declining)
+          'pendaftaran otomatis', 'mendaftar secara otomatis', 'mendaftar otomatis',
+          'mengambil proxy', 'mengambil proksi', 'mengambil sumber daya',
+          'email sementara', 'layanan email sementara', 'surat elektronik sementara',
+          'scrape situs', 'scrape website', 'scrape data secara otomatis',
+          'tidak dapat memenuhi permintaan', 'tidak bisa memenuhi permintaan',
+          'tidak dapat melakukan pendaftaran', 'tidak dapat membantu anda untuk',
         ];
         const hasRefusal = refusalPhrases.some(p => lower.includes(p));
         const hasObjection = objectionSignals.some(k => lower.includes(k));
-        return hasRefusal && hasObjection;
+        if (hasRefusal && hasObjection) return true;
+        if (!hasRefusal) return false;
+
+        // Tier 3 — Language-agnostic reflection check.
+        // If the model's response echoes 2+ task-keywords from the user's last
+        // message (matched against a multilingual bank), treat as task-refusal.
+        // Catches refusals in any language without explicit phrase lists.
+        const taskKeywords = [
+          // English
+          'signup', 'sign up', 'register', 'registration', 'account', 'accounts',
+          'proxy', 'proxies', 'tempmail', 'temporary email', 'temp email',
+          'scrape', 'scraping', 'harvest', 'captcha', 'recaptcha', 'hcaptcha',
+          'otp', 'verification code', 'bot', 'automation', 'automate',
+          'email', 'password', 'login', 'credential', 'credentials',
+          // Indonesian / Malay
+          'daftar', 'pendaftaran', 'mendaftar', 'akun', 'proksi', 'email sementara',
+          'kata sandi', 'masuk', 'login', 'otp', 'kode verifikasi', 'otomatisasi',
+          // Spanish
+          'registro', 'registrarse', 'cuenta', 'contraseña', 'correo temporal',
+          'verificación', 'captcha',
+          // French
+          'inscription', 'enregistrer', 'compte', 'mot de passe', 'email temporaire',
+          // German
+          'registrieren', 'anmeldung', 'konto', 'passwort', 'temporäre email',
+          // Russian
+          'регистрация', 'зарегистрировать', 'аккаунт', 'пароль', 'прокси',
+          'временный email', 'автоматически',
+          // Chinese
+          '注册', '账号', '密码', '代理', '临时邮箱', '验证码', '自动',
+          // Japanese
+          '登録', 'アカウント', 'パスワード', 'プロキシ', '認証コード',
+          // Arabic
+          'تسجيل', 'حساب', 'كلمة مرور', 'بروكسي', 'تسجيل دخول',
+          // Portuguese
+          'registro', 'registrar', 'conta', 'senha', 'email temporário',
+          // Italian
+          'registrazione', 'registrare', 'account', 'password',
+          // Dutch
+          'registratie', 'registreren', 'account', 'wachtwoord',
+          // Turkish
+          'kayıt', 'hesap', 'şifre', 'vekil',
+          // Korean
+          '등록', '계정', '비밀번호', '프록시',
+          // Vietnamese
+          'đăng ký', 'tài khoản', 'mật khẩu',
+          // Hindi
+          'पंजीकरण', 'खाता', 'पासवर्ड',
+          // Thai
+          'ลงทะเบียน', 'บัญชี', 'รหัสผ่าน',
+        ];
+        const lastUserMsg = this.messages.filter(m => m.role === 'user').pop();
+        if (lastUserMsg) {
+          const userLower = (typeof lastUserMsg.content === 'string' ? lastUserMsg.content : '').toLowerCase();
+          const userKeywords = new Set(
+            taskKeywords.filter(kw => userLower.includes(kw.toLowerCase()))
+          );
+          if (userKeywords.size >= 2) {
+            let echoes = 0;
+            for (const kw of userKeywords) {
+              if (lower.includes(kw.toLowerCase())) echoes++;
+              if (echoes >= 2) return true;
+            }
+          }
+        }
+        return false;
       };
 
       if (response.text && response.toolCalls.length === 0 && isSafetyRefusal(response.text)) {
