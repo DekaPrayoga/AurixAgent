@@ -249,6 +249,7 @@ interface InputBoxProps {
   mode?: 'auto' | 'ask';
   onModeCycle?: () => void;
   onExit?: () => void;
+  onRewind?: () => boolean;
 }
 
 const MODE_LABEL: Record<'auto' | 'ask', string> = {
@@ -266,7 +267,7 @@ let lastPasteLen = 0;
 let lastCtrlCEmpty = 0;
 const pastedBlocks = new Map<string, string>();
 
-export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit }: InputBoxProps) {
+export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit, onRewind }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
@@ -275,6 +276,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
   const [tick, setTick] = useState(0);
+  const lastEscRef = React.useRef<number>(0);
 
   useEffect(() => {
     const id = setInterval(() => setTick(n => n + 1), 530);
@@ -351,6 +353,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       if (value) {
         setValue('');
         setCursor(0);
+        lastEscRef.current = 0;
+        return;
+      }
+      // Input empty: double-press ESC within 800ms triggers rewind.
+      const now = Date.now();
+      if (now - lastEscRef.current <= 800) {
+        lastEscRef.current = 0;
+        onRewind?.();
+      } else {
+        lastEscRef.current = now;
       }
       return;
     }

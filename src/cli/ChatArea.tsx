@@ -285,6 +285,7 @@ export interface ChatMessage {
   toolName?: string;
   model?: string;
   timestamp: Date;
+  checkpointId?: string;
 }
 
 interface ChatAreaProps {

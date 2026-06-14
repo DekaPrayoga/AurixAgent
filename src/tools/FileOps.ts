@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { Tool } from './Registry.js';
+import { getCheckpointEngine } from '../agent/Checkpoint.js';
 
 export const readFileTool: Tool = {
   name: 'read_file',
@@ -42,6 +43,7 @@ export const writeFileTool: Tool = {
     const filePath = path.resolve(args.path as string);
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    getCheckpointEngine()?.trackBeforeEdit(filePath);
     fs.writeFileSync(filePath, args.content as string, 'utf-8');
     return `Written ${(args.content as string).length} bytes to ${filePath}`;
   },

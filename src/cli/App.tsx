@@ -10,6 +10,7 @@ import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { ConnectModal } from './ConnectModal.js';
+import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
 import { theme, switchTheme, ALL_THEME_NAMES, type ThemeName, setBorderStyle, type BorderStyle } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
@@ -60,6 +61,7 @@ export function App({ config, registry, resumeId }: AppProps) {
   );
   const agentRef = React.useRef<AgentLoop | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [showRewind, setShowRewind] = useState(false);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingImagesRef = React.useRef<string[]>([]);
 
@@ -102,6 +104,10 @@ export function App({ config, registry, resumeId }: AppProps) {
 
   if (!agentRef.current) {
     agentRef.current = new AgentLoop(config, registry);
+    try {
+      const { initCheckpointEngine } = require('../agent/Checkpoint.js');
+      initCheckpointEngine(resumeId || `sess_${Date.now()}`);
+    } catch {}
   }
 
   const resumedRef = React.useRef(false);
@@ -226,6 +232,39 @@ export function App({ config, registry, resumeId }: AppProps) {
       return;
     }
   });
+
+  const handleRewind = useCallback(async (checkpointId: string, mode: RewindMode) => {
+    setShowRewind(false);
+    let restoredText = '';
+    // 1. Restore conversation: truncate messages back to the chosen checkpoint.
+    if (mode === 'both' || mode === 'conversation') {
+      setMessages(prev => {
+        const idx = prev.findIndex(m => m.checkpointId === checkpointId);
+        if (idx < 0) return prev;
+        restoredText = prev[idx].content;
+        return prev.slice(0, idx);
+      });
+      try {
+        const trimmed = agent.getMessages();
+        const cut = trimmed.findIndex((m: any) => m.content && m.content.includes(restoredText));
+        if (cut > 0) agent.setMessages?.(trimmed.slice(0, cut));
+      } catch {}
+    }
+    // 2. Restore code: replay the file snapshot to disk.
+    let fileNote = '';
+    if (mode === 'both' || mode === 'code') {
+      try {
+        const { getCheckpointEngine } = await import('../agent/Checkpoint.js');
+        const changed = getCheckpointEngine()?.restore(checkpointId) || [];
+        fileNote = changed.length ? ` Restored ${changed.length} file(s).` : ' No file changes to restore.';
+      } catch {}
+    }
+    setMessages(prev => [...prev, {
+      role: 'system',
+      content: `⟲ Rewound to an earlier point.${fileNote}`,
+      timestamp: new Date(),
+    }]);
+  }, [agent]);
 
   const handleSubmit = useCallback(async (text: string) => {
     if (isProcessing) return;
@@ -1159,11 +1198,17 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       return;
     }
 
+    const checkpointId = `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setMessages(prev => [...prev, {
       role: 'user',
       content: outboundText,
       timestamp: new Date(),
+      checkpointId,
     }]);
+    try {
+      const { getCheckpointEngine } = await import('../agent/Checkpoint.js');
+      getCheckpointEngine()?.commit(checkpointId);
+    } catch {}
 
     if (showBanner) setShowBanner(false);
     setScrollOffset(0);
@@ -1301,6 +1346,13 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 mode={mode}
                 onModeCycle={cycleMode}
                 onExit={doExit}
+                onRewind={() => {
+                  if (messages.some(m => m.role === 'user' && m.checkpointId)) {
+                    setShowRewind(true);
+                    return true;
+                  }
+                  return false;
+                }}
               />
             </box>
             <box flexGrow={1} minHeight={0} />
@@ -1358,6 +1410,13 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                       }]);
                     }}
                     onCancel={() => setShowLogin(false)}
+                  />
+                )}
+                {showRewind && (
+                  <RewindPicker
+                    messages={messages}
+                    onRestore={handleRewind}
+                    onCancel={() => setShowRewind(false)}
                   />
                 )}
                 {connectModal && (
@@ -1443,6 +1502,13 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                   mode={mode}
                   onModeCycle={cycleMode}
                   onExit={doExit}
+                  onRewind={() => {
+                    if (messages.some(m => m.role === 'user' && m.checkpointId)) {
+                      setShowRewind(true);
+                      return true;
+                    }
+                    return false;
+                  }}
                 />
               </box>
               <box flexShrink={0}>

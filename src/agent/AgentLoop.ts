@@ -686,6 +686,13 @@ export class AgentLoop {
     return [...this.messages];
   }
 
+  setMessages(msgs: Message[]): void {
+    const system = this.messages[0];
+    this.messages = system && system.role === 'system' && (msgs.length === 0 || msgs[0].role !== 'system')
+      ? [system, ...msgs]
+      : [...msgs];
+  }
+
   clearHistory(): void {
     const system = this.messages[0];
     this.messages = [system];

@@ -1,4 +1,5 @@
 import type { Tool } from './Registry.js';
+import { getCheckpointEngine } from '../agent/Checkpoint.js';
 
 export const fileEditTool: Tool = {
   name: 'file_edit',
@@ -29,6 +30,7 @@ Usage:
     const replaceAll = args.replace_all === true;
 
     if (oldStr === '') {
+      getCheckpointEngine()?.trackBeforeEdit(filePath);
       fs.writeFileSync(filePath, newStr);
       const newLinesArr = newStr.split('\n');
       const createdBlock = [
@@ -57,6 +59,7 @@ Usage:
       ? content.split(oldStr).join(newStr)
       : content.replace(oldStr, () => newStr);
 
+    getCheckpointEngine()?.trackBeforeEdit(filePath);
     fs.writeFileSync(filePath, updated);
 
     const oldLinesArr = oldStr.split('\n');
