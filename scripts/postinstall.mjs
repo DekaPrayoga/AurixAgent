@@ -3,8 +3,10 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import { platform } from 'os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const isWindows = platform() === 'win32';
 
 console.log('\n╔═══════════════════════════════════════════════════════════╗');
 console.log('║          Aurix Agent - Post-install Setup                 ║');
@@ -44,7 +46,8 @@ try {
   results.push(['CloakBrowser binary', 'success']);
 } catch (e) {
   console.warn('  ⚠ CloakBrowser binary download skipped:', e.message);
-  console.warn('    Browser automation features will not be available.\n');
+  console.warn('    Browser automation features will not be available.');
+  console.warn('    To fix: ensure internet access and run "npm install" again.\n');
   results.push(['CloakBrowser binary', 'failed']);
 }
 
@@ -52,16 +55,35 @@ const nativeDir = join(__dirname, '..', 'native', 'token-counter');
 try {
   console.log('[3/3] Building Rust token counter (optional)...');
   if (existsSync(nativeDir)) {
-    execSync('npx napi build --release --platform', { cwd: nativeDir, stdio: 'pipe' });
-    console.log('  ✓ Rust token counter built successfully\n');
-    results.push(['Rust token counter', 'success']);
+    const hasRust = (() => {
+      try {
+        execSync('rustc --version', { stdio: 'pipe' });
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!hasRust) {
+      console.log('  ⊘ Rust not installed — skipping native build (JS fallback will be used)');
+      if (isWindows) {
+        console.log('    To enable: install Rust from https://rustup.rs\n');
+      } else {
+        console.log('    To enable: curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh\n');
+      }
+      results.push(['Rust token counter', 'skipped']);
+    } else {
+      execSync('npx napi build --release --platform', { cwd: nativeDir, stdio: 'pipe' });
+      console.log('  ✓ Rust token counter built successfully\n');
+      results.push(['Rust token counter', 'success']);
+    }
   } else {
     console.log('  ⊘ Native directory not found, skipping\n');
     results.push(['Rust token counter', 'skipped']);
   }
 } catch (e) {
-  console.warn('  ⚠ Rust token counter build failed');
-  console.warn('    This is optional — JS fallback will be used.\n');
+  console.warn('  ⚠ Rust token counter build failed (non-fatal)');
+  console.warn('    JS fallback will be used for token counting.\n');
   results.push(['Rust token counter', 'failed']);
 }
 
@@ -71,7 +93,6 @@ console.log('╚═════════════════════�
 
 for (const [name, status] of results) {
   const icon = status === 'success' ? '✓' : status === 'skipped' ? '⊘' : '⚠';
-  const color = status === 'success' ? '' : status === 'skipped' ? '' : '';
   console.log(`  ${icon} ${name}: ${status}`);
 }
 

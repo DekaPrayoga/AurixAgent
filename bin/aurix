@@ -2,7 +2,17 @@
 # AURIX Agent — modern CLI launcher
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1 && readlink -f "$SCRIPT_SOURCE" >/dev/null 2>&1; then
+  SCRIPT_SOURCE="$(readlink -f "$SCRIPT_SOURCE")"
+elif command -v realpath >/dev/null 2>&1; then
+  SCRIPT_SOURCE="$(realpath "$SCRIPT_SOURCE")"
+else
+  while [ -L "$SCRIPT_SOURCE" ]; do
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  done
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")/.." && pwd)"
 DIST="$SCRIPT_DIR/dist/index.js"
 VERSION=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/package.json" 2>/dev/null || echo "0.1.0")
 
@@ -29,8 +39,9 @@ NEED_BUILD=0
 if [ ! -f "$DIST" ]; then
   NEED_BUILD=1
 else
-  SRC_NEWEST=$(find "$SCRIPT_DIR/src" -name '*.ts' -o -name '*.tsx' 2>/dev/null | xargs stat -c '%Y' 2>/dev/null | sort -rn | head -1)
-  DIST_TIME=$(stat -c '%Y' "$DIST" 2>/dev/null || echo 0)
+  stat_mtime() { stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || echo 0; }
+  SRC_NEWEST=$(find "$SCRIPT_DIR/src" -name '*.ts' -o -name '*.tsx' 2>/dev/null | while read -r f; do stat_mtime "$f"; done | sort -rn | head -1)
+  DIST_TIME=$(stat_mtime "$DIST")
   if [ -n "$SRC_NEWEST" ] && [ "$SRC_NEWEST" -gt "$DIST_TIME" ]; then
     NEED_BUILD=1
   fi
