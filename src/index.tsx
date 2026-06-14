@@ -14,6 +14,7 @@ import { mcpManageTool } from './tools/McpManage.js';
 import { githubTools } from './tools/GithubConnect.js';
 import { systemMonitorTool } from './tools/SystemMonitor.js';
 import { browserTool } from './tools/Browser.js';
+import { createSpawnAgentTool } from './tools/SpawnAgent.js';
 import { codeExecTool } from './tools/CodeExec.js';
 import { webSearchTool } from './tools/WebSearch.js';
 import { todoTool } from './tools/Todo.js';
@@ -205,6 +206,7 @@ async function main() {
   applyTheme(config);
 
   const registry = createRegistry(config.features);
+  registry.register(createSpawnAgentTool(config, registry));
 
   // Background memory consolidation every 10 minutes
   const { MemoryEngine } = await import('./agent/MemoryEngine.js');
