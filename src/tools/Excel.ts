@@ -29,7 +29,7 @@ export const excelTool: Tool = {
       const ExcelJS = await import('exceljs');
       const wb = new ExcelJS.Workbook();
       const ws = wb.addWorksheet(sheetName);
-      ws.columns = headers.map(h => ({ header: h, key: h.toLowerCase().replace(/\s+/g, '_') }));
+      ws.columns = headers.map(h => ({ header: h, key: h }));
       for (const row of rows) ws.addRow(row);
       await wb.xlsx.writeFile(filename);
       return `Excel file created: ${filename} (${headers.length} columns, ${rows.length} rows)`;

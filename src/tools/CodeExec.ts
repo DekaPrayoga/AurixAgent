@@ -31,26 +31,27 @@ export const codeExecTool: Tool = {
     const timeout = ((args.timeout as number) || 30) * 1000;
 
     const tmpDir = os.tmpdir();
+    const stamp = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let cmd: string;
     let file: string;
 
     switch (language) {
       case 'python':
       case 'py':
-        file = path.join(tmpDir, `aurix_${Date.now()}.py`);
+        file = path.join(tmpDir, `aurix_${stamp}.py`);
         fs.writeFileSync(file, code);
         cmd = `python3 ${file}`;
         break;
       case 'node':
       case 'js':
       case 'javascript':
-        file = path.join(tmpDir, `aurix_${Date.now()}.js`);
+        file = path.join(tmpDir, `aurix_${stamp}.js`);
         fs.writeFileSync(file, code);
         cmd = `node ${file}`;
         break;
       case 'bash':
       case 'sh':
-        file = path.join(tmpDir, `aurix_${Date.now()}.sh`);
+        file = path.join(tmpDir, `aurix_${stamp}.sh`);
         fs.writeFileSync(file, code);
         cmd = `bash ${file}`;
         break;

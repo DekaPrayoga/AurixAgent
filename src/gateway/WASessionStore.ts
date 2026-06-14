@@ -11,7 +11,7 @@ interface SQLiteAuthState {
   };
 }
 
-export function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLiteAuthState; saveCreds: (creds: any) => void }> {
+export async function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLiteAuthState; saveCreds: (creds: any) => void }> {
   const resolvedPath = dbPath || path.join(os.homedir(), '.aurix', 'wa-session.db');
   const dir = path.dirname(resolvedPath);
   if (!fs.existsSync(dir)) {
@@ -46,6 +46,15 @@ export function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLiteAuth
       creds = JSON.parse(row.data, bufferReviver);
     } catch {
       creds = null;
+    }
+  }
+
+  if (!creds) {
+    try {
+      const { initAuthCreds } = await import('@whiskeysockets/baileys');
+      creds = initAuthCreds();
+    } catch {
+      creds = { noiseKey: { private: null, public: null }, signedIdentityKey: { private: null, public: null }, signedPreKey: { keyPair: { private: null, public: null }, keyId: 0, signature: null }, registrationId: Math.floor(Math.random() * 16384), advSecretKey: null };
     }
   }
 
@@ -90,10 +99,10 @@ export function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLiteAuth
     },
   };
 
-  return Promise.resolve({
+  return {
     state: { creds, keys },
     saveCreds,
-  });
+  };
 }
 
 function bufferReviver(_key: string, value: any): any {

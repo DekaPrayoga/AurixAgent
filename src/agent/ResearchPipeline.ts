@@ -19,10 +19,10 @@ import { FinalReviewer } from './research/FinalReviewer.js';
 const DEPTH_AGENTS: Record<ResearchDepth, string[]> = {
   low: [],
   medium: ['RequestAnalyzer', 'ResearchAgent', 'WriterAgent'],
-  high: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
-  xhigh: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
-  max: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent'],
-  ultra: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent', 'FinalReviewer'],
+  high: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
+  xhigh: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
+  max: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent'],
+  ultra: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent', 'FinalReviewer'],
 };
 
 export class ResearchPipeline {
@@ -204,7 +204,7 @@ export class ResearchPipeline {
     if (active.has('FinalReviewer')) {
       yield { type: 'agent_start', agent: 'FinalReviewer', data: 'Running final quality check...' };
       const review = await this.finalReviewer.review(query, output);
-      if (!review.approved && review.score < 60) {
+      if (!review.approved) {
         yield { type: 'agent_end', agent: 'FinalReviewer', data: `Score: ${review.score}/100 — issues found, revising` };
         output += '\n\n[Note: Final review flagged quality concerns. Consider increasing research depth.]';
       } else {

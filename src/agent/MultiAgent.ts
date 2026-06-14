@@ -5,13 +5,21 @@ import type { AurixConfig } from './Config.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 
 function createLLM(config: AurixConfig) {
-  if (config.provider === 'anthropic') {
-    return new ChatAnthropic({
+  const isAnthropic = config.provider === 'anthropic' ||
+    config.provider === 'custom-anthropic' ||
+    config.model?.startsWith('claude');
+
+  if (isAnthropic) {
+    const opts: any = {
       model: config.model,
       anthropicApiKey: config.apiKey,
       temperature: config.temperature ?? 0.7,
       maxTokens: config.maxTokens || 4096,
-    });
+    };
+    if (config.baseUrl) {
+      opts.anthropicApiUrl = config.baseUrl;
+    }
+    return new ChatAnthropic(opts);
   }
   return new ChatOpenAI({
     model: config.model,

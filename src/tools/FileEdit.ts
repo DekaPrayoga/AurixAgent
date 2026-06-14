@@ -55,7 +55,7 @@ Usage:
 
     const updated = replaceAll
       ? content.split(oldStr).join(newStr)
-      : content.replace(oldStr, newStr);
+      : content.replace(oldStr, () => newStr);
 
     fs.writeFileSync(filePath, updated);
 

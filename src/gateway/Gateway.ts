@@ -230,7 +230,7 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
 
 function cleanResponse(text: string): string {
   return text
-    .replace(/\$[\s\S]*?\$/gm, '')
+    .replace(/\$([^\s$][^$\n]*[^\s$])\$/g, '')
     .replace(/```(?:bash|sh|shell)\n[\s\S]*?```/gm, '')
     .replace(/>\s.*$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -311,8 +311,11 @@ export class Gateway extends EventEmitter {
       return { cmd: '', args: trimmed };
     }
     const parts = trimmed.split(/\s+/);
-    const cmd = parts[0].toLowerCase().replace(/^\//, '');
-    return { cmd, args: parts.slice(1).join(' ') };
+    if (parts[0].startsWith('/')) {
+      const cmd = parts[0].toLowerCase().slice(1);
+      return { cmd, args: parts.slice(1).join(' ') };
+    }
+    return { cmd: '', args: trimmed };
   }
 
   private async handleMessage(msg: IncomingMessage) {
@@ -408,7 +411,6 @@ export class Gateway extends EventEmitter {
     if (!this.firstTimeUsers.has(agentKey)) {
       this.firstTimeUsers.add(agentKey);
       await platform.send(isWA ? WA_MINI_GUIDE : MINI_GUIDE, msg.channelId, msg.replyTo);
-      return;
     }
 
     if (cmd === 'reset') {

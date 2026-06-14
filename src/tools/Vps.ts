@@ -46,7 +46,12 @@ export const vpsTool: Tool = {
 function run(cmd: string, timeout = 30000): Promise<string> {
   return new Promise(resolve => {
     exec(cmd, { timeout, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
-      resolve(stdout.trim() || stderr.trim() || `Error: ${err?.message}`);
+      const out = stdout.trim();
+      const errOut = stderr.trim();
+      if (out) return resolve(out);
+      if (errOut) return resolve(errOut);
+      if (err) return resolve(`Error: ${err.message}`);
+      resolve('(no output)');
     });
   });
 }

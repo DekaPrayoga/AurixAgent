@@ -72,7 +72,7 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
         for (const msg of event.messages) {
           if (msg.key.fromMe) continue;
 
-          const textMsg = msg.message?.textMessage || msg.message?.conversation;
+          const textMsg = msg.message?.extendedTextMessage?.text || msg.message?.conversation;
           const imageMsg = msg.message?.imageMessage;
           const text = textMsg || imageMsg?.caption || '';
 
@@ -82,7 +82,7 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
 
           const chatId = msg.key.remoteJid;
           const senderId = msg.key.participant || chatId;
-          const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.textMessage?.contextInfo || imageMsg?.contextInfo;
+          const contextInfo = msg.message?.extendedTextMessage?.contextInfo || imageMsg?.contextInfo;
           const forwardedFrom = contextInfo?.forwardingScore > 0
             ? (contextInfo.forwardedNewsletterMessageInfo?.newsletterName || 'forwarded')
             : undefined;

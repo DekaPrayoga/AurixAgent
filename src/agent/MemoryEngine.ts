@@ -321,13 +321,23 @@ Rules:
     }
 
     const sessionFiles = fs.readdirSync(SESSIONS_DIR)
-      .filter(f => f.endsWith('.md'))
+      .filter(f => f.endsWith('.md') || f.endsWith('.json'))
       .sort()
       .slice(-10);
 
     for (const file of sessionFiles) {
       const content = fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8');
-      parts.push(content.slice(0, 1000));
+      if (file.endsWith('.json')) {
+        try {
+          const parsed = JSON.parse(content);
+          const msgs = (parsed.messages || []).map((m: any) => m.content || '').join('\n');
+          parts.push(msgs.slice(0, 1000));
+        } catch {
+          parts.push(content.slice(0, 1000));
+        }
+      } else {
+        parts.push(content.slice(0, 1000));
+      }
     }
 
     const merged = stripCredentials(parts.join('\n\n---\n\n'));

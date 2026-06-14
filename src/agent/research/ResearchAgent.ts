@@ -42,7 +42,8 @@ SOURCES:
 
   private extractFindings(text: string): string[] {
     const findings: string[] = [];
-    const matches = text.matchAll(/\d+\.\s+(.+?)(?:\[Source:|\n)/g);
+    const body = text.split(/(?:SOURCES|References|Bibliography)\s*:/i)[0];
+    const matches = body.matchAll(/\d+\.\s+(.+?)(?:\[Source:|\n)/g);
     for (const m of matches) {
       findings.push(m[1].trim());
     }

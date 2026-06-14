@@ -65,10 +65,32 @@ export class ContextManager {
     return tokens > this.getContextLimit() * COMPACT_THRESHOLD;
   }
 
+  private safeKeepFrom(messages: Message[], desired: number): number {
+    let cutoff = Math.min(desired, messages.length - 1);
+    const seenToolIds = new Set<string>();
+    for (let i = cutoff; i < messages.length; i++) {
+      const m = messages[i];
+      if (m.role === 'tool' && m.toolCallId) seenToolIds.add(m.toolCallId);
+    }
+    while (cutoff > 1) {
+      const prev = messages[cutoff - 1];
+      if (prev.role === 'assistant' && prev.toolCalls?.length) {
+        const ids = prev.toolCalls.map(tc => tc.id).filter(Boolean);
+        if (ids.some(id => seenToolIds.has(id))) {
+          cutoff -= 1;
+          continue;
+        }
+      }
+      break;
+    }
+    return cutoff;
+  }
+
   async compact(messages: Message[]): Promise<Message[]> {
     const systemMsg = messages[0];
-    const toSummarize = messages.slice(1, -10);
-    const toKeep = messages.slice(-10);
+    const keepFrom = this.safeKeepFrom(messages, Math.max(1, messages.length - 10));
+    const toSummarize = messages.slice(1, keepFrom);
+    const toKeep = messages.slice(keepFrom);
 
     if (toSummarize.length < 3) return messages;
 

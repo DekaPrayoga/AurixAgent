@@ -42,10 +42,15 @@ export const scraperTool: Tool = {
 
       if (extract === 'images') {
         const images: string[] = [];
-        const re = /<img[^>]+src="([^"]+)"[^>]*(?:alt="([^"]*)")?/gi;
+        const re = /<img\s[^>]+>/gi;
         let m;
         while ((m = re.exec(html)) !== null) {
-          images.push(`${m[2] || 'no alt'} -> ${m[1]}`);
+          const tag = m[0];
+          const srcMatch = tag.match(/src="([^"]+)"/i);
+          const altMatch = tag.match(/alt="([^"]*)"/i);
+          if (srcMatch) {
+            images.push(`${altMatch?.[1] || 'no alt'} -> ${srcMatch[1]}`);
+          }
         }
         return `Images from ${url} (${images.length}):\n${images.slice(0, 30).join('\n')}`;
       }

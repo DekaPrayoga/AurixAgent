@@ -5,7 +5,7 @@ import yaml from 'js-yaml';
 import { normalizeBaseUrl } from '../utils/base-url.js';
 
 export interface AurixConfig {
-  provider: 'anthropic' | 'openai' | 'custom';
+  provider: 'anthropic' | 'openai' | 'custom' | 'custom-anthropic';
   apiKey: string;
   baseUrl?: string;
   model: string;

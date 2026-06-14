@@ -136,9 +136,10 @@ function templateToHtml(content: string, title: string, template: string): strin
       .replace(/^---$/gm, '<hr />')
       .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
       .replace(/(<blockquote>.*<\/blockquote>\n?)+/g, (m) => m.replace(/<\/blockquote>\n<blockquote>/g, '<br/>'))
-      .replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>')
+      .replace(/^(\d+)\. (.+)$/gm, '<oli>$2</oli>')
       .replace(/^- (.+)$/gm, '<li>$1</li>')
-      .replace(/(<li>.*<\/li>\n?)+/g, (m) => m.includes('1.') ? `<ol>${m}</ol>` : `<ul>${m}</ul>`)
+      .replace(/(<oli>.*<\/oli>\n?)+/g, (m) => `<ol>${m.replace(/<\/?oli>/g, (t) => t.replace('oli', 'li'))}</ol>`)
+      .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
       .replace(/\n\n/g, '</p><p>')
       .replace(/^(?!<[huloipbr])/gm, '');
   };

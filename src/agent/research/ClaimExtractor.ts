@@ -34,9 +34,11 @@ REASON: <why this classification>
   }
 
   private parseClaims(text: string): Claim[] {
+    const blocks = text.split('---').filter(b => /CLAIM\s*:/i.test(b));
+    const sources = blocks.length >= 2 ? blocks : [...text.matchAll(/CLAIM\s*:[\s\S]*?(?=CLAIM\s*:|$)/gi)].map(m => m[0]);
+
     const claims: Claim[] = [];
-    const blocks = text.split('---');
-    for (const block of blocks) {
+    for (const block of sources) {
       const getText = (key: string) => {
         const m = block.match(new RegExp(`${key}:\\s*(.+)`, 'i'));
         return m ? m[1].trim() : '';
@@ -46,7 +48,7 @@ REASON: <why this classification>
       claims.push({
         text: claimText,
         type: (getText('TYPE') as ClaimType) || 'OPINION',
-        confidence: parseInt(getText('CONFIDENCE')) || 50,
+        confidence: isNaN(parseInt(getText('CONFIDENCE'))) ? 50 : parseInt(getText('CONFIDENCE')),
       });
     }
     return claims;

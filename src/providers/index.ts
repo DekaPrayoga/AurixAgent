@@ -314,13 +314,43 @@ export class AnthropicProvider implements Provider {
     const trimmed = rawText.trim();
     if (trimmed.startsWith('data:') || trimmed.startsWith('event:')) {
       const lines = trimmed.split('\n');
+      let textParts: string[] = [];
+      let toolUses: any[] = [];
+      let usage: any = null;
+      let lastMessage: any = null;
       for (const line of lines) {
         const d = line.replace(/^data:\s*/, '').trim();
-        if (d && d !== '[DONE]') {
-          try { data = JSON.parse(d); break; } catch {}
-        }
+        if (!d || d === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(d);
+          if (evt.type === 'message_start' && evt.message) {
+            lastMessage = evt.message;
+            usage = evt.message.usage || null;
+          }
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+            textParts.push(evt.delta.text);
+          }
+          if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
+            toolUses.push(evt.content_block);
+          }
+          if (evt.type === 'content_block_stop' && evt.content_block?.type === 'tool_use') {
+            // already captured in content_block_start
+          }
+          if (evt.type === 'message_delta' && evt.usage) {
+            usage = { ...usage, ...evt.usage };
+          }
+        } catch {}
       }
-      if (!data) throw new Error('Proxy returned SSE stream but no valid JSON data found. Try a different proxy or add stream:false to your proxy config.');
+      if (lastMessage || textParts.length > 0) {
+        data = {
+          content: [
+            ...(textParts.length > 0 ? [{ type: 'text', text: textParts.join('') }] : []),
+            ...toolUses.map(t => ({ type: 'tool_use', id: t.id, name: t.name, input: t.input || {} })),
+          ],
+          usage: usage || lastMessage?.usage || null,
+        };
+      }
+      if (!data) throw new Error('Proxy returned SSE stream but no valid message data found. Try a different proxy or add stream:false to your proxy config.');
     } else {
       try {
         data = JSON.parse(trimmed);
