@@ -590,7 +590,8 @@ export class Gateway extends EventEmitter {
     }
 
     const userPrompt = isWA ? (args || text.replace(/^!ai\s*/i, '').trim()) : text;
-    if (!userPrompt || cmd === '') return;
+    if (!userPrompt) return;
+    console.log(`[Gateway] Processing message from ${msg.platform} user=${msg.authorId}: "${userPrompt.slice(0, 80)}"`);
 
     const platformTag = `[sent from ${msg.platform}]`;
     const forwardTag = msg.forwardedFrom ? ` [forwarded from ${msg.forwardedFrom}]` : '';

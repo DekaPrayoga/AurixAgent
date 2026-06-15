@@ -699,6 +699,24 @@ export class AgentLoop {
           yield { type: 'text', data: `🔄 Loop warning (${repeatCount}x same action) — injected anti-loop hint, agent continuing...` };
         }
 
+        const browserEvalCount = recentToolSignatures.filter(s => /^browser:evaluate/.test(s)).length;
+        const hasProductiveAction = recentToolSignatures.some(s => /^browser:(fill|click|type|signup-assist|signin-assist|select|press-key|drag-to|hold-click)/.test(s));
+        const browserScreenshotCount = recentToolSignatures.filter(s => /^browser:screenshot/.test(s)).length;
+        if (browserEvalCount >= 3) {
+          this.messages.push({
+            role: 'user',
+            content: `[CRITICAL SYSTEM] You have used browser evaluate ${browserEvalCount} times recently. STOP using evaluate to interact with the page.\n- DO NOT use evaluate to fill inputs, click buttons, or set values.\n- Use "fill" or "type" action to fill form fields (they handle React/Angular/Vue natively).\n- Use "click" action to click buttons.\n- Use "signup-assist" to fill entire signup forms in ONE call.\n- Use "snapshot" to see what elements are available, then use the correct action.`,
+          });
+          yield { type: 'text', data: `⚠️ Too many browser evaluate calls (${browserEvalCount}) — agent should use fill/click/signup-assist instead.` };
+        }
+        if (browserScreenshotCount >= 4 && !hasProductiveAction) {
+          this.messages.push({
+            role: 'user',
+            content: `[CRITICAL SYSTEM] You have taken ${browserScreenshotCount} screenshots without any fill/click/type action in between. You can SEE the page — now ACT on it.\n- Use "fill" to fill a field, "click" to click a button, or "signup-assist" to fill the entire form.\n- Don't just keep looking — do something.`,
+          });
+          yield { type: 'text', data: `⚠️ ${browserScreenshotCount} screenshots with no action — agent should act, not just look.` };
+        }
+
         continue;
       }
 

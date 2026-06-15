@@ -40,7 +40,7 @@ export const codeExecTool: Tool = {
       case 'py':
         file = path.join(tmpDir, `aurix_${stamp}.py`);
         fs.writeFileSync(file, code);
-        cmd = `python3 ${file}`;
+        cmd = process.platform === 'win32' ? `python ${file}` : `python3 ${file} 2>/dev/null || python ${file}`;
         break;
       case 'node':
       case 'js':
@@ -51,12 +51,26 @@ export const codeExecTool: Tool = {
         break;
       case 'bash':
       case 'sh':
-        file = path.join(tmpDir, `aurix_${stamp}.sh`);
+        if (process.platform === 'win32') {
+          file = path.join(tmpDir, `aurix_${stamp}.bat`);
+          fs.writeFileSync(file, code);
+          cmd = `cmd /c "${file}"`;
+        } else {
+          file = path.join(tmpDir, `aurix_${stamp}.sh`);
+          fs.writeFileSync(file, code);
+          cmd = `bash ${file}`;
+        }
+        break;
+      case 'powershell':
+      case 'ps1':
+        file = path.join(tmpDir, `aurix_${stamp}.ps1`);
         fs.writeFileSync(file, code);
-        cmd = `bash ${file}`;
+        cmd = process.platform === 'win32'
+          ? `powershell -ExecutionPolicy Bypass -File "${file}"`
+          : `pwsh -File "${file}"`;
         break;
       default:
-        return `Unsupported language: ${language}. Use python, node, or bash.`;
+        return `Unsupported language: ${language}. Use python, node, bash, or powershell.`;
     }
 
     return new Promise<string>(resolve => {

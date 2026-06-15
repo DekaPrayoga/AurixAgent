@@ -17,7 +17,8 @@ export const terminalTool: Tool = {
     const timeout = (args.timeout as number) || 30000;
 
     return new Promise((resolve) => {
-      exec(command, { timeout, maxBuffer: 1024 * 1024 * 5, shell: '/bin/bash' }, (err, stdout, stderr) => {
+      const shell = process.platform === 'win32' ? true : '/bin/bash';
+      exec(command, { timeout, maxBuffer: 1024 * 1024 * 5, shell: shell as any }, (err: any, stdout: any, stderr: any) => {
         const output = [];
         if (stdout) output.push(stdout.trim());
         if (stderr) output.push(`[stderr] ${stderr.trim()}`);

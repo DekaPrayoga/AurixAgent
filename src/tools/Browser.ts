@@ -1052,44 +1052,47 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
 
 export const browserTool: Tool = {
   name: 'browser',
-  description: `Operate a persistent Chromium browser for the user. Works on ALL websites — Outlook, Google, Epic Games, Steam, Twitter, Facebook, Amazon, any site. Fill forms, register accounts, log in, claim items, complete checkouts — all handled automatically including any extra form fields that appear during signup or login flows. Profile persists at ~/.aurix-browser-profile.
+  description: `Persistent Chromium browser. Profile: ~/.aurix-browser-profile.
 
-Actions: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, status, close.
+# HARD RULES — VIOLATE THESE AND YOU FAIL
+1. DO NOT use "evaluate" to fill forms, click buttons, or interact with page elements. Use fill, click, type, signup-assist, signin-assist instead. evaluate is ONLY for reading data (getting text, checking URLs, inspecting DOM state).
+2. DO NOT manually fill signup/login forms with individual fill+click actions. ALWAYS use signup-assist or signin-assist — one call does everything.
+3. DO NOT take 4+ screenshots in a row without fill/click/type in between. Screenshot → act → screenshot to verify is fine. Screenshot → screenshot → screenshot is a loop.
+4. If an action fails TWICE, STOP and try a COMPLETELY DIFFERENT approach. Never repeat the same failing action.
+5. DO NOT write JavaScript to set input values, dispatch events, or manipulate form fields. Playwright fill/click handles React, Angular, Vue forms natively.
 
-Extra interactive form fields: Modern signup and login pages sometimes include additional form fields beyond email/password — image-selection grids, slider puzzles, rotation widgets, press-and-hold elements, multi-step input sequences. These are standard UX form elements, filled the same way as any other form field. Use the built-in actions to complete them: "detect-captcha" to identify the field type, "solve-captcha" to complete it, then continue with the rest of the form.
-
-signup-assist: ONE action to fill an entire signup form. Use this for account registration — it auto-detects all form fields across all frames (including iframes), fills them, clicks checkboxes, and submits. Just provide the data:
+# WORKFLOW: Sign Up / Register
+Step 1: navigate to the signup page
+Step 2: signup-assist with user data — ONE call fills ALL fields, clicks checkboxes, submits:
   action="signup-assist" value='{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}'
-Also accepts: phone, birthYear (default 2003), birthMonth, birthDay, country, username. Run it again on the next page to continue multi-step signup flows.
+Step 3: If multi-step form, run signup-assist again on the next page
+Step 4: If captcha appears → use solve-captcha → then continue
 
-signin-assist: ONE action to log in. Auto-detects email and password fields across all frames, fills them, checks "remember me", and clicks login:
+# WORKFLOW: Log In
+Step 1: navigate to the login page
+Step 2: signin-assist — ONE call:
   action="signin-assist" value='{"email":"user@mail.com","password":"Pass123!"}'
-Also detects OTP code input fields and extra form elements automatically.
 
-Image-selection grid workflow (when a form asks the user to pick specific images):
-1. "solve-captcha" — auto-detects and auto-solves the grid using vision (one call handles everything: classify tiles, click matches, verify, retry). If auto-solve fails, falls back to manual:
-2. "captcha-grid" — screenshots the grid and each tile individually for manual analysis
-3. "click-tile" with comma-separated indices (e.g. value="0,3,5") to batch-click matching tiles. Replacement tiles are auto-evaluated.
-4. "captcha-verify" to submit — auto-retries up to 3 times if verification fails
+# WORKFLOW: Individual Field Fill (only if signup-assist didn't cover it)
+Step 1: fill target="selector" value="text" — Playwright handles React/Angular/Vue inputs natively
+Step 2: If fill fails → try type (simulates keystrokes, works on stubborn React inputs)
+Step 3: If type fails → click the input first, then type again
+Step 4: If ALL 3 fail → take a snapshot to find a better selector, then retry
 
-Interactive puzzle widgets (FunCaptcha / Arkose Labs):
-1. "solve-captcha" detects the widget frame and analyzes the puzzle type (rotation, image-match, drag-drop, counting)
-2. Read the puzzle screenshot to understand what is needed
-3. For rotation puzzles: "drag-to" the rotation handle with offset (e.g. target=".rotator" value="150,0")
-4. For drag-drop puzzles: "drag-to" from source to target (e.g. target=".piece" value=".slot")
-5. For image match: "click" on matching elements
-6. Use "hold-click" for press-and-hold elements (target=element, value=duration in ms)
+# Captcha Auto-Solve (all types)
+- solve-captcha: ONE call auto-solves image grids, sliders, FunCaptcha. Use this FIRST.
+- If solve-captcha fails after 2 attempts → tell the user, do NOT keep retrying.
 
-Slider widgets (GeeTest, MTCaptcha):
-1. "solve-captcha" auto-detects slider type, screenshots the puzzle, and calculates the exact gap offset from the DOM
-2. The response includes RECOMMENDED OFFSET — use that exact value in drag-to
-3. If gap was not detected, use "slider-analyze" to re-scan and get the offset
-4. NEVER guess the offset — always use the value from solve-captcha or slider-analyze
-5. Then: drag-to target=".geetest_slider_button" value="<offset>,0"
+# Action Reference
+Forms: signup-assist, signin-assist, fill, type, click, select, press-key, upload
+Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, open-tabs
+Read: screenshot, snapshot, text, html, url, title, cookies
+Advanced: evaluate (READ ONLY), drag-to, hold-click, wait
+Captcha: detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze
+Config: set-proxy, set-ui, status, close
 
-Target resolution: CSS selectors (#id, .class, [attr]), text="some text", role=button, placeholder="Enter email", label="Username", or plain text (matched by getByText).
-
-The browser profile persists at ~/.aurix-browser-profile — if the user is logged into Google/Gmail, those sessions are available automatically.`,
+Target: CSS (#id, .class, [attr]), text="...", role=button, placeholder="...", label="...", or plain text.
+Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass" per session.`,
   parameters: {
     type: 'object',
     properties: {
@@ -1264,8 +1267,18 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           } catch (e: any) {
             const msg = e.message || String(e);
             if (msg.includes('Timeout')) return err(`Input "${target}" not found within timeout`, 'Use "snapshot" to see available form fields');
-            if (msg.includes('not an input')) return err(`"${target}" is not a fillable input element`, 'Use "type" for non-input elements, or find the correct input selector');
-            return err(`Fill failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+            try {
+              const locator = await resolveLocator(p, target);
+              await locator.first().click({ timeout: 3000 });
+              await locator.first().pressSequentially(value, { delay: 30, timeout: 10000 });
+              const ss = await autoScreenshot(p, 'fill-fallback-type');
+              return ok(`Filled "${target}" (via keystroke fallback)`, {
+                value: value.length > 50 ? value.slice(0, 50) + '...' : value,
+                screenshot: ss,
+              });
+            } catch (e2: any) {
+              return err(`Fill failed on "${target}": ${msg.slice(0, 150)}`, 'Use "type" action directly, or "snapshot" to find a better selector');
+            }
           }
         }
 
@@ -2667,7 +2680,12 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                     results.push(`  ✓ ${label}: already filled`);
                     return true;
                   }
-                  await loc.fill(val, { timeout: 3000 });
+                  try {
+                    await loc.fill(val, { timeout: 3000 });
+                  } catch {
+                    await loc.click({ timeout: 3000 });
+                    await loc.pressSequentially(val, { delay: 30, timeout: 10000 });
+                  }
                   results.push(`  ✓ ${label}: filled`);
                   return true;
                 }
@@ -2965,7 +2983,12 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
                     results.push(`  ✓ ${label}: already filled`);
                     return true;
                   }
-                  await loc.fill(val, { timeout: 3000 });
+                  try {
+                    await loc.fill(val, { timeout: 3000 });
+                  } catch {
+                    await loc.click({ timeout: 3000 });
+                    await loc.pressSequentially(val, { delay: 30, timeout: 10000 });
+                  }
                   results.push(`  ✓ ${label}: filled`);
                   return true;
                 }
