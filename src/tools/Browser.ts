@@ -177,37 +177,59 @@ async function solveCaptchaGrid(page: any, frame: any, provider: string): Promis
         await tile.click({ force: true });
       }
       results.push(`  Clicked tile ${idx}`);
-
-      if (isRecaptcha) {
-        await page.waitForTimeout(1500 + Math.random() * 1000);
-
-        const newTiles = await findGridTiles(frame, provider);
-        if (idx < newTiles.length) {
-          const tilePath = join(homedir(), `.aurix-tile-after-${idx}.png`);
-          try {
-            await newTiles[idx].screenshot({ path: tilePath });
-            const newBase64 = readFileBase64(tilePath);
-            const newResponse = await visionClassify(newBase64, `Does this image contain ${instruction}? Reply YES or NO only.`);
-            if (newResponse.toLowerCase().includes('yes')) {
-              const newTile = newTiles[idx];
-              const newBox = await newTile.boundingBox();
-              if (newBox) {
-                const nx = newBox.x + newBox.width * (0.3 + Math.random() * 0.4);
-                const ny = newBox.y + newBox.height * (0.3 + Math.random() * 0.4);
-                await humanMove(nx, ny, page);
-                await page.waitForTimeout(80 + Math.random() * 120);
-                await page.mouse.down();
-                await page.waitForTimeout(60 + Math.random() * 100);
-                await page.mouse.up();
-                results.push(`  Also clicked replacement tile ${idx} (matched)`);
-                await page.waitForTimeout(1500 + Math.random() * 1000);
-              }
-            }
-          } catch {}
-        }
-      }
     } catch (e: any) {
       results.push(`  Failed to click tile ${idx}: ${e.message}`);
+    }
+  }
+
+  if (isRecaptcha && matchedIndices.length > 0) {
+    await page.waitForTimeout(2000 + Math.random() * 1000);
+
+    const afterTiles = await findGridTiles(frame, provider);
+    const evalPromises = matchedIndices
+      .filter(idx => idx < afterTiles.length)
+      .map(async (idx) => {
+        try {
+          const tilePath = join(homedir(), `.aurix-tile-after-${idx}.png`);
+          await afterTiles[idx].screenshot({ path: tilePath });
+          const base64 = readFileBase64(tilePath);
+          const resp = await visionClassify(base64, `Does this image contain ${instruction}? Reply YES or NO only.`);
+          return { idx, match: resp.toLowerCase().includes('yes') };
+        } catch {
+          return { idx, match: false };
+        }
+      });
+
+    const evalResults = await Promise.all(evalPromises);
+    const newMatches = evalResults.filter(r => r.match);
+
+    if (newMatches.length > 0) {
+      results.push(`  Replacement tiles matched: [${newMatches.map(r => r.idx).join(', ')}]`);
+      for (const { idx } of newMatches) {
+        try {
+          const freshTiles = await findGridTiles(frame, provider);
+          if (idx >= freshTiles.length) continue;
+          const tile = freshTiles[idx];
+          const tileBox = await tile.boundingBox();
+          if (tileBox) {
+            const cx = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
+            const cy = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
+            await humanMove(cx, cy, page);
+            await page.waitForTimeout(80 + Math.random() * 120);
+            await page.mouse.down();
+            await page.waitForTimeout(60 + Math.random() * 100);
+            await page.mouse.up();
+          } else {
+            await tile.click({ force: true });
+          }
+          results.push(`  Clicked replacement tile ${idx}`);
+        } catch (e: any) {
+          results.push(`  Failed replacement tile ${idx}: ${e.message}`);
+        }
+      }
+      await page.waitForTimeout(1500 + Math.random() * 1000);
+    } else {
+      results.push('  No replacement tiles matched');
     }
   }
 
