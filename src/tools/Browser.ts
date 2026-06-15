@@ -2,7 +2,8 @@ import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, readFileSync, unlinkSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, appendFileSync } from 'fs';
+import sharp from 'sharp';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
 
@@ -54,11 +55,11 @@ async function visionClassify(imageBase64: string, prompt: string): Promise<stri
         { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
       ],
     }],
-    max_tokens: 100,
+    max_tokens: 2096,
   };
 
   const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 15_000);
+  const fetchTimeout = setTimeout(() => controller.abort(), 90_000);
 
   try {
     const resp = await fetch(`${visionBaseUrl}/chat/completions`, {
@@ -98,28 +99,252 @@ async function visionClassify(imageBase64: string, prompt: string): Promise<stri
   }
 }
 
+async function analyzeTileCrops(
+  gridScreenshotPath: string,
+  gridRows: number,
+  gridCols: number,
+  objectName: string,
+  actualTileCount: number,
+  _dbg: (msg: string) => void,
+): Promise<number[]> {
+  _dbg('analyzeTileCrops: cropping grid into individual tiles...');
+
+  const image = sharp(gridScreenshotPath);
+  const meta = await image.metadata();
+  const imgW = meta.width || 0;
+  const imgH = meta.height || 0;
+  if (imgW === 0 || imgH === 0) {
+    _dbg('analyzeTileCrops: invalid image dimensions');
+    return [];
+  }
+
+  const tileW = Math.floor(imgW / gridCols);
+  const tileH = Math.floor(imgH / gridRows);
+  _dbg(`analyzeTileCrops: image ${imgW}x${imgH}, tile ${tileW}x${tileH}, grid ${gridRows}x${gridCols}`);
+
+  const tileCrops: { idx: number; base64: string }[] = [];
+
+  for (let r = 0; r < gridRows; r++) {
+    for (let c = 0; c < gridCols; c++) {
+      const idx = r * gridCols + c;
+      if (idx >= actualTileCount) continue;
+
+      const left = c * tileW;
+      const top = r * tileH;
+      const width = (c === gridCols - 1) ? imgW - left : tileW;
+      const height = (r === gridRows - 1) ? imgH - top : tileH;
+
+      try {
+        const tileBuf = await sharp(gridScreenshotPath)
+          .extract({ left, top, width, height })
+          .png()
+          .toBuffer();
+        tileCrops.push({ idx, base64: tileBuf.toString('base64') });
+      } catch {}
+    }
+  }
+
+  _dbg(`analyzeTileCrops: ${tileCrops.length} tiles cropped, classifying in batches...`);
+
+  const results: { idx: number; isMatch: boolean }[] = [];
+  const BATCH_SIZE = 4;
+  for (let i = 0; i < tileCrops.length; i += BATCH_SIZE) {
+    const batch = tileCrops.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(batch.map(async ({ idx, base64 }) => {
+      try {
+        const prompt = `Look at this image tile from a reCAPTCHA grid. The task is to find tiles containing "${objectName}".
+
+Does this image show ${objectName} (or a recognizable part of it, like a pole/sign/housing associated with ${objectName})?
+
+- Answer YES if you can identify ${objectName} or a significant part of it
+- Answer NO if it clearly does not contain ${objectName}
+
+Answer with exactly one word: YES or NO`;
+
+        const response = await visionClassify(base64, prompt);
+        const isMatch = /\byes\b/i.test(response);
+        _dbg(`analyzeTileCrops: tile ${idx} → ${isMatch ? 'YES' : 'NO'} (${response.substring(0, 40).trim()})`);
+        return { idx, isMatch };
+      } catch (e: any) {
+        _dbg(`analyzeTileCrops: tile ${idx} failed: ${e.message}`);
+        return { idx, isMatch: false };
+      }
+    }));
+    results.push(...batchResults);
+  }
+  const matched: number[] = [];
+  for (const { idx, isMatch } of results) {
+    if (isMatch) matched.push(idx);
+  }
+
+  _dbg(`analyzeTileCrops result: [${matched.join(',')}] from ${results.length} tiles`);
+  return matched;
+}
+
+interface CaptchaTrainingExample {
+  instruction: string;
+  gridCount: number;
+  matchedIndices: number[];
+  timestamp: number;
+}
+
+function loadCaptchaTraining(): CaptchaTrainingExample[] {
+  try {
+    const path = join(homedir(), '.aurix', 'captcha-training.json');
+    if (existsSync(path)) {
+      return JSON.parse(readFileSync(path, 'utf-8'));
+    }
+  } catch {}
+  return [];
+}
+
+function saveCaptchaTraining(example: CaptchaTrainingExample) {
+  try {
+    const dir = join(homedir(), '.aurix');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'captcha-training.json');
+    const data = loadCaptchaTraining();
+    data.push(example);
+    if (data.length > 50) data.splice(0, data.length - 50);
+    writeFileSync(path, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
 async function solveCaptchaGrid(page: any, frame: any, provider: string): Promise<string> {
   const results: string[] = [];
   const isRecaptcha = provider === 'recaptcha';
+  const _t0 = Date.now();
+  const _elapsed = () => ((Date.now() - _t0) / 1000).toFixed(1);
+  const _dbg = (msg: string) => {
+    const line = `[${_elapsed()}s] ${msg}\n`;
+    try { appendFileSync('/tmp/captcha-debug.log', line); } catch {}
+    results.push(msg);
+  };
+  try { appendFileSync('/tmp/captcha-debug.log', `\n=== solveCaptchaGrid start (${provider}) ===\n`); } catch {}
 
   let instruction = '';
   try {
-    const instrEl = frame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h, .geetest_tip_content, .mtcaptcha-label');
+    await page.waitForTimeout(1500);
+    _dbg(`frame url: ${frame.url().substring(0, 120)}`);
+
+    // Wait for the instruction container to appear
+    try { await frame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h').first().waitFor({ state: 'visible', timeout: 5000 }); } catch {}
+
+    // 1. Locator-based extraction
+    const instrEl = frame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h, .rc-imageselect-payload-info, .geetest_tip_content, .mtcaptcha-label');
     if (await instrEl.count() > 0) {
       instruction = (await instrEl.first().textContent() || '').trim();
+      _dbg(`extraction method 1 (locator): "${instruction.substring(0, 80)}"`);
     }
+
+    // 2. Strong element
     if (!instruction) {
       const strongText = frame.locator('strong').first();
       if (await strongText.count() > 0) instruction = (await strongText.textContent() || '').trim();
+      if (instruction) _dbg(`extraction method 2 (strong): "${instruction.substring(0, 80)}"`);
     }
-  } catch {}
+
+    // 3. frame.evaluate with broader selectors
+    if (!instruction) {
+      try {
+        instruction = await frame.evaluate(() => {
+          const selectors = ['.rc-imageselect-instructions', '.prompt-text', '.prompt-text-h', '.rc-imageselect-desc', 'strong', 'h2', '.rc-imageselect-payload-info'];
+          for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent && el.textContent.trim()) return el.textContent.trim();
+          }
+          return '';
+        });
+        if (instruction) _dbg(`extraction method 3 (evaluate): "${instruction.substring(0, 80)}"`);
+      } catch (e: any) { _dbg(`extraction method 3 error: ${e.message?.substring(0, 60)}`); }
+    }
+
+    // 4. Body text regex
+    if (!instruction) {
+      const allText = await frame.locator('body').textContent().catch(() => '');
+      _dbg(`frame body text (${(allText || '').length} chars): "${(allText || '').substring(0, 200).replace(/\s+/g, ' ')}"`);
+      if (allText) {
+        const match = allText.match(/Select all (?:squares|images|areas|tiles)[^.!\n]{1,80}/i)
+          || allText.match(/(?:click|tap|choose|find|identify)[^.!\n]{1,80}(?:traffic|bus|bicycle|car|boat|bridge|crosswalk|fire|mountain|palm|stair|taxi|motorcycle|hydrant|sign|light)/i);
+        if (match) instruction = match[0].trim();
+        if (instruction) _dbg(`extraction method 4 (body regex): "${instruction.substring(0, 80)}"`);
+      }
+    }
+
+    // 5. Search ALL other frames for instruction
+    if (!instruction) {
+      for (const f of page.frames()) {
+        if (f === frame) continue;
+        try {
+          const txt = await f.evaluate(() => {
+            const selectors = ['.rc-imageselect-instructions', '.prompt-text', '.prompt-text-h', 'strong', 'h2'];
+            for (const sel of selectors) {
+              const el = document.querySelector(sel);
+              if (el && el.textContent && el.textContent.trim().length > 5) return el.textContent.trim();
+            }
+            const body = document.body?.textContent || '';
+            const m = body.match(/Select all (?:squares|images|areas)[^.!\n]{1,80}/i);
+            return m ? m[0].trim() : '';
+          });
+          if (txt && txt.length > 5) {
+            instruction = txt;
+            _dbg(`extraction method 5 (other frame ${f.url().substring(0, 60)}): "${instruction.substring(0, 80)}"`);
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    // 6. Check for nested iframes inside bframe
+    if (!instruction) {
+      try {
+        const nestedFrames = await frame.locator('iframe').all();
+        _dbg(`nested iframes in bframe: ${nestedFrames.length}`);
+        for (const nf of nestedFrames) {
+          const nfHandle = await nf.elementHandle();
+          if (!nfHandle) continue;
+          const nfFrame = await nfHandle.contentFrame();
+          if (!nfFrame) continue;
+          const txt = await nfFrame.evaluate(() => {
+            const el = document.querySelector('.rc-imageselect-instructions, .prompt-text, strong, h2');
+            return el ? (el.textContent || '').trim() : '';
+          });
+          if (txt && txt.length > 5) {
+            instruction = txt;
+            _dbg(`extraction method 6 (nested iframe): "${instruction.substring(0, 80)}"`);
+            break;
+          }
+        }
+      } catch (e: any) { _dbg(`extraction method 6 error: ${e.message?.substring(0, 60)}`); }
+    }
+  } catch (e: any) { _dbg(`instruction extraction outer error: ${e.message?.substring(0, 80)}`); }
+
+  // Validate instruction — must contain meaningful text
+  if (instruction && instruction.length < 10 && !/select|choose|find|click/i.test(instruction)) {
+    _dbg(`instruction too short/invalid: "${instruction}", retrying extraction...`);
+    instruction = '';
+  }
+
+  // If no valid instruction, wait longer and retry
+  if (!instruction) {
+    await page.waitForTimeout(3000);
+    try {
+      instruction = await frame.evaluate(() => {
+        const el = document.querySelector('.rc-imageselect-instructions, .prompt-text, .prompt-text-h, strong');
+        return el ? (el.textContent || '').trim() : '';
+      });
+      if (instruction && instruction.length < 10 && !/select|choose|find|click/i.test(instruction)) instruction = '';
+    } catch {}
+  }
 
   if (!instruction) {
+    _dbg('Could not extract captcha instruction');
     results.push('[WARN] Could not extract captcha instruction, cannot auto-solve');
     return results.join('\n');
   }
 
   results.push(`Auto-solving: "${instruction}"`);
+  _dbg(`instruction: "${instruction}"`);
 
   try {
     const home = homedir();
@@ -130,74 +355,506 @@ async function solveCaptchaGrid(page: any, frame: any, provider: string): Promis
     }
   } catch {}
 
-  const tiles = await findGridTiles(frame, provider);
-  const gridScreenshotPath = join(homedir(), '.aurix-captcha-grid.png');
-  try {
-    const gridEl = frame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, .task, .challenge-view, table').first();
-    if (await gridEl.count() > 0) await gridEl.screenshot({ path: gridScreenshotPath });
-    else await frame.locator('body').screenshot({ path: gridScreenshotPath });
-  } catch {
-    try { await page.screenshot({ path: gridScreenshotPath }); } catch {}
+  // Wait for tiles to appear — retry up to 3 times
+  let tiles = await findGridTiles(frame, provider);
+  for (let retry = 0; tiles.length === 0 && retry < 3; retry++) {
+    _dbg(`waiting for tiles (retry ${retry + 1}/3)...`);
+    await page.waitForTimeout(2000);
+    tiles = await findGridTiles(frame, provider);
   }
+  _dbg(`found ${tiles.length} tiles`);
 
-  for (let i = 0; i < tiles.length; i++) {
-    try { await tiles[i].screenshot({ path: join(homedir(), `.aurix-tile-${i}.png`) }); } catch {}
-  }
+  const cleanInstruction = instruction.replace(/If there are none.*$/i, '').replace(/Click verify once.*$/i, '').trim();
+  const objectMatch = cleanInstruction.match(/(?:Select all (?:squares|images) with(?: a)?|select all images with(?: a)?)\s+(.+)/i);
+  const objectName = objectMatch ? objectMatch[1].trim() : cleanInstruction;
 
-  const classifyPrompt = `Look at this captcha grid image. The instruction is: "${instruction}". Which tile images match this instruction? Reply with ONLY the 0-based indices separated by commas (e.g. "0,3,5"). If none match, reply "none".`;
+  const is3x3 = tiles.length <= 9;
+  let gridCols = is3x3 ? 3 : 4;
+  let gridRows = is3x3 ? 3 : 4;
+  let visibleTiles: any[] = tiles;
+  let actualTileCount = tiles.length;
 
-  let matchedIndices: number[] = [];
   try {
-    const gridBase64 = readFileBase64(gridScreenshotPath);
-    const response = await visionClassify(gridBase64, classifyPrompt);
-    results.push(`Vision model: "${response}"`);
+    const tileBoxes: { tile: any; box: { x: number; y: number; width: number; height: number } }[] = [];
+    for (const tile of tiles) {
+      try {
+        const box = await tile.boundingBox();
+        if (box && box.width > 5 && box.height > 5) tileBoxes.push({ tile, box });
+      } catch {}
+    }
+    if (tileBoxes.length >= 4) {
+      const firstY = tileBoxes[0].box.y;
+      const yTol = 15;
+      const firstRowTiles = tileBoxes.filter(tb => Math.abs(tb.box.y - firstY) < yTol);
+      const detectedCols = firstRowTiles.length;
 
-    if (response.toLowerCase().includes('none')) {
-      results.push('Vision: no matching tiles, clicking verify directly');
+      const firstX = tileBoxes[0].box.x;
+      const xTol = 15;
+      const firstColTiles = tileBoxes.filter(tb => Math.abs(tb.box.x - firstX) < xTol);
+      const detectedRows = firstColTiles.length;
+
+      if (detectedCols >= 2 && detectedRows >= 2) {
+        gridCols = detectedCols;
+        gridRows = detectedRows;
+        const expectedVisible = gridRows * gridCols;
+        const lastVisibleX = tileBoxes[gridCols - 1].box.x + tileBoxes[gridCols - 1].box.width;
+        const lastVisibleY = tileBoxes[(gridRows - 1) * gridCols]
+          ? tileBoxes[(gridRows - 1) * gridCols].box.y + tileBoxes[(gridRows - 1) * gridCols].box.height
+          : tileBoxes[tileBoxes.length - 1].box.y + tileBoxes[tileBoxes.length - 1].box.height;
+        const vis: any[] = [];
+        for (const tb of tileBoxes) {
+          const cx = tb.box.x + tb.box.width / 2;
+          const cy = tb.box.y + tb.box.height / 2;
+          if (cx < lastVisibleX + 10 && cy < lastVisibleY + 10) vis.push(tb.tile);
+        }
+        if (vis.length >= 4 && vis.length !== tiles.length) {
+          visibleTiles = vis;
+          actualTileCount = vis.length;
+        } else {
+          actualTileCount = tileBoxes.length;
+        }
+        _dbg(`grid layout: ${gridRows}x${gridCols} (${actualTileCount} visible/${tiles.length} DOM, position-based)`);
+      } else {
+        _dbg(`grid layout: ${gridRows}x${gridCols} (${tiles.length} tiles, position detect: cols=${detectedCols} rows=${detectedRows})`);
+      }
     } else {
-      matchedIndices = response.split(',')
-        .map(s => parseInt(s.trim()))
-        .filter(n => !isNaN(n) && n >= 0 && n < tiles.length);
+      _dbg(`grid layout: ${gridRows}x${gridCols} (${tiles.length} tiles, insufficient boxes)`);
     }
   } catch (e: any) {
-    results.push(`[WARN] Vision model failed: ${e.message}`);
-    results.push('Auto-solve requires a vision-capable model. Falling back to manual mode.');
-    results.push('Use "captcha-grid" to see tiles and "click-tile" to select them manually.');
-    return results.join('\n');
+    _dbg(`grid layout fallback: ${gridRows}x${gridCols} (${tiles.length} tiles, ${e.message})`);
   }
 
-  if (matchedIndices.length === 0) {
-    results.push('No matching tiles found, attempting verify directly');
-  }
+  let gridSize = `${gridRows}x${gridCols}`;
 
-  for (const idx of matchedIndices) {
+  // === NEW APPROACH: screenshot each tile individually, compose grid, 1 vision call ===
+  const gridScreenshotPath = join(homedir(), '.aurix-captcha-grid.png');
+  let gridShot = false;
+  let gridShotFromTable = false;
+
+  // Step 1: Screenshot each tile individually
+  const tileBufs: { idx: number; buf: Buffer }[] = [];
+  for (let i = 0; i < Math.min(visibleTiles.length, actualTileCount); i++) {
     try {
-      const currentTiles = await findGridTiles(frame, provider);
-      if (idx >= currentTiles.length) continue;
-      const tile = currentTiles[idx];
-      const tileBox = await tile.boundingBox();
-      if (tileBox) {
-        const cx = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
-        const cy = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
-        await humanMove(cx, cy, page);
-        await page.waitForTimeout(80 + Math.random() * 120);
-        await page.mouse.down();
-        await page.waitForTimeout(60 + Math.random() * 100);
-        await page.mouse.up();
-      } else {
-        await tile.click({ force: true });
-      }
-      results.push(`  Clicked tile ${idx}`);
+      const tilePath = join(homedir(), `.aurix-tile-ss-${i}.png`);
+      await visibleTiles[i].screenshot({ path: tilePath, timeout: 8000 });
+      tileBufs.push({ idx: i, buf: readFileSync(tilePath) });
+      try { unlinkSync(tilePath); } catch {}
     } catch (e: any) {
-      results.push(`  Failed to click tile ${idx}: ${e.message}`);
+      _dbg(`tile ${i} screenshot failed: ${e.message?.substring(0, 60)}`);
     }
   }
 
-  if (isRecaptcha && matchedIndices.length > 0) {
-    await page.waitForTimeout(1500 + Math.random() * 500);
+  // Step 2: Compose into grid image
+  if (tileBufs.length === actualTileCount) {
+    try {
+      const meta0 = await sharp(tileBufs[0].buf).metadata();
+      const tw = meta0.width || 97, th = meta0.height || 97;
+      const gridW = tw * gridCols, gridH = th * gridRows;
+      const composites: any[] = [];
+      for (const { idx, buf } of tileBufs) {
+        const r = Math.floor(idx / gridCols), c = idx % gridCols;
+        composites.push({ input: buf, left: c * tw, top: r * th });
+      }
+      await sharp({ create: { width: gridW, height: gridH, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+        .composite(composites).png().toFile(gridScreenshotPath);
+      gridShot = true;
+      gridShotFromTable = true;
+      _dbg(`composed grid from ${tileBufs.length} tiles: ${gridW}x${gridH}`);
+    } catch (e: any) {
+      _dbg(`compose grid failed: ${e.message}`);
+    }
   }
 
-  results.push('Clicking verify...');
+  // Fallback: try grid-level screenshot
+  if (!gridShot) {
+    _dbg('tile screenshots failed, trying grid-level screenshot...');
+    const tableSelectors = isRecaptcha
+      ? (is3x3
+          ? ['.rc-imageselect-table-33', '.rc-image-tile-33', 'table']
+          : ['.rc-imageselect-table-44', '.rc-image-tile-44', 'table'])
+      : ['.task', '.challenge-view'];
+    for (const sel of tableSelectors) {
+      if (gridShot) break;
+      try {
+        const el = frame.locator(sel).first();
+        if (await el.count() > 0 && await el.isVisible()) {
+          await el.screenshot({ path: gridScreenshotPath, timeout: 10000 });
+          gridShot = true;
+          gridShotFromTable = true;
+          _dbg(`grid screenshot: ${sel}`);
+        }
+      } catch {}
+    }
+    if (!gridShot) {
+      try { await frame.locator('body').screenshot({ path: gridScreenshotPath, timeout: 10000 }); gridShot = true; } catch {}
+    }
+    if (!gridShot) {
+      try { await page.screenshot({ path: gridScreenshotPath }); gridShot = true; _dbg('grid screenshot: page fallback'); } catch {}
+    }
+  }
+
+  // Step 3: Upscale if small
+  if (gridShot) {
+    try {
+      const origMeta = await sharp(gridScreenshotPath).metadata();
+      if ((origMeta.width || 0) > 0 && (origMeta.width || 0) < 200) {
+        const upscaledPath = gridScreenshotPath + '.up.png';
+        await sharp(gridScreenshotPath)
+          .resize((origMeta.width || 0) * 2, (origMeta.height || 0) * 2, { kernel: sharp.kernel.lanczos3 })
+          .png().toFile(upscaledPath);
+        const upBuf = readFileSync(upscaledPath);
+        writeFileSync(gridScreenshotPath, upBuf);
+        try { unlinkSync(upscaledPath); } catch {}
+        _dbg(`upscaled grid: ${origMeta.width}x${origMeta.height} → ${origMeta.width! * 2}x${origMeta.height! * 2}`);
+      }
+    } catch {}
+  }
+
+  // Step 4: Single vision call — all tiles at once
+  const matchedIndices: number[] = [];
+
+  if (gridShot) {
+    try {
+      let tileLayout = '';
+      let idx = 0;
+      for (let r = 0; r < gridRows; r++) {
+        const rowTiles: string[] = [];
+        for (let c = 0; c < gridCols; c++) {
+          if (idx < actualTileCount) rowTiles.push(`[${idx}]`);
+          idx++;
+        }
+        tileLayout += `Row ${r + 1}: ${rowTiles.join(' ')}\n`;
+      }
+
+      const trainingExamples = loadCaptchaTraining().filter(e => e.instruction.toLowerCase().includes(objectName.toLowerCase()) || objectName.toLowerCase().includes(e.instruction.toLowerCase()));
+      let trainingHint = '';
+      if (trainingExamples.length > 0) {
+        const last = trainingExamples[trainingExamples.length - 1];
+        trainingHint = `\n\nHint: A similar challenge was solved before by selecting tiles [${last.matchedIndices.join(',')}] out of ${last.gridCount}.`;
+      }
+
+      const prompt = `This is a reCAPTCHA image grid (${gridSize}, ${actualTileCount} tiles). Each tile is a separate photo.
+
+${tileLayout.trim()}
+
+Task: Which tiles contain "${objectName}"? Select tiles showing ANY part of ${objectName}, including related parts (e.g. a pole holding a traffic light, crosswalk markings, a vehicle that IS a bus).
+
+IMPORTANT: You MUST respond in exactly this format:
+
+Analysis: [brief tile-by-tile notes, e.g. "Tile 0: no, Tile 1: yes - shows traffic light, ..."]
+Answer: [comma-separated 0-indexed tile numbers that contain ${objectName}]
+
+If no tiles match, write: Answer: none${trainingHint}`;
+
+      _dbg('calling visionClassify...');
+      const gridBase64 = readFileBase64(gridScreenshotPath);
+      _dbg(`grid image loaded (${gridBase64.length} chars base64)`);
+      const response = await visionClassify(gridBase64, prompt);
+      _dbg(`visionClassify returned (${response.length} chars)`);
+      results.push(`Vision: ${response.split('\n').filter(l => l.trim()).join(' | ')}`);
+
+      const lines = response.split('\n');
+      let answerLine = '';
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (/^\s*answer\s*:/i.test(lines[i].trim())) {
+          answerLine = lines[i];
+          break;
+        }
+      }
+
+      if (answerLine && !/none/i.test(answerLine.replace(/answer\s*:/i, ''))) {
+        const nums = answerLine.match(/\d+/g);
+        if (nums) {
+          for (const n of nums) {
+            let idx = parseInt(n);
+            if (idx >= 0 && idx < actualTileCount) matchedIndices.push(idx);
+          }
+        }
+      }
+
+      // Fallback: parse "Tile N: YES/NO" format
+      if (matchedIndices.length === 0) {
+        for (const line of lines) {
+          const ynMatch = line.match(/Tile\s+(\d+)\s*:.*?-\s*(YES|NO)/i);
+          if (ynMatch) {
+            const tidx = parseInt(ynMatch[1]);
+            if (ynMatch[2].toUpperCase() === 'YES' && tidx >= 0 && tidx < actualTileCount) matchedIndices.push(tidx);
+            continue;
+          }
+          const tileMention = line.match(/\*{1,2}(?:Tile|Cell)\s+(\d+)\*{1,2}|(?:tile|cell)\s+(\d+)\s*[:)]/i);
+          if (tileMention) {
+            const tidx = parseInt(tileMention[1] || tileMention[2]);
+            if (tidx >= 0 && tidx < actualTileCount) {
+              const lower = line.toLowerCase();
+              const isPositive = /\b(contains?|shows?|has|includes?|visible|present|yes)\b/i.test(lower);
+              const isNegative = /\b(no|none|not|empty|clear|does not|doesn't|without)\b/i.test(lower);
+              if (isPositive && !isNegative) matchedIndices.push(tidx);
+            }
+          }
+        }
+      }
+
+      // Fallback: last line is just numbers
+      if (matchedIndices.length === 0) {
+        const lastLine = lines[lines.length - 1]?.trim() || '';
+        if (/^[\d\s,\-]+$/.test(lastLine)) {
+          const nums = lastLine.match(/\d+/g);
+          if (nums) {
+            for (const n of nums) {
+              let idx = parseInt(n);
+              if (idx >= 0 && idx < actualTileCount) matchedIndices.push(idx);
+            }
+          }
+        }
+      }
+
+      const uniqueIndices = [...new Set(matchedIndices)];
+      matchedIndices.length = 0;
+      matchedIndices.push(...uniqueIndices);
+      _dbg(`parsed matched indices: [${matchedIndices.join(',')}]`);
+    } catch (e: any) {
+      _dbg(`visionClassify FAILED: ${e.message}`);
+    }
+  }
+
+  _dbg(`matched [${matchedIndices.join(',')}]`);
+
+  if (matchedIndices.length === 0) {
+    const skipMentioned = /skip|none/i.test(instruction);
+    if (skipMentioned) {
+      _dbg('no matches found and instruction mentions skip — clicking skip button');
+      try {
+        let skipBtn = frame.locator('#recaptcha-verify-button, .rc-button-submit');
+        const skipText = await skipBtn.textContent().catch(() => '');
+        if (/skip/i.test(skipText)) {
+          await skipBtn.click({ force: true, timeout: 5000 });
+          await page.waitForTimeout(2000);
+          _dbg('skip button clicked');
+          results.push('No matches found, clicked skip');
+          return results.join('\n');
+        }
+      } catch {}
+    }
+    results.push('No matching tiles found, attempting verify anyway');
+  }
+  _dbg(`clicking ${matchedIndices.length} tiles`);
+
+  const clickedSet = new Set<number>();
+  for (const idx of matchedIndices) {
+    try {
+      if (idx >= actualTileCount || idx >= visibleTiles.length) continue;
+      await visibleTiles[idx].click({ force: true, timeout: 3000 });
+      clickedSet.add(idx);
+      await page.waitForTimeout(100 + Math.random() * 100);
+      _dbg(`clicked tile ${idx}`);
+    } catch (e: any) {
+      try {
+        const refreshed = await findGridTiles(frame, provider);
+        const refreshedVisible: any[] = [];
+        for (const t of refreshed) { try { if (await t.isVisible()) refreshedVisible.push(t); } catch {} }
+        if (idx < refreshedVisible.length) {
+          await refreshedVisible[idx].click({ force: true, timeout: 3000 });
+          clickedSet.add(idx);
+          await page.waitForTimeout(100 + Math.random() * 100);
+          _dbg(`clicked tile ${idx} (re-fetched)`);
+        }
+      } catch (e2: any) {
+        _dbg(`FAILED to click tile ${idx}: ${e2.message}`);
+      }
+    }
+  }
+
+  if (isRecaptcha && clickedSet.size > 0) {
+    _dbg('self-review: checking selections...');
+    await page.waitForTimeout(300);
+
+    try {
+      const reviewPath = join(homedir(), '.aurix-captcha-review.png');
+      let reviewShot = false;
+      try { await frame.locator('body').screenshot({ path: reviewPath, timeout: 5000 }); reviewShot = true; _dbg('self-review screenshot: frame body'); } catch {}
+      if (!reviewShot) {
+        try { await page.screenshot({ path: reviewPath }); reviewShot = true; _dbg('self-review screenshot: page'); } catch {}
+      }
+
+      if (reviewShot) {
+        const selectedList = [...clickedSet].sort((a, b) => a - b).join(', ');
+        const reviewPrompt = `This is a reCAPTCHA grid. Tiles ${selectedList} are selected (checkmarked). Task: "${objectName}"
+
+Check if any selected tiles DON'T contain ${objectName} (wrong), or if any unselected tiles DO contain ${objectName} (missed).
+
+Respond with ONLY ONE of these exact formats (no explanation):
+Add: [tile numbers]
+Remove: [tile numbers]
+Correct`;
+
+        const reviewBase64 = readFileBase64(reviewPath);
+        const reviewResponse = await visionClassify(reviewBase64, reviewPrompt);
+        _dbg(`self-review response: ${reviewResponse.split('\n').pop()?.trim()}`);
+
+        const addMatch = reviewResponse.match(/(?:add|also select|missed|need)[:\s]+\[?([\d,\s]+)\]?/i);
+        _dbg(`self-review addMatch: ${addMatch ? 'yes [' + addMatch[1].trim() + ']' : 'no'}, lastLine: "${reviewResponse.split('\n').pop()?.trim()?.substring(0, 40)}"`);
+        if (addMatch && !/correct|all correct|everything is correct/i.test(reviewResponse.split('\n').pop()?.trim() || '')) {
+          const addNums = addMatch[1].match(/\d+/g);
+          _dbg(`self-review addNums: [${addNums?.join(',')}]`);
+          if (addNums) {
+            const freshTiles = await findGridTiles(frame, provider);
+            const freshVisible: any[] = [];
+            for (const t of freshTiles) { try { if (await t.isVisible()) freshVisible.push(t); } catch {} }
+            _dbg(`self-review add: freshTiles=${freshTiles.length}, visible=${freshVisible.length}, clickedSet=[${[...clickedSet].join(',')}]`);
+
+            for (const n of addNums) {
+              let idx = parseInt(n);
+              if (idx >= 0 && idx < freshVisible.length && !clickedSet.has(idx)) {
+                try {
+                  await freshVisible[idx].click({ force: true, timeout: 3000 });
+                  clickedSet.add(idx);
+                  matchedIndices.push(idx);
+                  await page.waitForTimeout(300);
+                  _dbg(`self-review: added tile ${idx}`);
+                } catch (e: any) {
+                  _dbg(`self-review: failed to add tile ${idx}: ${e.message}`);
+                }
+              }
+            }
+          }
+        }
+
+        const removeMatch = reviewResponse.match(/(?:remove|deselect|unselect|wrong|incorrect)[:\s]+\[?([\d,\s]+)\]?/i);
+        _dbg(`self-review removeMatch: ${removeMatch ? 'yes [' + removeMatch[1].trim() + ']' : 'no'}`);
+        if (removeMatch && !/correct|all correct|everything is correct/i.test(reviewResponse.split('\n').pop()?.trim() || '')) {
+          const removeNums = removeMatch[1].match(/\d+/g);
+          _dbg(`self-review removeNums: [${removeNums?.join(',')}]`);
+          if (removeNums) {
+            const freshTiles2 = await findGridTiles(frame, provider);
+            const freshVisible2: any[] = [];
+            for (const t of freshTiles2) { try { if (await t.isVisible()) freshVisible2.push(t); } catch {} }
+            _dbg(`self-review remove: freshTiles=${freshTiles2.length}, visible=${freshVisible2.length}, clickedSet=[${[...clickedSet].join(',')}]`);
+
+            for (const n of removeNums) {
+              let idx = parseInt(n);
+              if (idx >= 0 && idx < freshVisible2.length && clickedSet.has(idx)) {
+                try {
+                  await freshVisible2[idx].click({ force: true, timeout: 3000 });
+                  clickedSet.delete(idx);
+                  const mi = matchedIndices.indexOf(idx);
+                  if (mi !== -1) matchedIndices.splice(mi, 1);
+                  await page.waitForTimeout(300);
+                  _dbg(`self-review: removed tile ${idx}`);
+                } catch (e: any) {
+                  _dbg(`self-review: failed to remove tile ${idx}: ${e.message}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      _dbg(`self-review failed: ${e.message}`);
+    }
+  }
+
+  if (false && isRecaptcha && is3x3 && clickedSet.size > 0) {
+    _dbg('checking for dynamic tiles (3x3 mode)...');
+    await page.waitForTimeout(1500);
+
+    try {
+      const dynamicScreenshotPath = join(homedir(), '.aurix-captcha-grid-dynamic.png');
+      let dynShot = false;
+      const dynSels = isRecaptcha
+        ? (is3x3
+            ? ['.rc-imageselect-table-33', '.rc-image-tile-33', 'table']
+            : ['.rc-imageselect-table-44', '.rc-image-tile-44', 'table'])
+        : ['.task', '.challenge-view'];
+      for (const sel of dynSels) {
+        try {
+          const el = frame.locator(sel).first();
+          if (await el.count() > 0 && await el.isVisible()) {
+            await el.screenshot({ path: dynamicScreenshotPath, timeout: 5000 });
+            dynShot = true;
+            break;
+          }
+        } catch {}
+      }
+      if (!dynShot) {
+        try { await frame.locator('body').screenshot({ path: dynamicScreenshotPath, timeout: 5000 }); dynShot = true; } catch {}
+      }
+
+      if (dynShot) {
+        const selectedCount = await frame.locator('.rc-imageselect-dynamic-selected').count();
+        _dbg(`${selectedCount} tiles currently selected`);
+
+        const dynPrompt = `This is a reCAPTCHA 3x3 image grid AFTER some tiles were already selected.
+
+Task: "${objectName}"
+
+Some cells are already selected (they appear dimmed/highlighted). Look ONLY at the cells that are NOT yet selected.
+
+Do any of the UNSELECTED cells contain ${objectName}?
+
+If yes, list them numbered 1-9 left to right, top to bottom.
+If no unselected cells match, write: Answer: none
+
+On the LAST line:
+Answer: [numbers or "none"]`;
+
+        const dynBase64 = readFileBase64(dynamicScreenshotPath);
+        const dynResponse = await visionClassify(dynBase64, dynPrompt);
+        _dbg(`dynamic analysis: ${dynResponse.split('\n').pop()?.trim()}`);
+
+        const dynLines = dynResponse.split('\n');
+        let dynAnswerLine = '';
+        for (let i = dynLines.length - 1; i >= 0; i--) {
+          if (/^\s*answer\s*:/i.test(dynLines[i].trim())) {
+            dynAnswerLine = dynLines[i];
+            break;
+          }
+        }
+
+        if (dynAnswerLine && !/none/i.test(dynAnswerLine)) {
+          const dynNums = dynAnswerLine.match(/\d+/g);
+          if (dynNums) {
+            const dynIndices: number[] = [];
+            for (const n of dynNums!) {
+              let idx = parseInt(n);
+              if (idx >= 1 && idx <= 9) idx -= 1;
+              if (idx >= 0 && idx < actualTileCount && !clickedSet.has(idx)) {
+                dynIndices.push(idx);
+              }
+            }
+
+            if (dynIndices.length > 0) {
+              _dbg(`dynamic tiles to click: [${dynIndices.join(',')}]`);
+              const freshTiles = await findGridTiles(frame, provider);
+              const freshVisible: any[] = [];
+              for (const t of freshTiles) { try { if (await t.isVisible()) freshVisible.push(t); } catch {} }
+
+              for (const idx of dynIndices) {
+                if (idx < freshVisible.length) {
+                  try {
+                    await freshVisible[idx].click({ force: true, timeout: 3000 });
+                    clickedSet.add(idx);
+                    matchedIndices.push(idx);
+                    await page.waitForTimeout(300 + Math.random() * 200);
+                    _dbg(`clicked dynamic tile ${idx}`);
+                  } catch (e: any) {
+                    _dbg(`FAILED to click dynamic tile ${idx}: ${e.message}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      _dbg(`dynamic tile check failed: ${e.message}`);
+    }
+  }
+
+  if (isRecaptcha && clickedSet.size > 0) {
+    await page.waitForTimeout(800 + Math.random() * 400);
+  }
+
+  _dbg('clicking verify button...');
   try {
     let verifyBtn = frame.locator('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]');
     if (await verifyBtn.count() === 0) {
@@ -205,11 +862,53 @@ async function solveCaptchaGrid(page: any, frame: any, provider: string): Promis
     }
 
     if (await verifyBtn.count() > 0) {
-      await humanClick(verifyBtn, page);
-      await page.waitForTimeout(3000);
+      await verifyBtn.click({ force: true, timeout: 5000 });
+      _dbg('verify button clicked, waiting for result...');
+      await page.waitForTimeout(2000);
+
+      let hasToken = false;
+      try {
+        hasToken = await page.evaluate(() => {
+          const el = document.getElementById('g-recaptcha-response') as HTMLTextAreaElement;
+          return !!(el && el.value && el.value.length > 10);
+        });
+      } catch {}
+
+      let ariaChecked = false;
+      try {
+        for (const f of page.frames()) {
+          if (f.url().includes('/recaptcha/') && f.url().includes('/anchor')) {
+            const anchor = f.locator('#recaptcha-anchor[aria-checked="true"]');
+            if (await anchor.count() > 0) { ariaChecked = true; break; }
+          }
+        }
+      } catch {}
+
+      if (hasToken || ariaChecked) {
+        const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
+        await page.screenshot({ path: verifyResultPath }).catch(() => {});
+        saveCaptchaTraining({ instruction: cleanInstruction, gridCount: actualTileCount, matchedIndices, timestamp: Date.now() });
+        _dbg(`CAPTCHA SOLVED! (token=${hasToken}, aria=${ariaChecked})`);
+        results.push(`[OK] CAPTCHA SOLVED! ✅`);
+        results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
+        return results.join('\n');
+      }
+
+      const currentFrames = page.frames();
+      const stillHasBframe = currentFrames.some((f: any) => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+      if (!stillHasBframe) {
+        const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
+        await page.screenshot({ path: verifyResultPath }).catch(() => {});
+        saveCaptchaTraining({ instruction: cleanInstruction, gridCount: actualTileCount, matchedIndices, timestamp: Date.now() });
+        _dbg('CAPTCHA SOLVED (bframe disappeared)');
+        results.push(`[OK] CAPTCHA SOLVED! ✅`);
+        results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
+        return results.join('\n');
+      }
 
       const errorText = await frame.locator('.rc-imageselect-incorrect-response, .error-message, .incorrect').count();
       if (errorText > 0) {
+        _dbg('verification FAILED - error shown');
         results.push('Verification failed, challenge will retry');
         return results.join('\n');
       }
@@ -218,22 +917,35 @@ async function solveCaptchaGrid(page: any, frame: any, provider: string): Promis
       if (newChallenge > 0) {
         const newInstr = (await frame.locator('.rc-imageselect-instructions, .prompt-text').first().textContent() || '').trim();
         if (newInstr !== instruction) {
+          _dbg(`new challenge appeared: "${newInstr}"`);
           results.push(`New challenge appeared: "${newInstr}"`);
           return results.join('\n');
         }
+        _dbg('same challenge still present after verify');
         results.push('Same challenge still present');
+        return results.join('\n');
+      }
+
+      if (matchedIndices.length === 0) {
+        _dbg('verification uncertain — 0 tiles were selected, likely not solved');
+        results.push('Verification uncertain — no tiles were selected');
         return results.join('\n');
       }
 
       const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
       await page.screenshot({ path: verifyResultPath }).catch(() => {});
-      results.push(`[OK] Captcha solved! Screenshot: ${verifyResultPath}`);
+      saveCaptchaTraining({ instruction: cleanInstruction, gridCount: actualTileCount, matchedIndices, timestamp: Date.now() });
+      _dbg('CAPTCHA SOLVED (no error, no challenge)');
+      results.push(`[OK] CAPTCHA SOLVED! ✅`);
+      results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
       return results.join('\n');
     } else {
+      _dbg('NO verify button found');
       results.push('[WARN] No verify button found');
       return results.join('\n');
     }
   } catch (e: any) {
+    _dbg(`Verify FAILED: ${e.message}`);
     results.push(`Verify failed: ${e.message}`);
     return results.join('\n');
   }
@@ -897,12 +1609,37 @@ async function autoSolveCaptcha(p: Page): Promise<string[]> {
 async function findGridTiles(frame: any, provider: string) {
   switch (provider) {
     case 'recaptcha': {
-      const tiles33 = frame.locator('.rc-imageselect-table-33 td, .rc-image-tile-33 td');
-      if (await tiles33.count() > 0) return tiles33.all();
-      const tiles44 = frame.locator('.rc-imageselect-table-44 td, .rc-image-tile-44 td');
-      if (await tiles44.count() > 0) return tiles44.all();
-      const generic = frame.locator('table td');
-      if (await generic.count() > 0) return generic.all();
+      const tableSelectors = [
+        '.rc-imageselect-table-33',
+        '.rc-imageselect-table-44',
+        '.rc-image-tile-33',
+        '.rc-image-tile-44',
+      ];
+      for (const sel of tableSelectors) {
+        try {
+          const table = frame.locator(sel).first();
+          if (await table.count() > 0 && await table.isVisible()) {
+            const cells = await table.locator('td').all();
+            const visible: any[] = [];
+            for (const cell of cells) {
+              try { if (await cell.isVisible()) visible.push(cell); } catch {}
+            }
+            if (visible.length >= 4) return visible;
+          }
+        } catch {}
+      }
+      const tables = await frame.locator('table').all();
+      for (const table of tables) {
+        try {
+          if (!await table.isVisible()) continue;
+          const cells = await table.locator('td').all();
+          const visible: any[] = [];
+          for (const cell of cells) {
+            try { if (await cell.isVisible()) visible.push(cell); } catch {}
+          }
+          if (visible.length >= 4) return visible;
+        } catch {}
+      }
       return [];
     }
     case 'hcaptcha': {
@@ -950,7 +1687,7 @@ async function analyzeImageChallenge(page: any, frame: any, provider: string): P
 
   const tiles = await findGridTiles(frame, provider);
   const gridSize = tiles.length <= 9 ? '3x3' : tiles.length <= 16 ? '4x4' : `${tiles.length}-tile`;
-  results.push(`Grid: ${gridSize} (${tiles.length} tiles found)`);
+  results.push(`Grid: ${gridSize} (${tiles.length} tiles found, valid indices: 0-${tiles.length - 1})`);
   _lastGridAnalyzeTime = Date.now();
 
   // Clear stale tile screenshots from a previous challenge so the model never
@@ -1572,7 +2309,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const p = await ensureBrowser();
           const results: string[] = [];
 
-          const _solveTimeout = 60_000;
+          const _solveTimeout = 180_000;
           const _solveLogic = async () => {
 
           const frames = p.frames();
@@ -1615,6 +2352,26 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           if (captchaType === 'recaptcha') {
             results.push('Attempting reCAPTCHA...');
             try {
+              if (recaptchaBframe) {
+                results.push('Image challenge already visible. Auto-solving...');
+                const maxRetries = 5;
+                let solved = false;
+                for (let attempt = 0; attempt < maxRetries; attempt++) {
+                  if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                  const solveResult = await solveCaptchaGrid(p, recaptchaBframe, 'recaptcha');
+                  results.push(solveResult);
+                  if (solveResult.includes('CAPTCHA SOLVED')) { solved = true; break; }
+                  if (solveResult.includes('Falling back to manual mode')) break;
+                  await p.waitForTimeout(2000);
+                  const refreshedFrames = p.frames();
+                  const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  if (!newChallenge) { results.push('Challenge frame disappeared, captcha may be solved'); solved = true; break; }
+                  recaptchaBframe = newChallenge;
+                }
+                if (!solved && !results.some(r => r.includes('Falling back'))) {
+                  results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+                }
+              } else {
               let checkboxFrame = recaptchaAnchor;
               if (!checkboxFrame) {
                 for (const frame of frames) {
@@ -1627,24 +2384,24 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               }
 
               if (checkboxFrame) {
-                const checkbox = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox');
+                const checkbox = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox, .recaptcha-checkbox-border, .recaptcha-checkbox-checkmark, [id="recaptcha-anchor"]');
                 if (await checkbox.count() > 0) {
                   await p.waitForTimeout(1000 + Math.random() * 1500);
                   await humanClick(checkbox, p);
                   await p.waitForTimeout(3000);
 
                   const updatedFrames = p.frames();
-                  const challengeFrame = updatedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  let challengeFrame = updatedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
                   if (challengeFrame) {
                     results.push('Image challenge appeared. Auto-solving...');
-                    const maxRetries = 3;
+                    const maxRetries = 5;
                     let solved = false;
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                       if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
                       const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
                       results.push(solveResult);
 
-                      if (solveResult.includes('Captcha solved!')) {
+                      if (solveResult.includes('CAPTCHA SOLVED')) {
                         solved = true;
                         break;
                       }
@@ -1661,6 +2418,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                         solved = true;
                         break;
                       }
+                      challengeFrame = newChallenge;
                     }
                     if (!solved && !results.some(r => r.includes('Falling back'))) {
                       results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
@@ -1675,31 +2433,33 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                   }
                 } else {
                   results.push(warn('reCAPTCHA anchor frame found but checkbox element missing', { action: 'clicking anchor body to trigger challenge' }));
-                  const anchor = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox-area, [role="presentation"]').first();
-                  if (await anchor.count() === 0) {
-                    const body = checkboxFrame.locator('body');
-                    await humanClick(body, p).catch(() => {});
-                  } else {
-                    await humanClick(anchor, p).catch(() => {});
-                  }
-                  await p.waitForTimeout(3000);
+                  const anchor = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox-area, [role="presentation"], .recaptcha-checkbox-border, body').first();
+                  await humanClick(anchor, p).catch(() => {});
+                  await p.waitForTimeout(4000);
 
-                  const retryFrames = p.frames();
-                  const challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  let retryFrames = p.frames();
+                  let challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  if (!challengeFrame) {
+                    await anchor.click({ force: true }).catch(() => {});
+                    await p.waitForTimeout(3000);
+                    retryFrames = p.frames();
+                    challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  }
                   if (challengeFrame) {
                     results.push('Image challenge appeared after clicking anchor. Auto-solving...');
-                    const maxRetries = 3;
+                    const maxRetries = 5;
                     let solved = false;
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                       if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
                       const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
                       results.push(solveResult);
-                      if (solveResult.includes('Captcha solved!')) { solved = true; break; }
+                      if (solveResult.includes('CAPTCHA SOLVED')) { solved = true; break; }
                       if (solveResult.includes('Falling back to manual mode')) break;
                       await p.waitForTimeout(2000);
                       const refreshedFrames = p.frames();
                       const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
                       if (!newChallenge) { results.push('Challenge frame disappeared, captcha may be solved'); solved = true; break; }
+                      challengeFrame = newChallenge;
                     }
                     if (!solved && !results.some(r => r.includes('Falling back'))) {
                       results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
@@ -1719,6 +2479,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                   results.push(err('reCAPTCHA widget not found on page', 'Check if the page has loaded or use "detect-captcha" first'));
                 }
               }
+              } // close else (no bframe)
             } catch (e: any) {
               results.push(err(`reCAPTCHA click failed: ${e.message}`, 'Use "detect-captcha" first, then retry "solve-captcha"'));
             }
@@ -1736,17 +2497,17 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                   await p.waitForTimeout(3000);
 
                   const updatedFrames = p.frames();
-                  const challengeFrame = updatedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
+                  let challengeFrame = updatedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
                   if (challengeFrame) {
                     results.push('Image challenge appeared. Auto-solving...');
-                    const maxRetries = 3;
+                    const maxRetries = 5;
                     let solved = false;
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                       if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
                       const solveResult = await solveCaptchaGrid(p, challengeFrame, 'hcaptcha');
                       results.push(solveResult);
 
-                      if (solveResult.includes('Captcha solved!')) {
+                      if (solveResult.includes('CAPTCHA SOLVED')) {
                         solved = true;
                         break;
                       }
@@ -1763,6 +2524,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                         solved = true;
                         break;
                       }
+                      challengeFrame = newChallenge;
                     }
                     if (!solved && !results.some(r => r.includes('Falling back'))) {
                       results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
@@ -2156,7 +2918,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           try {
             return await Promise.race([
               _solveLogic(),
-              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (60s)')), _solveTimeout)),
+              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (180s)')), _solveTimeout)),
             ]);
           } catch (e: any) {
             results.push(`\n[TIMEOUT] ${e.message}`);
@@ -2266,27 +3028,15 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
           for (const tileIndex of tileIndices) {
             try {
-              const currentTiles = await findGridTiles(challengeFrame, provider);
-              if (tileIndex >= currentTiles.length) {
-                results.push(`  Tile ${tileIndex}: out of range (${currentTiles.length} tiles now), skipping`);
+              if (tileIndex >= initialTiles.length) {
+                results.push(`  Tile ${tileIndex}: out of range (${initialTiles.length} tiles), skipping`);
                 continue;
               }
 
-              const tile = currentTiles[tileIndex];
+              const tile = initialTiles[tileIndex];
               const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
-              const tileBox = await tile.boundingBox();
-              if (tileBox) {
-                const clickX = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
-                const clickY = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
-                await humanMove(clickX, clickY, p);
-                await p.waitForTimeout(80 + Math.random() * 120);
-                await p.mouse.down();
-                await p.waitForTimeout(60 + Math.random() * 100);
-                await p.mouse.up();
-              } else {
-                await tile.click({ force: true });
-              }
-              await p.waitForTimeout(500 + Math.random() * 400);
+              await tile.click({ force: true, timeout: 3000 });
+              await p.waitForTimeout(300 + Math.random() * 300);
 
               const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
               const clickStatus = selectedCount !== selectedBefore
@@ -2295,37 +3045,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               results.push(`  Tile ${tileIndex}: ${clickStatus}`);
 
               if (isRecaptcha) {
-                await p.waitForTimeout(1500 + Math.random() * 1000);
-                const newTiles = await findGridTiles(challengeFrame, provider);
-                const afterPath = join(homedir(), `.aurix-tile-after-${tileIndex}.png`);
-                try {
-                  await challengeFrame.locator('.rc-imageselect-table-33, .rc-imageselect-table-44, table').first().screenshot({ path: afterPath }).catch(() => p.screenshot({ path: afterPath }));
-                } catch {}
-
-                if (tileIndex < newTiles.length && instruction) {
-                  try {
-                    await newTiles[tileIndex].screenshot({ path: afterPath });
-                    const newBase64 = readFileBase64(afterPath);
-                    const newResp = await visionClassify(newBase64, `Does this image contain ${instruction}? Reply YES or NO only.`);
-                    if (newResp.toLowerCase().includes('yes')) {
-                      const newTile = newTiles[tileIndex];
-                      const newBox = await newTile.boundingBox();
-                      if (newBox) {
-                        const nx = newBox.x + newBox.width * (0.3 + Math.random() * 0.4);
-                        const ny = newBox.y + newBox.height * (0.3 + Math.random() * 0.4);
-                        await humanMove(nx, ny, p);
-                        await p.waitForTimeout(80 + Math.random() * 120);
-                        await p.mouse.down();
-                        await p.waitForTimeout(60 + Math.random() * 100);
-                        await p.mouse.up();
-                        results.push(`  → Replacement tile ${tileIndex} also matched, clicked`);
-                        await p.waitForTimeout(1500 + Math.random() * 1000);
-                      }
-                    } else {
-                      results.push(`  → Replacement tile ${tileIndex} doesn't match`);
-                    }
-                  } catch {}
-                }
+                await p.waitForTimeout(1500 + Math.random() * 500);
               }
             } catch (e: any) {
               results.push(`  Tile ${tileIndex}: FAILED — ${e.message}`);
@@ -2405,7 +3125,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               const results: string[] = [];
               results.push(`Verification failed: "${errorMsg}". Auto-retrying...`);
 
-              const maxRetries = 3;
+              const maxRetries = 2;
               for (let attempt = 0; attempt < maxRetries; attempt++) {
                 results.push(`\nRetry ${attempt + 1}/${maxRetries}...`);
                 await p.waitForTimeout(2000);
@@ -2427,7 +3147,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                 const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
                 results.push(solveResult);
 
-                if (solveResult.includes('Captcha solved!')) {
+                if (solveResult.includes('CAPTCHA SOLVED')) {
                   return results.join('\n');
                 }
               }
@@ -2444,7 +3164,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               const results: string[] = [];
               results.push(`New challenge appeared: "${instruction}". Auto-solving...`);
 
-              const maxRetries = 3;
+              const maxRetries = 2;
               for (let attempt = 0; attempt < maxRetries; attempt++) {
                 if (attempt > 0) results.push(`\nRetry ${attempt}/${maxRetries - 1}...`);
                 const currentFrames = p.frames();
@@ -2460,7 +3180,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                 const retryProvider = retryFrame.url().includes('hcaptcha') ? 'hcaptcha' : 'recaptcha';
                 const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
                 results.push(solveResult);
-                if (solveResult.includes('Captcha solved!')) return results.join('\n');
+                if (solveResult.includes('CAPTCHA SOLVED')) return results.join('\n');
                 await p.waitForTimeout(2000);
               }
 
@@ -2910,43 +3630,9 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
           await p.waitForTimeout(500);
 
-          const hasCaptcha = p.frames().some(f => {
-            const u = f.url();
-            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
-              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
-              u.includes('captcha') || u.includes('mtcaptcha');
-          });
-
-          if (hasCaptcha) {
-            results.push('');
-            results.push('--- Verification step detected ---');
-            results.push('Attempting to complete automatically...');
-            let solveResults: string[];
-            try {
-              solveResults = await Promise.race([
-                autoSolveCaptcha(p),
-                new Promise<string[]>((_, rej) => setTimeout(() => rej(new Error('auto-solve timed out (30s)')), 30000)),
-              ]);
-            } catch (e: any) {
-              solveResults = [`Auto-solve: ${e.message}`];
-            }
-            solveResults.forEach(r => results.push(`  ${r}`));
-
-            const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
-            const unconfirmed = solveResults.some(r => /unconfirmed|shows an error/i.test(r));
-            if (needsVision) {
-              results.push('');
-              results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signup-assist to continue.');
-            } else if (unconfirmed) {
-              results.push('Verification attempted but NOT confirmed — take a screenshot to check the widget passed before relying on submission.');
-            } else {
-              await p.waitForTimeout(2000);
-              results.push('Verification confirmed. Continuing form submission...');
-            }
-          }
-
           let clicked = await clickField([
             'button[type="submit"]', 'input[type="submit"]',
+            '[data-testid*="signup"]', '[data-testid*="submit"]',
             'button:has-text("Sign Up With Email")', 'button:has-text("Sign up")',
             'button:has-text("Sign Up")', 'button:has-text("sign up")',
             'button:has-text("Create Account")', 'button:has-text("create account")',
@@ -2967,7 +3653,58 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             }
           }
 
+          if (!clicked) {
+            try {
+              const btnClicked = await activeFrame.evaluate(() => {
+                const btns = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+                for (const btn of btns) {
+                  const text = (btn as HTMLElement).innerText?.toLowerCase() || (btn as HTMLInputElement).value?.toLowerCase() || '';
+                  const rect = btn.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0 && /sign\s*up|register|submit|create|continue|next/.test(text)) {
+                    (btn as HTMLElement).click();
+                    return text;
+                  }
+                }
+                return '';
+              });
+              if (btnClicked) {
+                results.push(`  ✓ Submit button: clicked via evaluate ("${btnClicked}")`);
+                clicked = true;
+              }
+            } catch {}
+          }
+
+          if (clicked) {
+            results.push('  Form submitted successfully.');
+          } else {
+            results.push('  ⚠ Could not find submit button. Take a screenshot and try clicking it manually.');
+          }
+
           await p.waitForTimeout(2000);
+
+          const postCaptcha = p.frames().some(f => {
+            const u = f.url();
+            return u.includes('/recaptcha/') && u.includes('/bframe') ||
+              u.includes('hcaptcha') && u.includes('challenge') ||
+              u.includes('funcaptcha') || u.includes('arkoselabs');
+          });
+          const hasCaptchaWidget = p.frames().some(f => {
+            const u = f.url();
+            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
+              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
+              u.includes('mtcaptcha');
+          });
+
+          if (postCaptcha) {
+            results.push('');
+            results.push('⚠ CAPTCHA CHALLENGE APPEARED after submission.');
+            results.push('→ Use action "solve-captcha" NOW to solve it automatically.');
+            results.push('→ After solving, check if the form was submitted successfully.');
+          } else if (hasCaptchaWidget) {
+            results.push('');
+            results.push('⚠ CAPTCHA widget present on page.');
+            results.push('→ Use action "solve-captcha" to complete verification, then re-click submit if needed.');
+          }
 
           results.push('');
           results.push(`--- Result ---`);

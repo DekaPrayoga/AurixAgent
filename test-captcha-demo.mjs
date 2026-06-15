@@ -8,7 +8,7 @@ const { browserTool } = await import('./dist/tools/Browser.js');
 const { webSearchTool } = await import('./dist/tools/WebSearch.js');
 const { codeExecTool } = await import('./dist/tools/CodeExec.js');
 
-const TIMEOUT_MS = 10 * 60 * 1000;
+const TIMEOUT_MS = 5 * 60 * 1000;
 
 const registry = new ToolRegistry();
 registry.register(terminalTool);
@@ -22,17 +22,18 @@ registry.register(codeExecTool);
 
 const config = loadConfig();
 const agent = new AgentLoop(config, registry);
-agent.setMaxIterations(100);
+agent.setMaxIterations(50);
 
-const task = 'First set browser proxy to 38.154.203.95:5863:ojdvcnax:ucr04pni1qj5 using action set-proxy. Then go to https://dashboard.webshare.io/register and sign up with email: testaurix2026@protonmail.com and password: AurixTest2026! and name: Test Aurix. Use signup-assist to fill the form, then solve any captchas. Complete the entire signup process.';
+const task = 'Go to https://www.google.com/recaptcha/api2/demo and solve the reCAPTCHA challenge. Click the "I\'m not a robot" checkbox first, then if an image challenge appears, use solve-captcha to solve it. After solving, click the Submit button and confirm the result.';
 
-console.log(`\n=== AURIX AGENT TEST ===`);
+console.log(`\n=== CAPTCHA DEMO TEST ===`);
 console.log(`Task: ${task}`);
 console.log(`Model: ${config.model}`);
+console.log(`Vision: ${config.visionModel || config.model}`);
 console.log(`Timeout: 5 minutes\n`);
 
 const timer = setTimeout(() => {
-  console.log('\n\n!!! TIMEOUT: Agent did not finish within 10 minutes !!!');
+  console.log('\n\n!!! TIMEOUT !!!');
   agent.interrupt();
   process.exit(1);
 }, TIMEOUT_MS);
