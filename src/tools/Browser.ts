@@ -2661,6 +2661,27 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           results.push(`Provided: ${Object.keys(data).join(', ')}`);
           results.push('');
 
+          const cookieSelectors = [
+            'button:has-text("Accept All")', 'button:has-text("Accept all")', 'button:has-text("accept all")',
+            'button:has-text("Accept")', 'button:has-text("Accept Cookies")',
+            'button:has-text("I agree")', 'button:has-text("Got it")', 'button:has-text("OK")',
+            'button:has-text("Allow All")', 'button:has-text("Allow all")',
+            '[id*="cookie"] button', '[class*="cookie"] button',
+            '[id*="consent"] button', '[class*="consent"] button',
+            '.cc-accept', '.cookie-accept', '#accept-cookies',
+          ];
+          for (const sel of cookieSelectors) {
+            try {
+              const btn = p.locator(sel).first();
+              if (await btn.count() > 0 && await btn.isVisible()) {
+                await btn.click({ timeout: 2000 });
+                results.push(`  ✓ Dismissed cookie banner: ${sel}`);
+                await p.waitForTimeout(500);
+                break;
+              }
+            } catch {}
+          }
+
           const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
           let activeFrame: any = p;
 
@@ -2668,6 +2689,42 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             const inputs = await frame.locator('input:visible, select:visible, textarea:visible').count();
             if (inputs > 0) { activeFrame = frame; break; }
           }
+
+          const hasEmailField = await activeFrame.locator('input[type="email"]:visible, input[name*="email" i]:visible, input[autocomplete="email"]:visible').count() > 0;
+          const hasPasswordField = await activeFrame.locator('input[type="password"]:visible').count() > 0;
+
+          if (!hasEmailField && !hasPasswordField) {
+            const ctaSelectors = [
+              'button:has-text("Sign Up With Email")', 'button:has-text("sign up with email")',
+              'a:has-text("Sign Up With Email")', 'a:has-text("sign up with email")',
+              'button:has-text("Sign up with email")',
+              'button:has-text("Create Account")', 'button:has-text("create account")',
+              'button:has-text("Sign Up")', 'button:has-text("sign up")',
+              'button:has-text("Register")', 'button:has-text("register")',
+              'button:has-text("Get Started")', 'button:has-text("get started")',
+              'button:has-text("Continue with Email")', 'button:has-text("continue with email")',
+              'button:has-text("Use Email")', 'button:has-text("use email")',
+              'a:has-text("Sign Up")', 'a:has-text("Register")',
+              '[data-testid*="signup"]', '[data-testid*="email"]',
+            ];
+            for (const sel of ctaSelectors) {
+              try {
+                const btn = activeFrame.locator(sel).first();
+                if (await btn.count() > 0 && await btn.isVisible()) {
+                  await btn.click({ timeout: 3000 });
+                  results.push(`  ✓ Clicked CTA: ${sel}`);
+                  await p.waitForTimeout(1500);
+                  break;
+                }
+              } catch {}
+            }
+
+            for (const frame of [p, ...p.frames().filter(f => f !== p.mainFrame())]) {
+              const inputs = await frame.locator('input:visible, select:visible, textarea:visible').count();
+              if (inputs > 0) { activeFrame = frame; break; }
+            }
+          }
+
           results.push(`Active frame: ${activeFrame === p ? 'main page' : 'iframe'} (${await activeFrame.locator('input:visible, select:visible, textarea:visible').count()} fields)`);
 
           const fillField = async (selectors: string[], val: string, label: string): Promise<boolean> => {
@@ -2681,10 +2738,10 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                     return true;
                   }
                   try {
-                    await loc.fill(val, { timeout: 3000 });
+                    await loc.fill(val, { timeout: 1500 });
                   } catch {
-                    await loc.click({ timeout: 3000 });
-                    await loc.pressSequentially(val, { delay: 30, timeout: 10000 });
+                    await loc.click({ timeout: 1500 });
+                    await loc.pressSequentially(val, { delay: 30, timeout: 5000 });
                   }
                   results.push(`  ✓ ${label}: filled`);
                   return true;
@@ -2704,7 +2761,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                     results.push(`  ✓ ${label}: already checked`);
                     return true;
                   }
-                  await loc.click({ timeout: 3000 });
+                  await loc.click({ timeout: 1500 });
                   results.push(`  ✓ ${label}: clicked`);
                   return true;
                 }
@@ -2766,114 +2823,82 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
           if (data.email) {
             await fillField([
-              'input[type="email"]',
-              'input[name*="email" i]', 'input[name*="Email"]',
-              'input[name*="username" i]', 'input[name*="MemberName"]',
-              'input[id*="email" i]', 'input[id*="username" i]',
-              'input[placeholder*="email" i]', 'input[placeholder*="Email"]',
-              'input[autocomplete="email"]', 'input[autocomplete="username"]',
-              'input[name="loginfmt"]',
+              'input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]',
+              'input[autocomplete="email"]', 'input[placeholder*="email" i]',
             ], data.email, 'Email');
           }
 
           if (data.password) {
             await fillField([
-              'input[type="password"]',
-              'input[name*="password" i]', 'input[name*="Password"]', 'input[name*="Passwd"]',
-              'input[id*="password" i]', 'input[name*="pass" i]',
-              'input[autocomplete="new-password"]', 'input[autocomplete="current-password"]',
+              'input[type="password"]', 'input[name*="password" i]', 'input[id*="password" i]',
+              'input[autocomplete="new-password"]',
             ], data.password, 'Password');
           }
 
           if (data.firstName) {
             await fillField([
-              'input[name*="firstName" i]', 'input[name*="FirstName"]', 'input[name*="fname" i]',
-              'input[id*="firstName" i]', 'input[id*="fname" i]',
-              'input[autocomplete="given-name"]',
-              'input[placeholder*="first name" i]', 'input[placeholder*="First"]',
-              'input[name="NameInput"]',
+              'input[name*="first" i]', 'input[id*="first" i]',
+              'input[autocomplete="given-name"]', 'input[placeholder*="first" i]',
             ], data.firstName, 'First name');
           }
 
           if (data.lastName) {
             await fillField([
-              'input[name*="lastName" i]', 'input[name*="LastName"]', 'input[name*="lname" i]',
-              'input[id*="lastName" i]', 'input[id*="lname" i]',
-              'input[autocomplete="family-name"]',
-              'input[placeholder*="last name" i]', 'input[placeholder*="Last"]',
-              'input[name="LastName"]',
+              'input[name*="last" i]', 'input[id*="last" i]',
+              'input[autocomplete="family-name"]', 'input[placeholder*="last" i]',
             ], data.lastName, 'Last name');
           }
 
           if (data.firstName && !data.lastName) {
             await fillField([
-              'input[name*="name" i]', 'input[id*="name" i]',
-              'input[autocomplete="name"]',
+              'input[name*="name" i]', 'input[id*="name" i]', 'input[autocomplete="name"]',
             ], data.firstName + ' User', 'Full name');
           }
 
           if (data.phone) {
             await fillField([
-              'input[type="tel"]', 'input[name*="phone" i]', 'input[name*="Phone"]',
-              'input[id*="phone" i]', 'input[autocomplete="tel"]',
-              'input[placeholder*="phone" i]',
+              'input[type="tel"]', 'input[name*="phone" i]', 'input[autocomplete="tel"]',
             ], data.phone, 'Phone');
           }
 
-          const birthYear = data.birthYear || '2003';
-          const birthMonth = data.birthMonth || 'January';
-          const birthDay = data.birthDay || '15';
+          if (data.birthYear || data.birthMonth || data.birthDay) {
+            const birthYear = data.birthYear || '2003';
+            const birthMonth = data.birthMonth || 'January';
+            const birthDay = data.birthDay || '15';
+            await selectDropdown([
+              'select[id*="year" i]', 'select[name*="year" i]',
+            ], birthYear, 'Birth year');
+            await selectDropdown([
+              'select[id*="month" i]', 'select[name*="month" i]',
+            ], birthMonth, 'Birth month');
+            await selectDropdown([
+              'select[id*="day" i]', 'select[name*="day" i]',
+            ], birthDay, 'Birth day');
+          }
 
-          await selectDropdown([
-            'select[id*="BirthYear"]', 'select[name*="birthYear" i]', 'select[id*="year" i]',
-            'select[name*="year" i]', 'select[aria-label*="year" i]', 'select[aria-label*="Birth"]',
-          ], birthYear, 'Birth year');
+          if (data.country) {
+            await selectDropdown([
+              'select[name*="country" i]', 'select[id*="country" i]',
+            ], data.country, 'Country');
+          }
 
-          await selectDropdown([
-            'select[id*="BirthMonth"]', 'select[name*="birthMonth" i]', 'select[id*="month" i]',
-            'select[name*="month" i]', 'select[aria-label*="month" i]',
-          ], birthMonth, 'Birth month');
-
-          await selectDropdown([
-            'select[id*="BirthDay"]', 'select[name*="birthDay" i]', 'select[id*="day" i]',
-            'select[name*="day" i]', 'select[aria-label*="day" i]',
-          ], birthDay, 'Birth day');
-
-          await selectDropdown([
-            'select[id*="Country"]', 'select[name*="country" i]',
-            'select[aria-label*="country" i]', 'select[name*="Country"]',
-          ], data.country || 'United States', 'Country');
-
-          await fillField([
-            'input[name*="username" i]', 'input[id*="username" i]',
-            'input[placeholder*="username" i]', 'input[name*="Username"]',
-          ], data.username || (data.email ? data.email.split('@')[0] + Math.floor(Math.random() * 999) : 'user' + Math.floor(Math.random() * 9999)), 'Username');
+          if (data.username) {
+            await fillField([
+              'input[name*="username" i]', 'input[id*="username" i]',
+            ], data.username, 'Username');
+          }
 
           await clickField([
             'input[type="checkbox"][name*="agree" i]',
-            'input[type="checkbox"][name*="tos" i]',
             'input[type="checkbox"][name*="terms" i]',
             'input[type="checkbox"][name*="consent" i]',
-            'input[type="checkbox"][name*="privacy" i]',
-            'input[type="checkbox"][name*="policy" i]',
             'input[type="checkbox"][id*="agree" i]',
             'input[type="checkbox"][id*="terms" i]',
-            'input[type="checkbox"][id*="consent" i]',
-            'input[type="checkbox"][id*="privacy" i]',
-            'input[type="checkbox"][aria-label*="agree" i]',
-            'input[type="checkbox"][aria-label*="terms" i]',
-            'input[type="checkbox"][aria-label*="consent" i]',
-            'input[type="checkbox"][aria-label*="accept" i]',
             'label:has-text("agree") input[type="checkbox"]',
             'label:has-text("terms") input[type="checkbox"]',
             'label:has-text("accept") input[type="checkbox"]',
-            'label:has-text("consent") input[type="checkbox"]',
-            'label:has-text("privacy") input[type="checkbox"]',
             'label:has-text("I agree") input[type="checkbox"]',
-            'label:has-text("I accept") input[type="checkbox"]',
             '[role="checkbox"][aria-checked="false"]',
-            'div:has-text("I agree"):not(:has(div:has-text("I agree")))',
-            'span:has-text("I agree"):not(:has(span:has-text("I agree")))',
           ], 'Terms/Agreement checkbox');
 
           await p.waitForTimeout(500);
@@ -2889,7 +2914,15 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             results.push('');
             results.push('--- Verification step detected ---');
             results.push('Attempting to complete automatically...');
-            const solveResults = await autoSolveCaptcha(p);
+            let solveResults: string[];
+            try {
+              solveResults = await Promise.race([
+                autoSolveCaptcha(p),
+                new Promise<string[]>((_, rej) => setTimeout(() => rej(new Error('auto-solve timed out (30s)')), 30000)),
+              ]);
+            } catch (e: any) {
+              solveResults = [`Auto-solve: ${e.message}`];
+            }
             solveResults.forEach(r => results.push(`  ${r}`));
 
             const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
@@ -2906,17 +2939,11 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           }
 
           const clicked = await clickField([
-            'button[type="submit"]',
-            'input[type="submit"]',
-            'button:has-text("Next")', 'button:has-text("next")',
-            'button:has-text("Continue")', 'button:has-text("continue")',
-            'button:has-text("Submit")', 'button:has-text("submit")',
-            'button:has-text("Create")', 'button:has-text("create")',
-            'button:has-text("Sign up")', 'button:has-text("sign up")',
-            'button:has-text("Register")', 'button:has-text("register")',
-            'button:has-text("Accept")', 'button:has-text("accept")',
-            '#iSignupAction', '#signup-button', '#submit-btn',
-            'button.fui-Button[type="button"]:visible',
+            'button[type="submit"]', 'input[type="submit"]',
+            'button:has-text("Sign up")', 'button:has-text("Register")',
+            'button:has-text("Next")', 'button:has-text("Continue")',
+            'button:has-text("Submit")', 'button:has-text("Create")',
+            '#signup-button', '#submit-btn',
           ], 'Submit/Next button');
 
           await p.waitForTimeout(2000);
@@ -2965,6 +2992,27 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const results: string[] = [];
           results.push('=== SIGNIN ASSIST ===');
 
+          const cookieSelectors = [
+            'button:has-text("Accept All")', 'button:has-text("Accept all")', 'button:has-text("accept all")',
+            'button:has-text("Accept")', 'button:has-text("Accept Cookies")',
+            'button:has-text("I agree")', 'button:has-text("Got it")', 'button:has-text("OK")',
+            'button:has-text("Allow All")', 'button:has-text("Allow all")',
+            '[id*="cookie"] button', '[class*="cookie"] button',
+            '[id*="consent"] button', '[class*="consent"] button',
+            '.cc-accept', '.cookie-accept', '#accept-cookies',
+          ];
+          for (const sel of cookieSelectors) {
+            try {
+              const btn = p.locator(sel).first();
+              if (await btn.count() > 0 && await btn.isVisible()) {
+                await btn.click({ timeout: 2000 });
+                results.push(`  ✓ Dismissed cookie banner: ${sel}`);
+                await p.waitForTimeout(500);
+                break;
+              }
+            } catch {}
+          }
+
           const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
           let activeFrame: any = p;
           for (const frame of allFrames) {
@@ -2984,10 +3032,10 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                     return true;
                   }
                   try {
-                    await loc.fill(val, { timeout: 3000 });
+                    await loc.fill(val, { timeout: 1500 });
                   } catch {
-                    await loc.click({ timeout: 3000 });
-                    await loc.pressSequentially(val, { delay: 30, timeout: 10000 });
+                    await loc.click({ timeout: 1500 });
+                    await loc.pressSequentially(val, { delay: 30, timeout: 5000 });
                   }
                   results.push(`  ✓ ${label}: filled`);
                   return true;
@@ -3007,7 +3055,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                     results.push(`  ✓ ${label}: already checked`);
                     return true;
                   }
-                  await loc.click({ timeout: 3000 });
+                  await loc.click({ timeout: 1500 });
                   results.push(`  ✓ ${label}: clicked`);
                   return true;
                 }
@@ -3062,7 +3110,15 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             results.push('');
             results.push('--- Verification step detected ---');
             results.push('Attempting to complete automatically...');
-            const solveResults = await autoSolveCaptcha(p);
+            let solveResults: string[];
+            try {
+              solveResults = await Promise.race([
+                autoSolveCaptcha(p),
+                new Promise<string[]>((_, rej) => setTimeout(() => rej(new Error('auto-solve timed out (30s)')), 30000)),
+              ]);
+            } catch (e: any) {
+              solveResults = [`Auto-solve: ${e.message}`];
+            }
             solveResults.forEach(r => results.push(`  ${r}`));
 
             const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
