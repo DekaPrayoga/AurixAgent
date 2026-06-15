@@ -41,9 +41,12 @@ function readFileBase64(path: string): string {
 
 async function visionClassify(imageBase64: string, prompt: string): Promise<string> {
   const config = loadConfig();
-  const model = config.model || 'gpt-4o';
+  const visionModel = config.visionModel || config.model || 'gpt-4o';
+  const visionBaseUrl = config.visionBaseUrl || config.baseUrl;
+  const visionApiKey = config.visionApiKey || config.apiKey;
+
   const body = {
-    model,
+    model: visionModel,
     messages: [{
       role: 'user',
       content: [
@@ -54,37 +57,45 @@ async function visionClassify(imageBase64: string, prompt: string): Promise<stri
     max_tokens: 100,
   };
 
-  const resp = await fetch(`${config.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const fetchTimeout = setTimeout(() => controller.abort(), 15_000);
 
-  if (!resp.ok) throw new Error(`Vision API error: ${resp.status}`);
+  try {
+    const resp = await fetch(`${visionBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(visionApiKey ? { Authorization: `Bearer ${visionApiKey}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
 
-  const text = await resp.text();
+    if (!resp.ok) throw new Error(`Vision API error: ${resp.status}`);
 
-  if (text.includes('data: ')) {
-    let content = '';
-    for (const line of text.split('\n')) {
-      if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
-        try {
-          const ev = JSON.parse(line.slice(6));
-          const delta = ev.choices?.[0]?.delta;
-          if (delta?.content) content += delta.content;
-          if (delta?.text) content += delta.text;
-          if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
-        } catch {}
+    const text = await resp.text();
+
+    if (text.includes('data: ')) {
+      let content = '';
+      for (const line of text.split('\n')) {
+        if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
+          try {
+            const ev = JSON.parse(line.slice(6));
+            const delta = ev.choices?.[0]?.delta;
+            if (delta?.content) content += delta.content;
+            if (delta?.text) content += delta.text;
+            if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
+          } catch {}
+        }
       }
+      return content.trim();
     }
-    return content.trim();
-  }
 
-  const json = JSON.parse(text);
-  return (json.choices?.[0]?.message?.content || '').trim();
+    const json = JSON.parse(text);
+    return (json.choices?.[0]?.message?.content || '').trim();
+  } finally {
+    clearTimeout(fetchTimeout);
+  }
 }
 
 async function solveCaptchaGrid(page: any, frame: any, provider: string): Promise<string> {
@@ -183,54 +194,7 @@ async function solveCaptchaGrid(page: any, frame: any, provider: string): Promis
   }
 
   if (isRecaptcha && matchedIndices.length > 0) {
-    await page.waitForTimeout(2000 + Math.random() * 1000);
-
-    const afterTiles = await findGridTiles(frame, provider);
-    const evalPromises = matchedIndices
-      .filter(idx => idx < afterTiles.length)
-      .map(async (idx) => {
-        try {
-          const tilePath = join(homedir(), `.aurix-tile-after-${idx}.png`);
-          await afterTiles[idx].screenshot({ path: tilePath });
-          const base64 = readFileBase64(tilePath);
-          const resp = await visionClassify(base64, `Does this image contain ${instruction}? Reply YES or NO only.`);
-          return { idx, match: resp.toLowerCase().includes('yes') };
-        } catch {
-          return { idx, match: false };
-        }
-      });
-
-    const evalResults = await Promise.all(evalPromises);
-    const newMatches = evalResults.filter(r => r.match);
-
-    if (newMatches.length > 0) {
-      results.push(`  Replacement tiles matched: [${newMatches.map(r => r.idx).join(', ')}]`);
-      for (const { idx } of newMatches) {
-        try {
-          const freshTiles = await findGridTiles(frame, provider);
-          if (idx >= freshTiles.length) continue;
-          const tile = freshTiles[idx];
-          const tileBox = await tile.boundingBox();
-          if (tileBox) {
-            const cx = tileBox.x + tileBox.width * (0.3 + Math.random() * 0.4);
-            const cy = tileBox.y + tileBox.height * (0.3 + Math.random() * 0.4);
-            await humanMove(cx, cy, page);
-            await page.waitForTimeout(80 + Math.random() * 120);
-            await page.mouse.down();
-            await page.waitForTimeout(60 + Math.random() * 100);
-            await page.mouse.up();
-          } else {
-            await tile.click({ force: true });
-          }
-          results.push(`  Clicked replacement tile ${idx}`);
-        } catch (e: any) {
-          results.push(`  Failed replacement tile ${idx}: ${e.message}`);
-        }
-      }
-      await page.waitForTimeout(1500 + Math.random() * 1000);
-    } else {
-      results.push('  No replacement tiles matched');
-    }
+    await page.waitForTimeout(1500 + Math.random() * 500);
   }
 
   results.push('Clicking verify...');
@@ -1608,6 +1572,9 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const p = await ensureBrowser();
           const results: string[] = [];
 
+          const _solveTimeout = 60_000;
+          const _solveLogic = async () => {
+
           const frames = p.frames();
           let captchaType = 'unknown';
 
@@ -1707,11 +1674,39 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
                     }
                   }
                 } else {
-                  results.push(warn('reCAPTCHA anchor frame found but checkbox element missing', { action: 'trying click on anchor body' }));
-                  const anchor = checkboxFrame.locator('#recaptcha-anchor');
-                  await humanClick(anchor, p).catch(() => {});
+                  results.push(warn('reCAPTCHA anchor frame found but checkbox element missing', { action: 'clicking anchor body to trigger challenge' }));
+                  const anchor = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox-area, [role="presentation"]').first();
+                  if (await anchor.count() === 0) {
+                    const body = checkboxFrame.locator('body');
+                    await humanClick(body, p).catch(() => {});
+                  } else {
+                    await humanClick(anchor, p).catch(() => {});
+                  }
                   await p.waitForTimeout(3000);
-                  results.push('Use "captcha-grid" to check for image challenge.');
+
+                  const retryFrames = p.frames();
+                  const challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                  if (challengeFrame) {
+                    results.push('Image challenge appeared after clicking anchor. Auto-solving...');
+                    const maxRetries = 3;
+                    let solved = false;
+                    for (let attempt = 0; attempt < maxRetries; attempt++) {
+                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
+                      results.push(solveResult);
+                      if (solveResult.includes('Captcha solved!')) { solved = true; break; }
+                      if (solveResult.includes('Falling back to manual mode')) break;
+                      await p.waitForTimeout(2000);
+                      const refreshedFrames = p.frames();
+                      const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
+                      if (!newChallenge) { results.push('Challenge frame disappeared, captcha may be solved'); solved = true; break; }
+                    }
+                    if (!solved && !results.some(r => r.includes('Falling back'))) {
+                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+                    }
+                  } else {
+                    results.push('No challenge appeared after clicking anchor. Use "captcha-grid" to check state.');
+                  }
                 }
               } else {
                 results.push(warn('No reCAPTCHA anchor frame found', { action: 'trying main page widget' }));
@@ -2156,6 +2151,18 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           await p.screenshot({ path: screenshotPath });
           results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
           return results.join('\n');
+          };
+
+          try {
+            return await Promise.race([
+              _solveLogic(),
+              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (60s)')), _solveTimeout)),
+            ]);
+          } catch (e: any) {
+            results.push(`\n[TIMEOUT] ${e.message}`);
+            results.push('Auto-solve did not complete. Use "captcha-grid" and "click-tile" for manual solving.');
+            return results.join('\n');
+          }
         }
 
         case 'captcha-grid': {
@@ -2938,13 +2945,27 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             }
           }
 
-          const clicked = await clickField([
+          let clicked = await clickField([
             'button[type="submit"]', 'input[type="submit"]',
-            'button:has-text("Sign up")', 'button:has-text("Register")',
+            'button:has-text("Sign Up With Email")', 'button:has-text("Sign up")',
+            'button:has-text("Sign Up")', 'button:has-text("sign up")',
+            'button:has-text("Create Account")', 'button:has-text("create account")',
+            'button:has-text("Register")', 'button:has-text("register")',
             'button:has-text("Next")', 'button:has-text("Continue")',
             'button:has-text("Submit")', 'button:has-text("Create")',
             '#signup-button', '#submit-btn',
           ], 'Submit/Next button');
+
+          if (!clicked) {
+            const submitBtn = activeFrame.locator('button').filter({ hasText: /sign\s*up|register|submit|create|continue|next/i }).first();
+            if (await submitBtn.count() > 0 && await submitBtn.isVisible()) {
+              try {
+                await submitBtn.click({ timeout: 3000 });
+                results.push('  ✓ Submit button: clicked (regex match)');
+                clicked = true;
+              } catch {}
+            }
+          }
 
           await p.waitForTimeout(2000);
 

@@ -9,6 +9,9 @@ export interface AurixConfig {
   apiKey: string;
   baseUrl?: string;
   model: string;
+  visionModel?: string;
+  visionBaseUrl?: string;
+  visionApiKey?: string;
   maxTokens?: number;
   temperature?: number;
   systemPrompt?: string;
@@ -77,6 +80,9 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     apiKey: process.env.AURIX_API_KEY || file.apiKey || '',
     baseUrl,
     model: process.env.AURIX_MODEL || file.model || 'gpt-4o',
+    visionModel: process.env.AURIX_VISION_MODEL || file.visionModel,
+    visionBaseUrl: process.env.AURIX_VISION_BASE_URL || file.visionBaseUrl,
+    visionApiKey: process.env.AURIX_VISION_API_KEY || file.visionApiKey,
     maxTokens: file.maxTokens || 4096,
     temperature: file.temperature ?? 0.7,
     systemPrompt: file.systemPrompt,

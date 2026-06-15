@@ -515,6 +515,10 @@ export class AgentLoop {
             const cmd = (args.command || args.cmd || '') as string;
             if (HEAVY_PATTERNS.test(cmd)) return HEAVY_TIMEOUT;
           }
+          if (name === 'browser') {
+            const action = (args.action || '') as string;
+            if (/^(solve-captcha|signup-assist|signin-assist)$/.test(action)) return HEAVY_TIMEOUT;
+          }
           if (name === 'research' || name === 'research_forums') return HEAVY_TIMEOUT;
           return DEFAULT_TIMEOUT;
         };
