@@ -1779,63 +1779,147 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
           }
 
           if (captchaType === 'funcaptcha') {
-            results.push('FunCaptcha (Arkose Labs) detected. Analyzing puzzle...');
+            results.push('FunCaptcha (Arkose Labs) detected. Auto-solving...');
             try {
               const fcFrame = funcaptchaFrame;
               if (fcFrame) {
                 await p.waitForTimeout(2000);
-
-                const puzzleType = await fcFrame.evaluate(() => {
-                  const body = document.body.innerHTML;
-                  if (body.includes('rotate') || body.includes('rotation')) return 'rotation';
-                  if (body.includes('pick') || body.includes('match')) return 'image-match';
-                  if (body.includes('drag') || body.includes('drop')) return 'drag-drop';
-                  if (body.includes('count') || body.includes('how many')) return 'counting';
-                  if (body.includes('dice')) return 'dice';
-                  if (body.includes('gamemode') || body.includes('game')) return 'game';
-                  return 'unknown';
-                }).catch(() => 'unknown');
 
                 const instruction = await fcFrame.evaluate(() => {
                   const h2 = document.querySelector('h2, h3, .challenge-title, #challenge-stage .title, [class*="instruction"], [class*="prompt"]');
                   return h2?.textContent?.trim() || '';
                 }).catch(() => '');
 
-                results.push(`Puzzle type: ${puzzleType}`);
                 if (instruction) results.push(`Instruction: "${instruction}"`);
 
-                const screenshotPath = join(homedir(), '.aurix-funcaptcha-puzzle.png');
-                try {
-                  await fcFrame.locator('#challenge-stage, .challenge-content, .game-content, body').first().screenshot({ path: screenshotPath });
-                } catch {
-                  await p.screenshot({ path: screenshotPath });
+                const maxAttempts = 3;
+                for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                  if (attempt > 0) results.push(`\nRetry ${attempt}/${maxAttempts - 1}...`);
+
+                  const screenshotPath = join(homedir(), '.aurix-funcaptcha-puzzle.png');
+                  try {
+                    await fcFrame.locator('#challenge-stage, .challenge-content, .game-content, body').first().screenshot({ path: screenshotPath });
+                  } catch {
+                    await p.screenshot({ path: screenshotPath });
+                  }
+
+                  try {
+                    const ssBase64 = readFileBase64(screenshotPath);
+                    const prompt = instruction
+                      ? `This is a FunCaptcha puzzle. The instruction is: "${instruction}". Analyze the image and tell me EXACTLY what to do. Reply in this format:\n- For clicking: "CLICK x,y" (pixel coordinates relative to the puzzle image)\n- For dragging: "DRAG fromX,fromY toX,toY"\n- For rotating: "ROTATE degrees" (estimated rotation angle in degrees)\n- For selecting an option: "CLICK x,y" on the correct answer\nBe precise with coordinates.`
+                      : `This is a FunCaptcha puzzle. Analyze the image and determine what action is needed to solve it. Reply in this format:\n- For clicking: "CLICK x,y"\n- For dragging: "DRAG fromX,fromY toX,toY"\n- For rotating: "ROTATE degrees"\nBe precise with coordinates.`;
+
+                    const visionResp = await visionClassify(ssBase64, prompt);
+                    results.push(`Vision model: "${visionResp}"`);
+
+                    const clickMatch = visionResp.match(/CLICK\s+([\d.]+)\s*,\s*([\d.]+)/i);
+                    const dragMatch = visionResp.match(/DRAG\s+([\d.]+)\s*,\s*([\d.]+)\s+([\d.]+)\s*,\s*([\d.]+)/i);
+                    const rotateMatch = visionResp.match(/ROTATE\s+(-?[\d.]+)/i);
+
+                    const puzzleBox = await fcFrame.locator('#challenge-stage, .challenge-content, .game-content, body').first().boundingBox().catch(() => null);
+                    const offsetX = puzzleBox?.x || 0;
+                    const offsetY = puzzleBox?.y || 0;
+
+                    if (clickMatch) {
+                      const cx = offsetX + parseFloat(clickMatch[1]);
+                      const cy = offsetY + parseFloat(clickMatch[2]);
+                      await humanMove(cx, cy, p);
+                      await p.waitForTimeout(100 + Math.random() * 150);
+                      await p.mouse.down();
+                      await p.waitForTimeout(60 + Math.random() * 80);
+                      await p.mouse.up();
+                      results.push(`Clicked at (${Math.round(cx)}, ${Math.round(cy)})`);
+                      await p.waitForTimeout(2000);
+                    } else if (dragMatch) {
+                      const fromX = offsetX + parseFloat(dragMatch[1]);
+                      const fromY = offsetY + parseFloat(dragMatch[2]);
+                      const toX = offsetX + parseFloat(dragMatch[3]);
+                      const toY = offsetY + parseFloat(dragMatch[4]);
+                      await humanMove(fromX, fromY, p);
+                      await p.waitForTimeout(150 + Math.random() * 200);
+                      await p.mouse.down();
+                      await p.waitForTimeout(200 + Math.random() * 300);
+                      const steps = 20 + Math.floor(Math.random() * 15);
+                      for (let i = 1; i <= steps; i++) {
+                        const progress = i / steps;
+                        const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                        await p.mouse.move(fromX + (toX - fromX) * eased, fromY + (toY - fromY) * eased + (Math.random() - 0.5) * 2);
+                        await p.waitForTimeout(10 + Math.random() * 15);
+                      }
+                      await p.mouse.move(toX, toY);
+                      await p.waitForTimeout(150);
+                      await p.mouse.up();
+                      results.push(`Dragged from (${Math.round(fromX)},${Math.round(fromY)}) to (${Math.round(toX)},${Math.round(toY)})`);
+                      await p.waitForTimeout(2000);
+                    } else if (rotateMatch) {
+                      const degrees = parseFloat(rotateMatch[1]);
+                      const rotator = fcFrame.locator('.rotator, [class*="rotate"], [class*="spinner"], canvas, .game-item').first();
+                      if (await rotator.count() > 0) {
+                        const rBox = await rotator.boundingBox();
+                        if (rBox) {
+                          const cx = rBox.x + rBox.width / 2;
+                          const cy = rBox.y + rBox.height / 2;
+                          const radius = rBox.width / 2;
+                          const startX = cx + radius;
+                          const startY = cy;
+                          const endAngle = (degrees * Math.PI) / 180;
+                          const endX = cx + radius * Math.cos(endAngle);
+                          const endY = cy + radius * Math.sin(endAngle);
+                          await humanMove(startX, startY, p);
+                          await p.waitForTimeout(150);
+                          await p.mouse.down();
+                          await p.waitForTimeout(200);
+                          const steps = 30;
+                          for (let i = 1; i <= steps; i++) {
+                            const angle = (endAngle * i) / steps;
+                            await p.mouse.move(cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
+                            await p.waitForTimeout(15 + Math.random() * 10);
+                          }
+                          await p.mouse.move(endX, endY);
+                          await p.waitForTimeout(150);
+                          await p.mouse.up();
+                          results.push(`Rotated ${degrees}°`);
+                          await p.waitForTimeout(2000);
+                        }
+                      } else {
+                        results.push('[WARN] No rotatable element found');
+                      }
+                    } else {
+                      results.push(`Could not parse vision model response: "${visionResp}"`);
+                      results.push('Falling back to manual mode. Read the puzzle screenshot and use click/drag-to/evaluate to solve.');
+                      break;
+                    }
+
+                    const stillChallenge = await fcFrame.locator('#challenge-stage, .challenge-content').count();
+                    const successIndicators = await fcFrame.locator('[class*="success"], [class*="correct"], [class*="verified"], .game-success').count();
+
+                    if (successIndicators > 0) {
+                      results.push('[OK] FunCaptcha solved!');
+                      break;
+                    }
+
+                    if (stillChallenge === 0) {
+                      results.push('[OK] FunCaptcha challenge dismissed — likely solved.');
+                      break;
+                    }
+
+                    if (attempt === maxAttempts - 1) {
+                      results.push(`Auto-solve exhausted after ${maxAttempts} attempts. Use click/drag-to/evaluate for manual solving.`);
+                    } else {
+                      results.push('Attempt did not solve, retrying...');
+                      await p.waitForTimeout(1500);
+                    }
+                  } catch (e: any) {
+                    results.push(`Vision model failed: ${e.message}`);
+                    results.push('Auto-solve requires a vision-capable model. Read the puzzle screenshot at .aurix-funcaptcha-puzzle.png and use click/drag-to/evaluate to solve manually.');
+                    break;
+                  }
                 }
-                results.push(`Puzzle screenshot: ${screenshotPath}`);
-
-                const interactiveEls = await fcFrame.evaluate(() => {
-                  const els: string[] = [];
-                  document.querySelectorAll('canvas, img, [class*="game"], [class*="challenge"], [class*="puzzle"], button, input[type="range"], .slider').forEach(el => {
-                    els.push(`${el.tagName.toLowerCase()}.${el.className?.toString().slice(0, 60) || ''} [${el.getAttribute('role') || ''}]`);
-                  });
-                  return els;
-                }).catch(() => []);
-
-                if (interactiveEls.length > 0) {
-                  results.push(`Interactive elements: ${interactiveEls.slice(0, 10).join(', ')}`);
-                }
-
-                results.push('');
-                results.push('To solve FunCaptcha:');
-                results.push('1. Read the puzzle screenshot to understand the challenge');
-                results.push('2. For rotation puzzles: use "drag-to" to rotate the object to the correct position');
-                results.push('3. For image match: use "click" on matching images');
-                results.push('4. For drag-drop: use "drag-to" with source and target coordinates');
-                results.push('5. Use "evaluate" with JavaScript if puzzle needs programmatic interaction');
               } else {
                 results.push(err('FunCaptcha frame not found', 'Use "detect-captcha" to scan the page first'));
               }
             } catch (e: any) {
-              results.push(err(`FunCaptcha analysis failed: ${e.message}`));
+              results.push(err(`FunCaptcha auto-solve failed: ${e.message}`));
             }
           }
 
@@ -1846,38 +1930,6 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const hasSlider = await targetFrame.locator('.geetest_slider_button, .geetest_slider, [class*="slider_button"], [class*="slider-track"]').count();
             if (hasSlider > 0) {
               results.push('Type: SLIDER puzzle');
-              results.push('The puzzle requires dragging a piece to fill a gap.');
-              results.push('');
-
-              const sliderInfo = await targetFrame.evaluate(() => {
-                const info: Record<string, any> = {};
-                const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"]');
-                if (cut) {
-                  const cutRect = cut.getBoundingClientRect();
-                  const style = window.getComputedStyle(cut);
-                  info.cut = { left: cutRect.left, width: cutRect.width, styleLeft: parseFloat(style.left) || null, transform: style.transform || null };
-                }
-                const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
-                if (bg) {
-                  const bgRect = bg.getBoundingClientRect();
-                  info.bg = { left: bgRect.left, width: bgRect.width };
-                }
-                const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"]');
-                if (piece) {
-                  const pieceRect = piece.getBoundingClientRect();
-                  info.piece = { left: pieceRect.left, width: pieceRect.width };
-                }
-                const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"]');
-                if (slider) {
-                  const sliderRect = slider.getBoundingClientRect();
-                  info.slider = { left: sliderRect.left, width: sliderRect.width };
-                }
-                const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"]');
-                if (track) {
-                  info.track = { width: track.getBoundingClientRect().width };
-                }
-                return info;
-              });
 
               const puzzleEl = targetFrame.locator('.geetest_panel, .geetest_widget, [class*="geetest_container"]').first();
               const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
@@ -1887,41 +1939,137 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               } catch { await p.screenshot({ path: screenshotPath }); }
               results.push(`Puzzle screenshot: ${screenshotPath}`);
 
-              let gapOffset: number | null = null;
-              if (sliderInfo.cut && sliderInfo.bg) {
-                if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) {
-                  gapOffset = Math.round(sliderInfo.cut.styleLeft);
-                  results.push(`Gap position (CSS left): ${gapOffset}px from puzzle left edge`);
-                } else {
-                  gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
-                  results.push(`Gap position (rect): ${gapOffset}px from puzzle left edge`);
-                }
-              }
-              if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
-                const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
-                if (match) {
-                  gapOffset = Math.round(parseFloat(match[1]));
-                  results.push(`Gap position (transform): ${gapOffset}px from puzzle left edge`);
-                }
-              }
+              const maxAttempts = 3;
+              for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                if (attempt > 0) results.push(`\nSlider retry ${attempt}/${maxAttempts - 1}...`);
 
-              if (sliderInfo.slider) results.push(`Slider handle: x=${Math.round(sliderInfo.slider.left)}, width=${Math.round(sliderInfo.slider.width)}`);
-              if (sliderInfo.track) results.push(`Track width: ${Math.round(sliderInfo.track.width)}px`);
+                const sliderInfo = await targetFrame.evaluate(() => {
+                  const info: Record<string, any> = {};
+                  const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"]');
+                  if (cut) {
+                    const cutRect = cut.getBoundingClientRect();
+                    const style = window.getComputedStyle(cut);
+                    info.cut = { left: cutRect.left, width: cutRect.width, styleLeft: parseFloat(style.left) || null, transform: style.transform || null };
+                  }
+                  const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
+                  if (bg) {
+                    const bgRect = bg.getBoundingClientRect();
+                    info.bg = { left: bgRect.left, width: bgRect.width };
+                  }
+                  const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"]');
+                  if (piece) {
+                    const pieceRect = piece.getBoundingClientRect();
+                    info.piece = { left: pieceRect.left, width: pieceRect.width };
+                  }
+                  const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"]');
+                  if (slider) {
+                    const sliderRect = slider.getBoundingClientRect();
+                    info.slider = { left: sliderRect.left, width: sliderRect.width, centerX: sliderRect.left + sliderRect.width / 2, centerY: sliderRect.top + sliderRect.height / 2 };
+                  }
+                  const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"]');
+                  if (track) info.track = { width: track.getBoundingClientRect().width };
+                  return info;
+                });
 
-              if (gapOffset !== null) {
+                let gapOffset: number | null = null;
+                if (sliderInfo.cut && sliderInfo.bg) {
+                  if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) {
+                    gapOffset = Math.round(sliderInfo.cut.styleLeft);
+                  } else {
+                    gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
+                  }
+                }
+                if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
+                  const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
+                  if (match) gapOffset = Math.round(parseFloat(match[1]));
+                }
+
+                if (gapOffset === null) {
+                  results.push('DOM gap detection failed, using vision model...');
+                  try {
+                    const ssBase64 = readFileBase64(screenshotPath);
+                    const visionResp = await visionClassify(ssBase64,
+                      'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").');
+                    const parsed = parseInt(visionResp.replace(/[^\d]/g, ''));
+                    if (!isNaN(parsed) && parsed > 10 && parsed < 500) {
+                      gapOffset = parsed;
+                      results.push(`Vision model: gap at ~${gapOffset}px`);
+                    } else {
+                      results.push(`Vision model returned: "${visionResp}" — could not parse gap position`);
+                    }
+                  } catch (e: any) {
+                    results.push(`Vision model failed: ${e.message}`);
+                  }
+                }
+
+                if (gapOffset === null) {
+                  results.push('[WARN] Could not determine gap position. Use "slider-analyze" for manual analysis, then "drag-to" to slide.');
+                  break;
+                }
+
                 const pieceHalf = Math.round((sliderInfo.piece?.width || 44) / 2);
                 const adjusted = gapOffset - pieceHalf;
-                results.push('');
-                results.push(`[OK] RECOMMENDED: drag-to target=".geetest_slider_button" value="${adjusted},0"`);
-                results.push(`(gap ${gapOffset}px - half piece ${pieceHalf}px = ${adjusted}px drag distance)`);
-              } else {
-                results.push('');
-                results.push('[WARN] Could not auto-detect gap. Look at the puzzle screenshot, find the gap/hole, and estimate the pixel offset.');
-                results.push('Then: drag-to target=".geetest_slider_button" value="<estimated_px>,0"');
+                results.push(`Gap: ${gapOffset}px, piece half: ${pieceHalf}px, drag distance: ${adjusted}px`);
+
+                if (sliderInfo.slider) {
+                  try {
+                    const startX = sliderInfo.slider.centerX;
+                    const startY = sliderInfo.slider.centerY;
+                    const endX = startX + adjusted;
+
+                    await humanMove(startX, startY, p);
+                    await p.waitForTimeout(150 + Math.random() * 250);
+                    await p.mouse.down();
+                    await p.waitForTimeout(200 + Math.random() * 300);
+
+                    const steps = 25 + Math.floor(Math.random() * 20);
+                    for (let i = 1; i <= steps; i++) {
+                      const progress = i / steps;
+                      const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                      const x = startX + adjusted * eased + (Math.random() - 0.5) * 2;
+                      const y = startY + (Math.random() - 0.5) * 2;
+                      await p.mouse.move(x, y);
+                      await p.waitForTimeout(10 + Math.random() * 20);
+                    }
+                    await p.mouse.move(endX, startY);
+                    await p.waitForTimeout(150);
+                    await p.mouse.up();
+                    await p.waitForTimeout(2000);
+
+                    results.push('Slider dragged, checking result...');
+
+                    const successEl = await targetFrame.locator('.geetest_success, .geetest_tip_success, [class*="success"], [class*="verified"]').count();
+                    if (successEl > 0) {
+                      results.push('[OK] Slider captcha solved!');
+                      break;
+                    }
+
+                    const failEl = await targetFrame.locator('.geetest_fail, .geetest_tip_fail, [class*="fail"], [class*="error"], [class*="retry"]').count();
+                    if (failEl > 0) {
+                      results.push('Slider attempt failed, retrying...');
+                      const refreshBtn = targetFrame.locator('.geetest_refresh, [class*="refresh"], [class*="retry"]').first();
+                      if (await refreshBtn.count() > 0) await refreshBtn.click().catch(() => {});
+                      await p.waitForTimeout(1500);
+                      try {
+                        if (await puzzleEl.count() > 0) await puzzleEl.screenshot({ path: screenshotPath });
+                      } catch {}
+                      continue;
+                    }
+
+                    results.push('[OK] Slider dragged — outcome unconfirmed, check page state.');
+                    break;
+                  } catch (e: any) {
+                    results.push(`Drag failed: ${e.message}`);
+                    break;
+                  }
+                } else {
+                  results.push('[WARN] Slider handle not found in DOM.');
+                  break;
+                }
               }
             } else {
               results.push('Type: IMAGE challenge');
-              const gridResult = await analyzeImageChallenge(p, targetFrame, captchaType);
+              const gridResult = await solveCaptchaGrid(p, targetFrame, captchaType);
               results.push(gridResult);
             }
           }
@@ -1933,11 +2081,32 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
               const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
               await imgCaptcha.first().screenshot({ path: screenshotPath });
               results.push(`Captcha image saved: ${screenshotPath}`);
-              results.push('Read the text from the screenshot and use "fill" to type it into the captcha input field.');
-              const input = p.locator('input[name*="captcha"], input[id*="captcha"], input[placeholder*="captcha" i], input[placeholder*="code" i]');
-              if (await input.count() > 0) {
-                const name = await input.first().getAttribute('name') || await input.first().getAttribute('id') || 'captcha input';
-                results.push(`Captcha input field found: ${name}`);
+
+              try {
+                const ssBase64 = readFileBase64(screenshotPath);
+                const visionResp = await visionClassify(ssBase64,
+                  'Read the text/numbers in this captcha image. Reply with ONLY the exact text shown, nothing else.');
+                const captchaText = visionResp.replace(/[^a-zA-Z0-9]/g, '').trim();
+
+                if (captchaText.length >= 2) {
+                  const input = p.locator('input[name*="captcha"], input[id*="captcha"], input[placeholder*="captcha" i], input[placeholder*="code" i]');
+                  if (await input.count() > 0) {
+                    await input.first().click();
+                    await input.first().fill('');
+                    for (const char of captchaText) {
+                      await input.first().type(char, { delay: 80 + Math.random() * 120 });
+                    }
+                    results.push(`[OK] Auto-filled captcha text: "${captchaText}"`);
+                  } else {
+                    results.push(`Vision model read: "${captchaText}" — but no captcha input field found. Use "fill" to type it manually.`);
+                  }
+                } else {
+                  results.push(`Vision model returned: "${visionResp}" — could not read captcha text`);
+                  results.push('Read the screenshot and use "fill" to type the captcha text manually.');
+                }
+              } catch (e: any) {
+                results.push(`Vision auto-fill failed: ${e.message}`);
+                results.push('Read the captcha screenshot and use "fill" to type it manually.');
               }
             } else {
               results.push('No recognizable captcha. Taking screenshot and scanning...');
@@ -2369,17 +2538,61 @@ The browser profile persists at ~/.aurix-browser-profile — if the user is logg
             const pieceHalfWidth = Math.round((sliderInfo.piece.width || 44) / 2);
             const adjustedOffset = gapOffset - pieceHalfWidth;
             results.push('');
-            results.push(`[OK] RECOMMENDED OFFSET: drag-to value="${adjustedOffset},0"`);
-            results.push(`(gap at ${gapOffset}px minus half piece width ${pieceHalfWidth}px = ${adjustedOffset}px)`);
+            results.push(`[OK] Gap at ${gapOffset}px, piece half ${pieceHalfWidth}px, drag distance ${adjustedOffset}px`);
+            gapOffset = adjustedOffset;
           } else if (gapOffset !== null) {
             results.push('');
-            results.push(`[OK] RECOMMENDED OFFSET: drag-to value="${gapOffset},0"`);
+            results.push(`[OK] Gap at ${gapOffset}px`);
           } else {
             results.push('');
-            results.push('[WARN] Could not auto-detect gap position from DOM.');
-            results.push('Look at the puzzle screenshot to find where the gap/hole is.');
-            results.push('Estimate the pixel distance from the LEFT edge of the puzzle to the CENTER of the gap.');
-            results.push('Then use: drag-to target=".geetest_slider_button" value="<estimated_px>,0"');
+            results.push('DOM gap detection failed, trying vision model...');
+            try {
+              const ssBase64 = readFileBase64(screenshotPath);
+              const visionResp = await visionClassify(ssBase64,
+                'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").');
+              const parsed = parseInt(visionResp.replace(/[^\d]/g, ''));
+              if (!isNaN(parsed) && parsed > 10 && parsed < 500) {
+                gapOffset = parsed;
+                results.push(`Vision model: gap at ~${gapOffset}px`);
+              } else {
+                results.push(`Vision model returned: "${visionResp}" — could not parse`);
+              }
+            } catch (e: any) {
+              results.push(`Vision model failed: ${e.message}`);
+            }
+          }
+
+          if (gapOffset !== null && sliderInfo.slider) {
+            results.push('Auto-dragging slider...');
+            try {
+              const startX = sliderInfo.slider.centerX || (sliderInfo.slider.left + sliderInfo.slider.width / 2);
+              const startY = sliderInfo.slider.centerY || (sliderInfo.slider.top + sliderInfo.slider.height / 2);
+              const endX = startX + gapOffset;
+
+              await humanMove(startX, startY, p);
+              await p.waitForTimeout(150 + Math.random() * 250);
+              await p.mouse.down();
+              await p.waitForTimeout(200 + Math.random() * 300);
+
+              const steps = 25 + Math.floor(Math.random() * 20);
+              for (let i = 1; i <= steps; i++) {
+                const progress = i / steps;
+                const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                const x = startX + gapOffset * eased + (Math.random() - 0.5) * 2;
+                const y = startY + (Math.random() - 0.5) * 2;
+                await p.mouse.move(x, y);
+                await p.waitForTimeout(10 + Math.random() * 20);
+              }
+              await p.mouse.move(endX, startY);
+              await p.waitForTimeout(150);
+              await p.mouse.up();
+              await p.waitForTimeout(2000);
+              results.push('[OK] Slider auto-dragged. Check page state to confirm.');
+            } catch (e: any) {
+              results.push(`Auto-drag failed: ${e.message}. Use: drag-to target=".geetest_slider_button" value="${gapOffset},0"`);
+            }
+          } else if (gapOffset === null) {
+            results.push('Could not determine gap position. Use "drag-to" manually with estimated offset.');
           }
 
           if (sliderInfo.allGeeTestClasses?.length > 0) {
