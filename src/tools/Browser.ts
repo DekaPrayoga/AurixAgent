@@ -214,7 +214,7 @@ async function ensureBrowser(): Promise<Page> {
   const netDownlink = randomPick([1.5, 3.2, 5.8, 10, 25]);
   const netRtt = randomPick([50, 100, 150, 200, 250]);
 
-  const activeProxy = browserProxy || pickRandomProxy();
+  const activeProxy = browserProxy || '';
   const geo = await resolveGeoForProxy(activeProxy);
 
   const launchOpts: Record<string, any> = {
@@ -636,7 +636,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             } catch {}
           }
           if (p.url() === 'about:blank') {
-            const activeProxy = browserProxy || pickRandomProxy();
+            const activeProxy = browserProxy || '';
             const hints = [
               `Proxy: ${activeProxy || 'none'}`,
               `Target: ${fullUrl}`,
