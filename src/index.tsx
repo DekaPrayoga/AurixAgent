@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import React from 'react';
+import chalk from 'chalk';
 import { createRoot } from '@opentui/react';
 import { createCliRenderer } from '@opentui/core';
 import { App } from './cli/App.js';
@@ -11,6 +12,8 @@ import { terminalTool } from './tools/Terminal.js';
 import { readFileTool, writeFileTool, searchFilesTool } from './tools/FileOps.js';
 import { fileEditTool } from './tools/FileEdit.js';
 import { mcpManageTool } from './tools/McpManage.js';
+import { mcpManager } from './mcp/McpRegistry.js';
+import { registerMcpTools } from './mcp/McpToolAdapter.js';
 import { githubTools } from './tools/GithubConnect.js';
 import { systemMonitorTool } from './tools/SystemMonitor.js';
 import { browserTool } from './tools/Browser.js';
@@ -185,6 +188,12 @@ async function main() {
     return;
   }
 
+  // Non-blocking update check — fetches latest version from npm registry,
+  // caches the result for 24h. Prints a banner if newer version exists.
+  const updateCheckPromise = import('./utils/UpdateCheck.js')
+    .then(m => m.checkForUpdate())
+    .catch(() => {});
+
   // Mouse handling is done by OpenTUI internally
   const isSetup = args[0] === 'setup' || args.includes('--setup');
   const isContinue = args.includes('--continue');
@@ -208,6 +217,16 @@ async function main() {
   const registry = createRegistry(config.features);
   registry.register(createSpawnAgentTool(config, registry));
 
+  await mcpManager.startAll();
+  const mcpToolCount = await registerMcpTools((tool) => registry.register(tool));
+  if (mcpToolCount > 0) {
+    process.stderr.write(`  MCP: ${mcpToolCount} tools registered from ${mcpManager.getAllClients().size} server(s)\n`);
+  }
+
+  // Let the update check finish before we enter the alt-screen renderer.
+  // If the user is on an old version, they'll see the banner here.
+  await updateCheckPromise;
+
   // Background memory consolidation every 10 minutes
   const { MemoryEngine } = await import('./agent/MemoryEngine.js');
   const bgMemory = new MemoryEngine();
@@ -218,15 +237,90 @@ async function main() {
   process.on('exit', () => {
     clearInterval(consolidateTimer);
     try { bgMemory.consolidate(); } catch {}
+    try { mcpManager.stopAll(); } catch {}
   });
 
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: false,
-    useMouse: true,
-  });
+  let renderer;
+  try {
+    renderer = await createCliRenderer({
+      exitOnCtrlC: false,
+      useMouse: true,
+    });
+  } catch (err: any) {
+    clearInterval(consolidateTimer);
+    const { drawBox, drawWarning, drawInfo } = await import('./cli/SetupUI.js');
+    const platformPkg = process.platform === 'win32'
+      ? (process.arch === 'arm64' ? '@opentui/core-win32-arm64' : '@opentui/core-win32-x64')
+      : process.platform === 'darwin'
+        ? (process.arch === 'arm64' ? '@opentui/core-darwin-arm64' : '@opentui/core-darwin-x64')
+        : (process.arch === 'arm64' ? '@opentui/core-linux-arm64' : '@opentui/core-linux-x64');
+    let hasNativePkg = false;
+    try {
+      const resolved = import.meta.resolve(platformPkg);
+      hasNativePkg = !!resolved;
+    } catch {}
+    console.clear();
+    console.log();
+    drawWarning('OpenTUI renderer failed to initialize.');
+    drawInfo(`Platform: ${process.platform}-${process.arch}  Node: ${process.version}`);
+    drawInfo(`Native pkg (${platformPkg}): ${hasNativePkg ? 'installed' : 'MISSING'}`);
+    console.log();
+    if (err?.message) {
+      drawBox([
+        chalk.hex('#808080')('Error: ' + err.message),
+      ], 72);
+      console.log();
+    }
+    const lines: string[] = [
+      chalk.hex('#fab283').bold('AURIX Agent — renderer bootstrap failed'),
+      '',
+      chalk.hex('#eeeeee')('OpenTUI supports Linux, macOS, and Windows. The failure above'),
+      chalk.hex('#eeeeee')('is usually one of these:'),
+      '',
+      chalk.hex('#9d7cd8').bold('1. Native binary not installed'),
+      chalk.hex('#eeeeee')('   The per-platform package is an optionalDependency. If npm'),
+      chalk.hex('#eeeeee')('   skipped it (network glitch, --omit=optional, pnpm strict),'),
+      chalk.hex('#eeeeee')('   re-run a clean install:'),
+      chalk.hex('#7fd88f')('     rm -rf node_modules package-lock.json && npm install'),
+      '',
+      chalk.hex('#9d7cd8').bold('2. Node needs --experimental-ffi'),
+      chalk.hex('#eeeeee')('   bin/aurix.js injects this automatically. If you started'),
+      chalk.hex('#eeeeee')('   via `node dist/index.js` directly, use:'),
+      chalk.hex('#7fd88f')('     node --experimental-ffi dist/index.js'),
+      '',
+      chalk.hex('#9d7cd8').bold('3. Wrong arch (Windows on ARM / Apple Silicon Rosetta)'),
+      chalk.hex('#eeeeee')('   Run `node -p "process.arch"` — should match your CPU.'),
+      '',
+      chalk.hex('#9d7cd8').bold('4. Windows: missing VC++ runtime'),
+      chalk.hex('#eeeeee')('   Install the VC++ Redist from:'),
+      chalk.hex('#7fd88f')('     https://aka.ms/vs/17/release/vc_redist.x64.exe'),
+      '',
+      chalk.hex('#808080')('Setup completed successfully — config is saved.'),
+      chalk.hex('#808080')('`aurix gateway` still works even when the TUI fails.'),
+    ];
+    drawBox(lines, 72);
+    console.log();
+    process.exit(1);
+  }
 
   createRoot(renderer).render(
-    React.createElement(App, { config, registry, resumeId })
+    React.createElement(App, {
+      config,
+      registry,
+      resumeId,
+      onMcpManage: async () => {
+        renderer.destroy();
+        const { openMcpManager } = await import('./cli/McpManager.js');
+        await openMcpManager();
+        const newRenderer = await createCliRenderer({
+          exitOnCtrlC: false,
+          useMouse: true,
+        });
+        createRoot(newRenderer).render(
+          React.createElement(App, { config, registry, resumeId })
+        );
+      },
+    })
   );
 }
 

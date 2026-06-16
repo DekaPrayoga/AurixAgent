@@ -205,7 +205,10 @@ async function ensureBrowser(): Promise<Page> {
     headless: browserHeadless,
     humanize: true,
     humanPreset: 'careful',
-    stealthArgs: true,
+    // cloakbrowser's default stealthArgs inject --no-sandbox, which is
+    // invalid on Windows Chromium and causes silent navigation failures
+    // (page stays at about:blank). We pass our own args explicitly below.
+    stealthArgs: process.platform !== 'win32',
     colorScheme: 'light',
     viewport: vp,
     userAgent: ua,
@@ -214,30 +217,36 @@ async function ensureBrowser(): Promise<Page> {
       geolocation: { latitude: geo.latitude, longitude: geo.longitude },
       permissions: ['geolocation'],
     },
-    args: [
-      '--disable-webrtc',
-      '--disable-rtc-sdp-logs',
-      '--disable-background-networking',
-      '--disable-client-side-phishing-detection',
-      '--disable-default-apps',
-      '--disable-component-update',
-      '--disable-domain-reliability',
-      '--disable-features=WebRtcHideLocalIpsWithMdns,TranslateUI',
-      '--disable-blink-features=AutomationControlled',
-      '--no-first-run',
-      '--no-default-browser-check',
-      `--window-size=${vp.width},${vp.height}`,
-      `--fingerprint=${Math.floor(Math.random() * 999999)}`,
-      '--fingerprint-platform=windows',
-      `--fingerprint-hardware-concurrency=${hwConcurrency}`,
-      `--fingerprint-device-memory=${devMemory}`,
-      `--fingerprint-screen-width=${screenW}`,
-      `--fingerprint-screen-height=${screenH}`,
-      `--fingerprint-timezone=${geo.timezone}`,
-      '--fingerprint-locale=en-US',
-      '--fingerprint-brand=Chrome',
-      '--fingerprint-webrtc-ip=auto',
-    ],
+    args: (() => {
+      const base = [
+        '--disable-webrtc',
+        '--disable-rtc-sdp-logs',
+        '--disable-background-networking',
+        '--disable-client-side-phishing-detection',
+        '--disable-default-apps',
+        '--disable-component-update',
+        '--disable-domain-reliability',
+        '--disable-features=WebRtcHideLocalIpsWithMdns,TranslateUI',
+        '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+        `--window-size=${vp.width},${vp.height}`,
+        `--fingerprint=${Math.floor(Math.random() * 999999)}`,
+        '--fingerprint-platform=windows',
+        `--fingerprint-hardware-concurrency=${hwConcurrency}`,
+        `--fingerprint-device-memory=${devMemory}`,
+        `--fingerprint-screen-width=${screenW}`,
+        `--fingerprint-screen-height=${screenH}`,
+        `--fingerprint-timezone=${geo.timezone}`,
+        '--fingerprint-locale=en-US',
+        '--fingerprint-brand=Chrome',
+        '--fingerprint-webrtc-ip=auto',
+      ];
+      if (process.platform === 'win32') {
+        return base.filter(a => !a.startsWith('--no-sandbox') && !a.startsWith('--disable-setuid-sandbox'));
+      }
+      return base;
+    })(),
   };
 
   const parts = activeProxy.split(':');
@@ -590,6 +599,31 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           if (!url) return 'Error: navigate requires a URL (use value or target parameter)';
           const fullUrl = url.startsWith('http') ? url : `https://${url}`;
           await p.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout });
+
+          if (p.url() === 'about:blank') {
+            try {
+              await p.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 2 });
+            } catch {}
+          }
+          if (p.url() === 'about:blank') {
+            try {
+              await p.goto(fullUrl, { waitUntil: 'networkidle', timeout: timeout * 3 });
+            } catch {}
+          }
+          if (p.url() === 'about:blank') {
+            const activeProxy = browserProxy || pickRandomProxy();
+            const hints = [
+              `Proxy: ${activeProxy || 'none'}`,
+              `Target: ${fullUrl}`,
+              `Platform: ${process.platform}`,
+            ];
+            if (process.platform === 'win32') {
+              hints.push('Hint: run "npm rebuild cloakbrowser" to re-download the Chromium binary');
+            }
+            return err(`Navigation failed — page stayed at about:blank after 3 attempts`,
+              `Possible causes:\n  1. cloakbrowser binary not installed (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}`);
+          }
+
           const title = await p.title();
           return `Navigated to: ${p.url()}\nTitle: ${title}`;
         }
@@ -972,7 +1006,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const p = await ensureBrowser();
           const results: string[] = [];
 
-          const _solveTimeout = 180_000;
+          const _solveTimeout = 120_000;
           const _solveLogic = async () => {
 
           const frames = p.frames();
@@ -1581,7 +1615,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           try {
             return await Promise.race([
               _solveLogic(),
-              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (180s)')), _solveTimeout)),
+              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (120s)')), _solveTimeout)),
             ]);
           } catch (e: any) {
             results.push(`\n[TIMEOUT] ${e.message}`);
@@ -1698,7 +1732,14 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
               const tile = initialTiles[tileIndex];
               const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
-              await tile.click({ force: true, timeout: 3000 });
+              try {
+                await challengeFrame.evaluate((idx: number) => {
+                  const tds = document.querySelectorAll('table td');
+                  if (tds[idx]) (tds[idx] as HTMLElement).click();
+                }, tileIndex);
+              } catch {
+                await tile.click({ force: true, timeout: 3000 });
+              }
               await p.waitForTimeout(300 + Math.random() * 300);
 
               const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
@@ -1775,7 +1816,14 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               return err('No verify button found', 'Use "captcha-grid" to analyze the challenge first');
             }
 
-            await humanClick(verifyBtn, p);
+            try {
+              await challengeFrame.evaluate(() => {
+                const btn = document.querySelector('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]') as HTMLElement;
+                if (btn) btn.click();
+              });
+            } catch {
+              await humanClick(verifyBtn, p);
+            }
             await p.waitForTimeout(3000);
 
             const screenshotPath = join(homedir(), '.aurix-captcha-verify-result.png');
@@ -1789,7 +1837,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               const results: string[] = [];
               results.push(`Verification failed: "${errorMsg}". Auto-retrying...`);
 
-              const maxRetries = 2;
+              const maxRetries = 3;
               for (let attempt = 0; attempt < maxRetries; attempt++) {
                 results.push(`\nRetry ${attempt + 1}/${maxRetries}...`);
                 await p.waitForTimeout(2000);
@@ -1828,7 +1876,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               const results: string[] = [];
               results.push(`New challenge appeared: "${instruction}". Auto-solving...`);
 
-              const maxRetries = 2;
+              const maxRetries = 3;
               for (let attempt = 0; attempt < maxRetries; attempt++) {
                 if (attempt > 0) results.push(`\nRetry ${attempt}/${maxRetries - 1}...`);
                 const currentFrames = p.frames();

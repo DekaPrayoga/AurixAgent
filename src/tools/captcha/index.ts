@@ -4,6 +4,7 @@ export {
   analyzeTileCrops,
   loadCaptchaTraining,
   saveCaptchaTraining,
+  getTrainingHint,
   findGridTiles,
   humanClick,
   humanMove,
@@ -11,6 +12,8 @@ export {
   warmupBehavior,
   bezierPoint,
   easeInOut,
+  capthaiSolve,
+  saveCapthaiTraining,
 } from './common.js';
 export type { CaptchaTrainingExample } from './common.js';
 export { solveCaptchaGrid } from './RecaptchaSolver.js';

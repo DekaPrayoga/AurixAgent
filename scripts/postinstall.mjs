@@ -1,63 +1,86 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+// Runs automatically after `npm install` (postinstall hook).
+// Fixes the two things that commonly break aurix on Windows:
+//   1. @opentui/core-win32-x64 optional dependency sometimes gets skipped
+//      (network glitch, --omit=optional, pnpm strict).
+//   2. Bun runtime (preferred over Node because it has built-in FFI,
+//      no --experimental-ffi flag needed).
+// Safe to re-run; idempotent and skips when already satisfied.
+
+import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync, execSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = join(__dirname, '..');
 
-console.log('\n╔═══════════════════════════════════════════════════════════╗');
-console.log('║          Aurix Agent - Post-install Setup                 ║');
-console.log('╚═══════════════════════════════════════════════════════════╝\n');
+function log(msg) { console.log(`[aurix postinstall] ${msg}`); }
+function run(cmd, args, opts = {}) {
+  return spawnSync(cmd, args, { stdio: 'inherit', ...opts }).status === 0;
+}
 
-const results = [];
+// ─── 1. Ensure native OpenTUI binary is installed (Windows only) ───────────
+if (process.platform === 'win32') {
+  const pkgName = process.arch === 'arm64'
+    ? '@opentui/core-win32-arm64'
+    : '@opentui/core-win32-x64';
+  const expected = join(projectRoot, 'node_modules', '@opentui', pkgName.replace('@opentui/', ''));
 
-try {
-  console.log('[1/2] Patching react-reconciler for ESM compatibility...');
-  const pkgPath = join(__dirname, '..', 'node_modules', 'react-reconciler', 'package.json');
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-  if (!pkg.exports) {
-    pkg.exports = {
-      '.': './index.js',
-      './constants': './constants.js',
-      './reflection': './reflection.js',
-      './package.json': './package.json',
-    };
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
-    console.log('  ✓ React-reconciler patched\n');
-    results.push(['React-reconciler patch', 'success']);
+  if (existsSync(expected)) {
+    log(`✓ ${pkgName} already installed`);
   } else {
-    console.log('  ✓ Already patched\n');
-    results.push(['React-reconciler patch', 'skipped']);
+    log(`⚠ ${pkgName} missing — installing (this optionalDependency is sometimes skipped by npm)`);
+    // shell:true needed on Windows so `npm` resolves through npm.cmd
+    const ok = run('npm', [
+      'install', '--no-save', '--no-audit', '--no-fund', `${pkgName}@0.4.1`,
+    ], { cwd: projectRoot, shell: true });
+    if (!ok) log(`⚠ failed to install ${pkgName} — TUI may fail to start`);
+    else log(`✓ ${pkgName} installed`);
   }
-} catch (e) {
-  console.warn('  ⚠ Could not patch react-reconciler:', e.message, '\n');
-  results.push(['React-reconciler patch', 'failed']);
 }
 
+// ─── 2. Hint about Bun (don't auto-install on Windows — UAC prompt) ───────
 try {
-  console.log('[2/2] Downloading CloakBrowser stealth Chromium binary...');
-  console.log('  (This may take 1-2 minutes on first install)');
-  const { ensureBinary } = await import('cloakbrowser');
-  const binaryPath = await ensureBinary();
-  console.log('  ✓ CloakBrowser binary ready:', binaryPath, '\n');
-  results.push(['CloakBrowser binary', 'success']);
-} catch (e) {
-  console.warn('  ⚠ CloakBrowser binary download skipped:', e.message);
-  console.warn('    Browser automation features will not be available.');
-  console.warn('    To fix: ensure internet access and run "npm install" again.\n');
-  results.push(['CloakBrowser binary', 'failed']);
+  execSync('bun --version', { stdio: 'ignore' });
+  log('✓ Bun already installed');
+} catch {
+  if (process.platform === 'win32') {
+    log('');
+    log('⚠ Bun not found. Bun is RECOMMENDED on Windows because it has');
+    log('  built-in FFI (no --experimental-ffi flag needed).');
+    log('');
+    log('  To install, run in PowerShell:');
+    log('    powershell -c "irm bun.sh/install.ps1 | iex"');
+    log('');
+    log('  Skipping auto-install to avoid UAC prompts in non-interactive mode.');
+  } else {
+    log('Installing Bun...');
+    if (run('bash', ['-c', 'curl -fsSL https://bun.sh/install | bash'])) {
+      log('✓ Bun installed');
+    } else {
+      log('⚠ Bun install failed — aurix will fall back to Node');
+    }
+  }
 }
 
-console.log('╔═══════════════════════════════════════════════════════════╗');
-console.log('║                    Installation Summary                   ║');
-console.log('╚═══════════════════════════════════════════════════════════╝');
-
-for (const [name, status] of results) {
-  const icon = status === 'success' ? '✓' : status === 'skipped' ? '⊘' : '⚠';
-  console.log(`  ${icon} ${name}: ${status}`);
+// ─── 3. Node FFI probe (informative) ──────────────────────────────────────
+try {
+  execSync(`"${process.execPath}" -e "require(\\"node:ffi\\")"`, { stdio: 'ignore' });
+  log('✓ node:ffi available without flag');
+} catch {
+  let flagWorks = false;
+  try {
+    execSync(`"${process.execPath}" --experimental-ffi -e "0"`, { stdio: 'ignore' });
+    flagWorks = true;
+  } catch {}
+  if (flagWorks) {
+    log('ℹ node:ffi requires --experimental-ffi (launcher injects it automatically)');
+  } else {
+    log('⚠ node:ffi not available on this Node build.');
+    log('  Install Bun (recommended) or use official Node from nodejs.org.');
+  }
 }
 
-console.log('\n╔═══════════════════════════════════════════════════════════╗');
-console.log('║  Setup complete! Run "aurix" to start the agent.          ║');
-console.log('║  For issues: https://github.com/DekaPrayoga/AurixAgent    ║');
-console.log('╚═══════════════════════════════════════════════════════════╝\n');
+log('');
+log('✓ postinstall complete. Run `aurix` to start.');

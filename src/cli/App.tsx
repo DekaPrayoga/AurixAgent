@@ -23,6 +23,7 @@ import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
 import { logoLines } from '../utils/ascii-logo.js';
+import { mcpManager } from '../mcp/McpRegistry.js';
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 type ResearchDepth = typeof VALID_DEPTHS[number];
@@ -31,9 +32,10 @@ interface AppProps {
   config: AurixConfig;
   registry: ToolRegistry;
   resumeId?: string;
+  onMcpManage?: () => Promise<void>;
 }
 
-export function App({ config, registry, resumeId }: AppProps) {
+export function App({ config, registry, resumeId, onMcpManage }: AppProps) {
   const renderer = useRenderer();
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -517,6 +519,13 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         return;
       }
 
+      if (commandName === 'gui') {
+        const mode = slash.args?.trim() || 'on';
+        const result = await registry.execute('browser', { action: 'set-ui', value: mode });
+        addAssistant(result);
+        return;
+      }
+
       if (commandName === 'skill') {
         const { setSkillLimit, getSkillCounts, getSkillLimit } = await import('../tools/SkillLoader.js');
         const arg = slash.args?.trim() || '';
@@ -911,7 +920,12 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         addAssistant('.env variables reloaded.');
         return;
       } else if (commandName === 'reload-mcp') {
-        addAssistant('MCP servers reloaded from config.');
+        await mcpManager.stopAll();
+        await mcpManager.startAll();
+        const status = mcpManager.getStatus();
+        const running = status.filter(s => s.running).length;
+        const tools = mcpManager.getToolCount();
+        addAssistant(`MCP servers reloaded: ${running} running, ${tools} tools registered.`);
         return;
       } else if (commandName === 'reload-skills') {
         addAssistant('Skills directory re-scanned.');
@@ -1179,7 +1193,25 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       } else if (commandName === 'diff') {
         outboundText = 'Inspect the current git diff and summarize what changed, risks, and recommended next checks.';
       } else if (commandName === 'mcp') {
-        addAssistant('MCP bridge is not connected yet in this AURIX build. Plugin/MCP sources are tracked under ~/.aurix/plugins and can be registered with /plugin install <source>.');
+        if (onMcpManage) {
+          await onMcpManage();
+        } else {
+          const status = mcpManager.getStatus();
+          const total = status.length;
+          const running = status.filter(s => s.running).length;
+          const tools = mcpManager.getToolCount();
+          if (total === 0) {
+            addAssistant('No MCP servers configured.\nUse /mcp to open the MCP manager and add servers.');
+          } else {
+            const lines = status.map(s => {
+              const icon = s.running ? '●' : '○';
+              const state = s.running ? 'running' : s.enabled ? 'stopped' : 'disabled';
+              const toolInfo = s.toolCount > 0 ? ` (${s.toolCount} tools)` : '';
+              return `  ${icon} ${s.name}: ${state}${toolInfo}`;
+            });
+            addAssistant(`MCP Servers: ${total} configured, ${running} running, ${tools} tools\n\n${lines.join('\n')}`);
+          }
+        }
         return;
       } else if (commandName.startsWith('tool:')) {
         const toolName = commandName.slice(5);

@@ -71,6 +71,10 @@ function trimToTokenBudget(text: string, maxTokens: number): string {
 export class MemoryEngine {
   constructor(private provider?: Provider) {}
 
+  setProvider(p: Provider | undefined): void {
+    this.provider = p;
+  }
+
   loadSummary(): string {
     ensureDirs();
     if (!fs.existsSync(SUMMARY_FILE)) return '';
@@ -95,6 +99,65 @@ export class MemoryEngine {
       existing = fs.readFileSync(RAW_FILE, 'utf-8');
     }
     fs.writeFileSync(RAW_FILE, existing + entry);
+  }
+
+  // Enrich a raw user utterance into a context-dense memory sentence before
+  // saving. Makes recalled memories self-contained — the agent can understand
+  // them later without the original conversation context.
+  //
+  // Example:
+  //   in:  "kenapa pupuk ga boleh kebanyakan"
+  //   out: "Mengapa pupuk sintetis/organik yang digunakan manusia dalam
+  //         perkebunan dan persawahan tidak boleh digunakan secara berlebihan
+  //         dalam dosis maupun frekuensi, meskipun efek awalnya sangat bagus
+  //         bagi hasil panen manusia — termasuk dampak terhadap tanah, air,
+  //         ekosistem, dan kesehatan konsumen."
+  async rephraseForMemory(rawInput: string): Promise<string> {
+    if (!rawInput || rawInput.length < 4) return rawInput;
+    if (!this.provider) return rawInput;
+
+    try {
+      const systemMsg: Message = {
+        role: 'system',
+        content: `You are a memory-enrichment assistant for a persistent AI agent memory system.
+
+Your job: rewrite the user's input into ONE context-dense, self-contained sentence (or two at most) that the agent can recall months later and still fully understand WITHOUT the original conversation.
+
+Rules:
+1. Preserve the user's core question/statement/fact — don't invent unrelated content.
+2. ADD implicit context the user probably meant:
+   - Domain (agriculture, programming, finance, health, etc.)
+   - Scope (what specific thing/person/system they're referring to)
+   - Conditions / caveats they hinted at but didn't spell out
+   - "Why" framing if they asked a causal question
+3. Use the SAME LANGUAGE as the user's input (Indonesian input → Indonesian output, English → English, etc.).
+4. Keep it factual and concrete. No filler ("In today's world...", "It is important to note...").
+5. Length target: 2-5x the original. If the input is already context-rich, just lightly expand.
+6. Output ONLY the rewritten text — no quotes, no markdown, no preamble.
+
+Examples:
+  Input:  "kenapa pupuk ga boleh kebanyakan"
+  Output: Mengapa pupuk sintetis dan organik yang digunakan dalam perkebunan serta persawahan tidak boleh diaplikasikan secara berlebihan dalam dosis maupun frekuensi, meskipun efek awalnya meningkatkan hasil panen — termasuk dampaknya terhadap kesuburan tanah, pencemaran air, ekosistem, dan kesehatan konsumen.
+
+  Input:  "fix bug login"
+  Output: Perbaikan bug pada alur login aplikasi (kemungkinan di endpoint /auth/login atau komponen LoginForm) — identifikasi root cause (error handling, validasi input, atau session management) dan terapkan fix yang tidak menimbulkan regresi di fitur terkait.
+
+  Input:  "gw suka react"
+  Output: Preferensi user: lebih suka menggunakan React sebagai frontend library dibanding framework alternatif (Vue, Svelte, Angular) untuk project-project yang dikerjakan.`,
+      };
+      const userMsg: Message = { role: 'user', content: rawInput };
+
+      const response = await this.provider.chat([systemMsg, userMsg]);
+
+      const text = (response.text || '').trim();
+      // Reject if the LLM echoed the input verbatim or added preamble quotes.
+      if (!text || text.length < rawInput.length * 0.8) return rawInput;
+      if (text.startsWith('"') && text.endsWith('"')) return text.slice(1, -1);
+      if (text.startsWith("'") && text.endsWith("'")) return text.slice(1, -1);
+      return text;
+    } catch {
+      return rawInput;
+    }
   }
 
   saveSession(messages: Message[], sessionId?: string): string {

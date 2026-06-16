@@ -1,6 +1,6 @@
 {
   "name": "aurix-ai",
-  "version": "2.7.3",
+  "version": "2.9.5",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
@@ -41,6 +41,7 @@
     "bin/",
     "dist/",
     "scripts/",
+    "training/",
     "README.md"
   ],
   "scripts": {

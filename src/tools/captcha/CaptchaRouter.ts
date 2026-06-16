@@ -1,7 +1,7 @@
 import { type Page } from 'playwright-core';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, unlinkSync } from 'fs';
+import { readdirSync, unlinkSync, readFileSync, writeFileSync } from 'fs';
 import { findGridTiles, humanClick, warmupBehavior } from './common.js';
 import { solveCaptchaGrid } from './RecaptchaSolver.js';
 
@@ -198,22 +198,119 @@ export async function analyzeImageChallenge(page: any, frame: any, provider: str
     if (await gridEl.count() > 0) {
       await gridEl.screenshot({ path: screenshotPath });
     } else {
-      await frame.locator('body').screenshot({ path: screenshotPath });
+      await frame.locator('html').screenshot({ path: screenshotPath });
+    }
+    const buf = readFileSync(screenshotPath);
+    if (buf.length < 2000) {
+      try { await page.screenshot({ path: screenshotPath }); } catch {}
     }
   } catch {
-    try {
-      await page.screenshot({ path: screenshotPath });
-    } catch {}
+    try { await page.screenshot({ path: screenshotPath }); } catch {}
   }
   results.push(`Grid screenshot: ${screenshotPath}`);
 
-  for (let i = 0; i < tiles.length; i++) {
-    const tilePath = join(homedir(), `.aurix-tile-${i}.png`);
-    try {
-      await tiles[i].screenshot({ path: tilePath });
-      results.push(`  Tile ${i}: ${tilePath}`);
-    } catch {
-      results.push(`  Tile ${i}: (screenshot failed)`);
+  try {
+    const tileDataUrls = await frame.evaluate(async (count: number) => {
+      const tables = document.querySelectorAll('table');
+      let cells: Element[] = [];
+      for (const table of tables) {
+        const tds = Array.from(table.querySelectorAll('td'));
+        if (tds.length >= count) { cells = tds; break; }
+        if (tds.length >= 4 && tds.length > cells.length) cells = tds;
+      }
+      if (cells.length === 0) return [];
+      const firstImg = cells[0].querySelector('img') as HTMLImageElement | null;
+      const isSprite = firstImg && firstImg.naturalWidth > 0 &&
+        cells.every(c => {
+          const img = c.querySelector('img') as HTMLImageElement | null;
+          return img && img.src === firstImg.src;
+        });
+      const cols = cells.length <= 9 ? 3 : 4;
+      const results: string[] = [];
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i];
+        const img = cell.querySelector('img') as HTMLImageElement | null;
+        if (img && img.complete && img.naturalWidth > 0) {
+          if (isSprite) {
+            try {
+              const cs = getComputedStyle(img);
+              const wrapper = cell.querySelector('.rc-image-tile-wrapper') as HTMLElement;
+              const wcs = wrapper ? getComputedStyle(wrapper) : null;
+              const wW = wrapper ? parseInt(wcs!.width) || 95 : 95;
+              const wH = wrapper ? parseInt(wcs!.height) || 95 : 95;
+              let imgLeft = parseInt(cs.left) || 0;
+              let imgTop = parseInt(cs.top) || 0;
+              const imgML = parseInt(cs.marginLeft) || 0;
+              const imgMT = parseInt(cs.marginTop) || 0;
+              const transform = cs.transform;
+              let tx = 0, ty = 0;
+              if (transform && transform !== 'none') {
+                const m = transform.match(/matrix\(([^)]+)\)/);
+                if (m) { const v = m[1].split(',').map(Number); tx = v[4] || 0; ty = v[5] || 0; }
+              }
+              const offX = imgLeft + imgML + tx;
+              const offY = imgTop + imgMT + ty;
+              const scale = img.naturalWidth / (parseInt(cs.width) || img.offsetWidth || wW);
+              const sx = Math.max(0, -offX * scale);
+              const sy = Math.max(0, -offY * scale);
+              const sw = wW * scale;
+              const sh = wH * scale;
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.round(sw);
+              canvas.height = Math.round(sh);
+              const ctx = canvas.getContext('2d');
+              if (ctx) { ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh); results.push(canvas.toDataURL('image/png')); continue; }
+            } catch {}
+          } else {
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = img.naturalWidth;
+              canvas.height = img.naturalHeight;
+              const ctx = canvas.getContext('2d');
+              if (ctx) { ctx.drawImage(img, 0, 0); results.push(canvas.toDataURL('image/png')); continue; }
+            } catch {}
+          }
+          try {
+            const resp = await fetch(img.src);
+            const buf = await resp.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            for (let j = 0; j < bytes.length; j++) binary += String.fromCharCode(bytes[j]);
+            results.push('data:image/png;base64,' + btoa(binary));
+            continue;
+          } catch {}
+        }
+        results.push('');
+      }
+      return results;
+    }, tiles.length);
+
+    for (let i = 0; i < tiles.length; i++) {
+      const tilePath = join(homedir(), `.aurix-tile-${i}.png`);
+      try {
+        if (i < tileDataUrls.length && tileDataUrls[i]) {
+          const b64 = tileDataUrls[i].split(',')[1];
+          if (b64) {
+            writeFileSync(tilePath, Buffer.from(b64, 'base64'));
+            results.push(`  Tile ${i}: ${tilePath}`);
+            continue;
+          }
+        }
+        await tiles[i].screenshot({ path: tilePath });
+        results.push(`  Tile ${i}: ${tilePath}`);
+      } catch {
+        results.push(`  Tile ${i}: (screenshot failed)`);
+      }
+    }
+  } catch {
+    for (let i = 0; i < tiles.length; i++) {
+      const tilePath = join(homedir(), `.aurix-tile-${i}.png`);
+      try {
+        await tiles[i].screenshot({ path: tilePath });
+        results.push(`  Tile ${i}: ${tilePath}`);
+      } catch {
+        results.push(`  Tile ${i}: (screenshot failed)`);
+      }
     }
   }
 

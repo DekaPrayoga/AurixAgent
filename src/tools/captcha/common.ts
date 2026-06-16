@@ -1,8 +1,11 @@
 import { type Page } from 'playwright-core';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import sharp from 'sharp';
+
+const _TRAINING_DIR = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'training');
 import { loadConfig } from '../../agent/Config.js';
 
 export function readFileBase64(path: string): string {
@@ -24,7 +27,7 @@ export async function visionClassify(imageBase64: string, prompt: string): Promi
         { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
       ],
     }],
-    max_tokens: 2096,
+    max_tokens: 4096,
   };
 
   const controller = new AbortController();
@@ -152,14 +155,19 @@ Answer with exactly one word: YES or NO`;
 
 export interface CaptchaTrainingExample {
   instruction: string;
+  objectType?: string;
+  gridSize?: string;
   gridCount: number;
   matchedIndices: number[];
+  tileCount?: number;
+  visionResponse?: string;
+  successCount?: number;
   timestamp: number;
 }
 
 export function loadCaptchaTraining(): CaptchaTrainingExample[] {
   try {
-    const path = join(homedir(), '.aurix', 'captcha-training.json');
+    const path = join(_TRAINING_DIR, 'captcha-training.json');
     if (existsSync(path)) {
       return JSON.parse(readFileSync(path, 'utf-8'));
     }
@@ -169,15 +177,132 @@ export function loadCaptchaTraining(): CaptchaTrainingExample[] {
 
 export function saveCaptchaTraining(example: CaptchaTrainingExample) {
   try {
-    const dir = join(homedir(), '.aurix');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const path = join(dir, 'captcha-training.json');
+    if (!existsSync(_TRAINING_DIR)) mkdirSync(_TRAINING_DIR, { recursive: true });
+    const path = join(_TRAINING_DIR, 'captcha-training.json');
     const data = loadCaptchaTraining();
-    data.push(example);
-    if (data.length > 50) data.splice(0, data.length - 50);
+    const existing = data.findIndex(e =>
+      e.objectType && example.objectType &&
+      e.objectType.toLowerCase() === example.objectType.toLowerCase() &&
+      e.gridSize === example.gridSize &&
+      JSON.stringify(e.matchedIndices) === JSON.stringify(example.matchedIndices)
+    );
+    if (existing >= 0) {
+      data[existing].successCount = (data[existing].successCount || 1) + 1;
+      data[existing].timestamp = example.timestamp;
+    } else {
+      data.push({ ...example, successCount: 1 });
+    }
+    if (data.length > 200) data.splice(0, data.length - 200);
     writeFileSync(path, JSON.stringify(data, null, 2));
   } catch {}
 }
+
+export function getTrainingHint(objectName: string, gridSize: string, tileCount: number): string {
+  try {
+    const data = loadCaptchaTraining();
+    const objLower = objectName.toLowerCase();
+    const relevant = data.filter(e => {
+      const eObj = (e.objectType || e.instruction).toLowerCase();
+      return eObj.includes(objLower) || objLower.includes(eObj) ||
+        e.instruction.toLowerCase().includes(objLower);
+    });
+    if (relevant.length === 0) return '';
+
+    const byGrid = relevant.filter(e => e.gridSize === gridSize || e.gridCount === tileCount);
+    const pool = byGrid.length > 0 ? byGrid : relevant;
+
+    const sorted = pool.sort((a, b) => (b.successCount || 1) - (a.successCount || 1));
+    const top = sorted.slice(0, 5);
+
+    const patternCounts = new Map<string, number>();
+    for (const ex of top) {
+      const key = `[${ex.matchedIndices.join(',')}]`;
+      patternCounts.set(key, (patternCounts.get(key) || 0) + (ex.successCount || 1));
+    }
+
+    const patterns = [...patternCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    if (patterns.length === 0) return '';
+
+    const avgCount = top.reduce((s, e) => s + e.matchedIndices.length, 0) / top.length;
+    const hint = `\n\n[TRAINING DATA] You have solved "${objectName}" challenges ${relevant.length} times before.` +
+      ` Typical answer has ~${avgCount.toFixed(1)} tiles selected.` +
+      ` Most common patterns: ${patterns.map(([p, c]) => `${p} (${c}x)`).join(', ')}.` +
+      ` Use this as guidance but always verify against the actual image.`;
+    return hint;
+  } catch { return ''; }
+}
+
+// TEMP: CapTCHAi training integration — REMOVE AFTER TRAINING
+const CAPTCHAI_KEY = 'sm2ac441rbvjs1yecfec4tigl42e4jja';
+
+export async function capthaiSolve(imageBase64: string, instruction: string, gridSize: string): Promise<number[] | null> {
+  try {
+    const form = new FormData();
+    form.append('key', CAPTCHAI_KEY);
+    form.append('method', 'base64');
+    form.append('body', imageBase64);
+    form.append('instructions', instruction);
+    form.append('grid_size', gridSize);
+    form.append('img_type', 'recaptcha');
+    form.append('json', '1');
+
+    const createResp = await fetch('https://ocr.captchaai.com/in.php', { method: 'POST', body: form });
+    const createText = await createResp.text();
+    console.error(`[CapTCHAi] create: ${createText.substring(0, 200)}`);
+    const createJson = JSON.parse(createText) as any;
+    if (createJson.status !== 1 || !createJson.request) {
+      console.error(`[CapTCHAi] create failed: status=${createJson.status}, request=${createJson.request}`);
+      return null;
+    }
+
+    const taskId = createJson.request;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const pollUrl = `https://ocr.captchaai.com/res.php?key=${CAPTCHAI_KEY}&action=get&id=${taskId}&json=1`;
+      const pollResp = await fetch(pollUrl);
+      const pollText = await pollResp.text();
+      console.error(`[CapTCHAi] poll ${i}: ${pollText.substring(0, 200)}`);
+      const pollJson = JSON.parse(pollText) as any;
+      if (pollJson.status === 1) {
+        const raw = pollJson.request;
+        if (Array.isArray(raw)) return raw.map(Number);
+        if (typeof raw === 'string') {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(Number);
+          } catch {}
+          const nums = raw.match(/\d+/g);
+          return nums ? nums.map(Number) : null;
+        }
+        return null;
+      }
+    }
+    return null;
+  } catch { return null; }
+}
+
+export function saveCapthaiTraining(data: {
+  objectType: string;
+  gridSize: string;
+  capthaiIndices: number[];
+  visionIndices: number[];
+  correct: boolean;
+  timestamp: number;
+}) {
+  try {
+    if (!existsSync(_TRAINING_DIR)) mkdirSync(_TRAINING_DIR, { recursive: true });
+    const path = join(_TRAINING_DIR, 'captcha-training-capthai.json');
+    let list: any[] = [];
+    if (existsSync(path)) list = JSON.parse(readFileSync(path, 'utf-8'));
+    list.push(data);
+    if (list.length > 500) list.splice(0, list.length - 500);
+    writeFileSync(path, JSON.stringify(list, null, 2));
+  } catch {}
+}
+// END TEMP: CapTCHAi training integration
 
 export function bezierPoint(t: number, points: [number, number][]): [number, number] {
   if (points.length === 1) return points[0];

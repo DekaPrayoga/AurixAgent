@@ -218,7 +218,7 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'mcp',
-    description: 'Show MCP/plugin bridge setup status',
+    description: 'Open MCP server manager (add, remove, toggle, browse catalog)',
     group: 'connect',
     source: 'claude-code',
   },
@@ -245,6 +245,13 @@ const baseCommands: SlashCommand[] = [
     name: 'browserui',
     argumentHint: '[on|off]',
     description: 'Toggle browser window visibility (headed/headless)',
+    group: 'config',
+    source: 'aurix',
+  },
+  {
+    name: 'gui',
+    argumentHint: '[on|off]',
+    description: 'Show/hide browser window for monitoring agent actions',
     group: 'config',
     source: 'aurix',
   },
@@ -783,9 +790,20 @@ const baseCommands: SlashCommand[] = [
 ];
 
 export function createSlashCommands(ctx: CommandContext): SlashCommand[] {
+  // Sanitize tool descriptions for the palette — strip skill-template markers
+  // (markdown headers, JSON argument examples, backticked code fences) that
+  // look broken when rendered as a single-line command description.
+  const sanitize = (desc: string): string => {
+    let s = desc.replace(/^#+\s+/gm, '').replace(/```[\s\S]*?```/g, '').trim();
+    s = s.replace(/\{[^{}]*"[^"]+"\s*:\s*"[^"]*"[^{}]*\}/g, '{...}');
+    s = s.replace(/\s+/g, ' ');
+    if (s.length > 120) s = s.slice(0, 117) + '...';
+    return s;
+  };
+
   const toolCommands = ctx.registry.list().slice(0, 16).map((tool): SlashCommand => ({
     name: `tool:${tool.name}`,
-    description: tool.description,
+    description: sanitize(tool.description),
     group: 'tools',
     source: 'aurix',
   }));

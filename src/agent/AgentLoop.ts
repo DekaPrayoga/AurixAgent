@@ -108,6 +108,11 @@ export class AgentLoop {
     this.contextManager = new ContextManager(this.provider, config.model);
     this.memoryEngine = new MemoryEngine(this.provider);
 
+    // Wire the provider into the module-level memory tool so `memory remember`
+    // can auto-enrich user input before saving. Dynamic import avoids a
+    // static circular dependency (AgentLoop ↔ Memory tool).
+    import('../tools/Memory.js').then(m => m.setMemoryProvider(this.provider)).catch(() => {});
+
     const systemPrompt = buildSystemPrompt(config, registry.list());
     this.ledger.set('systemPrompt', countTokens(systemPrompt));
     this.messages.push({ role: 'system', content: systemPrompt });
@@ -294,17 +299,8 @@ export class AgentLoop {
           } catch {}
         }
 
-        const hints = [
-          'Continue with the task. If a previous tool returned an error, try a different approach. Use "snapshot" to see the current page state, then use the correct element selectors.',
-          'You seem stuck. Take a different approach: use "screenshot" to see what\'s on screen, then decide the next step. For form fields, use "fill" action instead of "evaluate".',
-          'Try using simpler browser actions. Instead of evaluate with JavaScript, use: click, fill, type — these auto-search all frames including iframes. Use "snapshot" first to find elements.',
-          'Last attempt. Summarize what you\'ve done so far and what went wrong, then try one more approach. If the page has iframes, elements may be inside them — click and fill actions handle this automatically.',
-        ];
-        const hint = hints[Math.min(consecutiveEmpty - 1, hints.length - 1)];
-        this.messages.push({ role: 'user', content: `[System hint] ${hint}` });
-
         const delay = 3;
-        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — injecting recovery hint, retry in ${delay}s...` };
+        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — retry in ${delay}s...` };
         for (let s = 0; s < delay; s++) {
           if (this.interrupted) {
             this.interrupted = false;
@@ -674,51 +670,6 @@ export class AgentLoop {
             content: `[System] The tool returned ${detectedImages.length} screenshot(s). They are attached below — analyze them visually to understand the current page state and decide your next action.`,
             images: detectedImages,
           });
-        }
-
-        const lastSig = recentToolSignatures[recentToolSignatures.length - 1];
-        const repeatCount = (() => {
-          let count = 0;
-          for (let j = recentToolSignatures.length - 1; j >= 0; j--) {
-            if (recentToolSignatures[j] === lastSig) count++;
-            else break;
-          }
-          return count;
-        })();
-
-        // Captcha solving is inherently iterative: the documented flow tells the
-        // agent to re-call captcha-grid / captcha-verify / click-tile / slider
-        // actions as tiles refresh. These carry no target/value so their
-        // signatures collide — don't flag them as a loop until the count is much
-        // higher (a genuine stuck-loop), otherwise we'd abort solvable captchas.
-        const isCaptchaIteration = /:(captcha-grid|captcha-verify|click-tile|solve-captcha|slider-analyze|detect-captcha)/.test(lastSig);
-        const loopThreshold = isCaptchaIteration ? 6 : 2;
-
-        if (repeatCount >= loopThreshold) {
-          const urgency = repeatCount >= 5 ? '[FINAL WARNING]' : repeatCount >= 3 ? '[CRITICAL SYSTEM]' : '[System hint]';
-          this.messages.push({
-            role: 'user',
-            content: `${urgency} You have repeated the EXACT same action ${repeatCount} times. This is likely a loop. Try something DIFFERENT:\n- If a terminal command returned a huge output, DON'T run it again — use a more specific command (e.g. "ps aux | grep chrome | wc -l" instead of "ps aux")\n- If clicking the same element didn't work, try a DIFFERENT selector or use "evaluate" with JavaScript\n- If filling the same field didn't work, the field may already be filled — use "snapshot" to check\n- If a browser connection failed, don't retry the same connection — use "browser action=navigate" to start fresh\n- Try a completely different approach or tool\nConsider: is this action actually making progress? If not, switch tactics.`,
-          });
-          yield { type: 'text', data: `🔄 Loop warning (${repeatCount}x same action) — injected anti-loop hint, agent continuing...` };
-        }
-
-        const browserEvalCount = recentToolSignatures.filter(s => /^browser:evaluate/.test(s)).length;
-        const hasProductiveAction = recentToolSignatures.some(s => /^browser:(fill|click|type|signup-assist|signin-assist|select|press-key|drag-to|hold-click)/.test(s));
-        const browserScreenshotCount = recentToolSignatures.filter(s => /^browser:screenshot/.test(s)).length;
-        if (browserEvalCount >= 3) {
-          this.messages.push({
-            role: 'user',
-            content: `[CRITICAL SYSTEM] You have used browser evaluate ${browserEvalCount} times recently. STOP using evaluate to interact with the page.\n- DO NOT use evaluate to fill inputs, click buttons, or set values.\n- Use "fill" or "type" action to fill form fields (they handle React/Angular/Vue natively).\n- Use "click" action to click buttons.\n- Use "signup-assist" to fill entire signup forms in ONE call.\n- Use "snapshot" to see what elements are available, then use the correct action.`,
-          });
-          yield { type: 'text', data: `⚠️ Too many browser evaluate calls (${browserEvalCount}) — agent should use fill/click/signup-assist instead.` };
-        }
-        if (browserScreenshotCount >= 4 && !hasProductiveAction) {
-          this.messages.push({
-            role: 'user',
-            content: `[CRITICAL SYSTEM] You have taken ${browserScreenshotCount} screenshots without any fill/click/type action in between. You can SEE the page — now ACT on it.\n- Use "fill" to fill a field, "click" to click a button, or "signup-assist" to fill the entire form.\n- Don't just keep looking — do something.`,
-          });
-          yield { type: 'text', data: `⚠️ ${browserScreenshotCount} screenshots with no action — agent should act, not just look.` };
         }
 
         continue;

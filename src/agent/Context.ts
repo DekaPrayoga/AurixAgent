@@ -39,6 +39,51 @@ export function buildSystemPrompt(config: AurixConfig, tools: Tool[]): string {
 - Date: ${today}
 - Shell: ${process.platform === 'win32' ? (process.env.COMSPEC || 'cmd.exe') : (process.env.SHELL || '/bin/bash')}`);
 
+  // OS-specific command hints — prevents the agent from emitting Linux commands on Windows
+  // (which caused the user's "File not found - PROVIDEDEPTH / NAME" errors when the agent
+  // invoked `find` with GNU flags on Windows' `find.exe`).
+  if (platform === 'win32') {
+    sections.push(`# Platform: Windows — ABSOLUTE LAW
+
+The user is on **Windows**. Linux/Unix commands WILL FAIL or produce wrong results.
+
+## Banned commands on Windows (these WILL break):
+- \`find\` — Windows \`find.exe\` searches FILE CONTENT, not filenames. \`find . -name\` becomes "search current dir for text '. -name'" → "Access denied" or "File not found" spam.
+- \`ls -la\`, \`ls -R\` — \`ls\` is not a Windows command. Use \`dir\`.
+- \`grep -r\` — not available. Use \`findstr /s /i\` or PowerShell \`Select-String -Recurse\`.
+- \`which\` — use \`where\`.
+- \`cat\` — use \`type\`.
+- \`cp\`, \`mv\`, \`rm\` — use \`copy\`, \`move\`, \`del\`/\`rmdir\`.
+- \`$HOME\`, \`echo $PATH\` — use \`%USERPROFILE%\`, \`echo %PATH%\` (cmd) or \`$env:USERPROFILE\` (PowerShell).
+
+## Command translation table:
+| Task | WRONG | RIGHT |
+|---|---|---|
+| List files | \`ls -la\` | \`dir\` |
+| Recursive find | \`find . -name "*.ts"\` | \`dir /s /b *.ts\` or \`Get-ChildItem -Recurse -Filter *.ts\` |
+| Search content | \`grep -r "foo"\` | \`findstr /s /i "foo" *.ts\` |
+| Check command | \`which foo\` | \`where foo\` |
+| Print file | \`cat file\` | \`type file\` |
+| Path separator | \`/\` | \`\\\` (or \`/\` — most tools accept both) |
+| Env vars | \`$HOME\` | \`%USERPROFILE%\` |
+
+## MANDATORY: Use dedicated tools instead of shelling out
+NEVER run \`terminal\` commands for tasks that have a dedicated tool:
+- File search → \`search_files\` (uses ripgrep if available, falls back to findstr)
+- Read file → \`read_file\`
+- Write/edit file → \`write_file\` / \`file_edit\`
+- Find files by name → \`glob\`
+- Directory listing → \`terminal\` with \`dir\` (NOT \`ls\`)
+
+If you catch yourself typing \`find\`, \`grep\`, \`ls\`, \`cat\` — STOP and use the dedicated tool instead. Violating this wastes the user's time with "access denied" spam.`);
+  } else if (platform === 'darwin') {
+    sections.push(`# Platform: macOS — command reference
+Prefer BSD-flavored commands. Use \`gfind\`/\`gstat\` for GNU variants if needed. Always prefer dedicated AURIX tools (\`search_files\`, \`read_file\`, \`write_file\`, \`file_edit\`, \`glob\`) over shelling out.`);
+  } else {
+    sections.push(`# Platform: Linux — command reference
+Standard GNU coreutils available. Always prefer dedicated AURIX tools (\`search_files\`, \`read_file\`, \`write_file\`, \`file_edit\`, \`glob\`) over shelling out. If \`rg\` is not installed, fall back to \`grep -R\` or \`find\`.`);
+  }
+
   if (agentsMD.global) {
     sections.push(`# Global Instructions\n${agentsMD.global}`);
   }

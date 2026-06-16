@@ -3,8 +3,15 @@ import path from 'path';
 import os from 'os';
 import type { Tool } from './Registry.js';
 import { MemoryEngine } from '../agent/MemoryEngine.js';
+import type { Provider } from '../providers/index.js';
 
 const engine = new MemoryEngine();
+
+// Called by AgentLoop on startup so the memory tool can use the active
+// provider to rephrase user input into context-dense memories.
+export function setMemoryProvider(p: Provider | undefined): void {
+  engine.setProvider(p);
+}
 
 export const memoryTool: Tool = {
   name: 'memory',
@@ -18,7 +25,7 @@ export const memoryTool: Tool = {
       },
       content: {
         type: 'string',
-        description: 'Content to remember (for remember action)',
+        description: 'Content to remember (for remember action). Will be auto-enriched before saving.',
       },
       tags: {
         type: 'string',
@@ -28,6 +35,10 @@ export const memoryTool: Tool = {
         type: 'string',
         description: 'Search query (for search/recall action)',
       },
+      raw: {
+        type: 'string',
+        description: 'Set to "true" to skip the auto-enrichment step and save content verbatim.',
+      },
     },
     required: ['action'],
   },
@@ -36,10 +47,15 @@ export const memoryTool: Tool = {
 
     switch (action) {
       case 'remember': {
-        const content = args.content as string;
-        if (!content) return 'Error: provide content to remember';
-        engine.appendRaw(content);
-        return `Remembered: ${content.slice(0, 100)}${content.length > 100 ? '...' : ''}`;
+        const rawContent = args.content as string;
+        if (!rawContent) return 'Error: provide content to remember';
+        const skipRephrase = (args.raw as string) === 'true';
+        const enriched = skipRephrase ? rawContent : await engine.rephraseForMemory(rawContent);
+        engine.appendRaw(enriched);
+        const wasEnriched = enriched !== rawContent;
+        return wasEnriched
+          ? `Remembered (enriched):\n  Original: ${rawContent.slice(0, 100)}${rawContent.length > 100 ? '...' : ''}\n  Stored:   ${enriched.slice(0, 300)}${enriched.length > 300 ? '...' : ''}`
+          : `Remembered: ${rawContent.slice(0, 100)}${rawContent.length > 100 ? '...' : ''}`;
       }
 
       case 'recall':

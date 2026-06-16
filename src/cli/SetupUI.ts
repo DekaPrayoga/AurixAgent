@@ -53,44 +53,118 @@ export function drawInputScreen(opts: {
     stdin.resume();
     stdin.setEncoding('utf8');
 
-    function render() {
-      const display = opts.masked ? '●'.repeat(buf.length) : buf;
-      process.stdout.write(`\r  ${bg(bright(' ' + display + ' '))}   `);
-    }
-    render();
+    // Enable bracketed paste so terminals that support it wrap paste
+    // content in ESC[200~ ... ESC[201~, even when raw mode is on.
+    if (process.stdout.isTTY) process.stdout.write('\x1b[?2004h');
 
-    function onData(ch: string) {
-      const c = ch.charCodeAt(0);
-
-      if (c === 13 || c === 10) {
+    let escBuf = '';
+    let escTimer: NodeJS.Timeout | null = null;
+    const clearEscTimer = () => {
+      if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+    };
+    const flushEsc = () => {
+      clearEscTimer();
+      if (escBuf.length === 0) return;
+      if (escBuf === '\x1b') {
+        // Standalone Escape → go back
+        escBuf = '';
         stdin.removeListener('data', onData);
         if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+        if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
         process.stdout.write('\n');
-        resolve(buf);
+        resolve('__back__');
+        return;
+      }
+      // Unrecognized escape sequence — discard
+      escBuf = '';
+    };
+
+    const renderLine = () => {
+      const display = opts.masked ? '●'.repeat(buf.length) : buf;
+      process.stdout.write(`\r\x1b[2K  ${bg(bright(' ' + display + ' '))}   `);
+    };
+    renderLine();
+
+    function onData(ch: string) {
+      // If we're accumulating an escape sequence, keep appending.
+      if (escBuf.length > 0) {
+        escBuf += ch;
+        // Check for bracketed paste start: ESC [ 2 0 0 ~
+        if (escBuf.endsWith('\x1b[200~')) {
+          clearEscTimer();
+          escBuf = '';
+          // Read until bracketed paste end marker
+          const onPaste = (p: string) => {
+            const endIdx = p.indexOf('\x1b[201~');
+            if (endIdx === -1) {
+              buf += p;
+              renderLine();
+              return;
+            }
+            buf += p.slice(0, endIdx);
+            stdin.removeListener('data', onPaste);
+            stdin.on('data', onData);
+            renderLine();
+          };
+          stdin.removeListener('data', onData);
+          stdin.on('data', onPaste);
+          return;
+        }
+        // Check for known CSI terminators (letter or ~)
+        if (/[A-Za-z~]/.test(ch)) {
+          // Arrow keys, etc. — ignore (not useful for text input)
+          clearEscTimer();
+          escBuf = '';
+          return;
+        }
+        // Reset timeout
+        clearEscTimer();
+        escTimer = setTimeout(flushEsc, 50);
         return;
       }
 
+      const c = ch.charCodeAt(0);
+
       if (c === 27) {
+        // Start of escape sequence — wait to see if more bytes arrive
+        escBuf = ch;
+        clearEscTimer();
+        escTimer = setTimeout(flushEsc, 50);
+        return;
+      }
+
+      if (c === 13 || c === 10) {
+        clearEscTimer();
         stdin.removeListener('data', onData);
         if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+        if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
         process.stdout.write('\n');
-        resolve('__back__');
+        resolve(buf);
         return;
       }
 
       if (c === 127 || c === 8) {
         if (buf.length > 0) {
           buf = buf.slice(0, -1);
-          render();
+          renderLine();
         }
         return;
       }
 
       if (c === 3) process.exit(0);
 
-      if (c >= 32) {
-        buf += ch;
-        render();
+      // Ctrl+U — clear line
+      if (c === 21) {
+        buf = '';
+        renderLine();
+        return;
+      }
+
+      // Accept printable chars, including multi-byte UTF-8 (pasted chunks).
+      // Filter out control chars except tab (which we treat as space).
+      if (c >= 32 || ch === '\t') {
+        buf += ch === '\t' ? '    ' : ch;
+        renderLine();
       }
     }
 
@@ -129,11 +203,21 @@ export function drawSelector(opts: {
     stdin.resume();
     stdin.setEncoding('utf8');
     enableMouse();
+    // Bracketed paste — in case the user pastes while a selector is open.
+    if (process.stdout.isTTY) process.stdout.write('\x1b[?2004h');
+
+    let escBuf = '';
+    let escTimer: NodeJS.Timeout | null = null;
+    const clearEscTimer = () => {
+      if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+    };
 
     const cleanup = () => {
+      clearEscTimer();
       stdin.removeListener('data', onData);
       disableMouse();
       if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+      if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
       process.stdout.write('\n');
     };
 
@@ -195,29 +279,78 @@ export function drawSelector(opts: {
     };
 
     function onData(ch: string) {
+      // Continuing an escape sequence (arrow keys, mouse, bracketed paste)
+      if (escBuf.length > 0) {
+        escBuf += ch;
+        // Bracketed paste start — swallow paste content so it doesn't
+        // accidentally toggle items or trigger number keys.
+        if (escBuf.endsWith('\x1b[200~')) {
+          clearEscTimer();
+          escBuf = '';
+          const onPaste = (p: string) => {
+            if (p.indexOf('\x1b[201~') === -1) return;
+            stdin.removeListener('data', onPaste);
+            stdin.on('data', onData);
+          };
+          stdin.removeListener('data', onData);
+          stdin.on('data', onPaste);
+          return;
+        }
+        // Arrow keys
+        if (escBuf === '\x1b[A') { clearEscTimer(); escBuf = ''; move(-1); return; }
+        if (escBuf === '\x1b[B') { clearEscTimer(); escBuf = ''; move(1); return; }
+        if (escBuf === '\x1b[Z') { clearEscTimer(); escBuf = ''; move(-1); return; }
+        // Mouse report: ESC < params M/m
+        const mouseMatch = /\x1b\[<(\d+);(\d+);(\d+)([mM])/.exec(escBuf);
+        if (mouseMatch) {
+          clearEscTimer();
+          escBuf = '';
+          const mouse = { x: Number(mouseMatch[2]), y: Number(mouseMatch[3]), action: mouseMatch[4] === 'M' ? 'press' as const : 'release' as const };
+          if (mouse.action === 'press') {
+            const itemRowStart = 5;
+            const idx = mouse.y - itemRowStart;
+            if (idx >= 0 && idx < opts.items.length) {
+              active = idx;
+              if (opts.multi) toggleActive();
+              else confirmActive();
+            }
+            if (opts.allowSkip && mouse.y === itemRowStart + opts.items.length + 1) {
+              active = opts.items.length;
+              confirmActive();
+            }
+            repaint();
+          }
+          return;
+        }
+        // If we got a CSI terminator, consume the sequence silently.
+        if (/[A-Za-z~]/.test(ch)) {
+          clearEscTimer();
+          escBuf = '';
+          return;
+        }
+        clearEscTimer();
+        escTimer = setTimeout(() => {
+          // Timed out mid-sequence — not a standalone Esc, just drop it.
+          escBuf = '';
+        }, 50);
+        return;
+      }
+
       const c = ch.charCodeAt(0);
 
       if (c === 27) {
-        if (ch === '\x1b[A') { move(-1); return; }
-        if (ch === '\x1b[B') { move(1); return; }
-        if (ch === '\x1b[Z') { move(-1); return; }
-        const mouse = parseMouse(ch);
-        if (mouse && mouse.action === 'press') {
-          const itemRowStart = 5;
-          const idx = mouse.y - itemRowStart;
-          if (idx >= 0 && idx < opts.items.length) {
-            active = idx;
-            if (opts.multi) toggleActive();
-            else confirmActive();
+        // Could be standalone Esc (back) or start of a sequence.
+        // Buffer and decide after 50ms.
+        escBuf = ch;
+        clearEscTimer();
+        escTimer = setTimeout(() => {
+          if (escBuf === '\x1b') {
+            escBuf = '';
+            finish('__back__');
+          } else {
+            escBuf = '';
           }
-          if (opts.allowSkip && mouse.y === itemRowStart + opts.items.length + 1) {
-            active = opts.items.length;
-            confirmActive();
-          }
-          repaint();
-          return;
-        }
-        finish('__back__');
+        }, 50);
         return;
       }
 
