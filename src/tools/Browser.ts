@@ -3,6 +3,23 @@ import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, appendFileSync } from 'fs';
+
+// Windows: monkey-patch child_process.spawn to strip --no-sandbox from
+// ALL Chromium launches. The flag comes from the cloakbrowser binary
+// defaults or Playwright internals — not from our explicit args.
+// On Windows Chromium, --no-sandbox triggers an "unsupported flag" warning
+// and can cause silent navigation failures (about:blank).
+if (process.platform === 'win32') {
+  const cp = await import('child_process');
+  const origSpawn = cp.spawn;
+  (cp as any).spawn = function patchedSpawn(cmd: string, args?: string[], opts?: any) {
+    if (args && Array.isArray(args) && typeof cmd === 'string' && /chrom/i.test(cmd)) {
+      args = args.filter(a => !a.startsWith('--no-sandbox') && !a.startsWith('--disable-setuid-sandbox'));
+    }
+    return origSpawn.call(this, cmd, args as any, opts);
+  };
+}
+
 import sharp from 'sharp';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
@@ -247,6 +264,14 @@ async function ensureBrowser(): Promise<Page> {
       }
       return base;
     })(),
+    // Override cloakbrowser's hardcoded ignoreDefaultArgs on Windows:
+    // add --no-sandbox to the strip list so Playwright removes it from
+    // its own Chromium defaults before launching.
+    ...(process.platform === 'win32' ? {
+      launchOptions: {
+        ignoreDefaultArgs: ['--enable-automation', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-setuid-sandbox'],
+      },
+    } : {}),
   };
 
   const parts = activeProxy.split(':');
