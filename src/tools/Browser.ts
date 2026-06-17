@@ -381,7 +381,11 @@ async function ensureBrowser(): Promise<Page> {
   });
 
   const page = context.pages()[0] || await context.newPage();
-  
+
+  let pageCrashed = false;
+  page.on('crash', () => { pageCrashed = true; });
+  context.on('close', () => { pageCrashed = true; });
+
   sessions.set(currentSessionKey, { context, page, profileDir });
   return page;
 }
@@ -615,34 +619,71 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const url = value || target;
           if (!url) return 'Error: navigate requires a URL (use value or target parameter)';
           const fullUrl = url.startsWith('http') ? url : `https://${url}`;
-          await p.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout });
+          const diagnostics: string[] = [];
+
+          let firstErr: string | null = null;
+          try {
+            await p.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout });
+          } catch (e: any) {
+            firstErr = e.message || String(e);
+            diagnostics.push(`1st attempt threw: ${(firstErr || '').slice(0, 120)}`);
+          }
 
           if (p.url() === 'about:blank') {
             try {
               await p.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 2 });
-            } catch {}
-          }
-          if (p.url() === 'about:blank') {
-            try {
-              await p.goto(fullUrl, { waitUntil: 'networkidle', timeout: timeout * 3 });
-            } catch {}
-          }
-          if (p.url() === 'about:blank') {
-            const activeProxy = browserProxy || '';
-            const hints = [
-              `Proxy: ${activeProxy || 'none'}`,
-              `Target: ${fullUrl}`,
-              `Platform: ${process.platform}`,
-            ];
-            if (process.platform === 'win32') {
-              hints.push('Hint: run "npm rebuild cloakbrowser" to re-download the Chromium binary');
+            } catch (e: any) {
+              diagnostics.push(`2nd attempt threw: ${(e.message || '').slice(0, 120)}`);
             }
-            return err(`Navigation failed — page stayed at about:blank after 3 attempts`,
-              `Possible causes:\n  1. cloakbrowser binary not installed (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}`);
           }
 
-          const title = await p.title();
-          return `Navigated to: ${p.url()}\nTitle: ${title}`;
+          if (p.url() === 'about:blank') {
+            // The initial page from launchPersistentContext may be in a broken state.
+            // Close it and create a fresh page, then retry navigation.
+            try {
+              const session = getSession()!;
+              await p.close().catch(() => {});
+              const freshPage = await session.context.newPage();
+              session.page = freshPage;
+              try {
+                await freshPage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: timeout * 2 });
+              } catch (e: any) {
+                diagnostics.push(`fresh page attempt threw: ${(e.message || '').slice(0, 120)}`);
+              }
+              if (freshPage.url() !== 'about:blank') {
+                return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
+              }
+              try {
+                await freshPage.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 3 });
+              } catch (e: any) {
+                diagnostics.push(`fresh page 2nd attempt threw: ${(e.message || '').slice(0, 120)}`);
+              }
+              if (freshPage.url() !== 'about:blank') {
+                return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
+              }
+            } catch (e: any) {
+              diagnostics.push(`fresh page creation failed: ${(e.message || '').slice(0, 120)}`);
+            }
+          }
+
+          const currentPage = getSession()?.page;
+          if (currentPage && currentPage.url() !== 'about:blank') {
+            return ok(`Navigated to ${currentPage.url()}`, { title: await currentPage.title() });
+          }
+
+          const activeProxy = browserProxy || '';
+          const hints = [
+            `Proxy: ${activeProxy || 'none'}`,
+            `Target: ${fullUrl}`,
+            `Platform: ${process.platform}`,
+            `Headless: ${browserHeadless}`,
+          ];
+          if (diagnostics.length) hints.push(`Diagnostics: ${diagnostics.join(' | ')}`);
+          if (process.platform === 'win32') {
+            hints.push('Hint: run "npm rebuild cloakbrowser" to re-download the Chromium binary');
+          }
+          return err(`Navigation failed — page stayed at about:blank after multiple attempts (including fresh page)`,
+            `Possible causes:\n  1. cloakbrowser binary not installed (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}\n  5. Try setting BROWSER_HEADLESS=false to see the browser window`);
         }
 
         case 'click': {
