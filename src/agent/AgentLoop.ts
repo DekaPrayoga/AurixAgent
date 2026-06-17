@@ -280,6 +280,16 @@ export class AgentLoop {
 
         const diagStr = diag.join(' | ');
 
+        // Remove the empty assistant response from history so model doesn't
+        // think the conversation ended — it needs to see the last tool result
+        // as the most recent message to continue working.
+        while (this.messages.length > 0 &&
+               this.messages[this.messages.length - 1].role === 'assistant' &&
+               !this.messages[this.messages.length - 1].content &&
+               !this.messages[this.messages.length - 1].toolCalls?.length) {
+          this.messages.pop();
+        }
+
         if (consecutiveEmpty >= MAX_EMPTY) {
           yield { type: 'error', data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nAPI diagnostic: ${diagStr}\nStopping. Try: /login, /model <id>, or /doctor.` };
           return;
@@ -306,6 +316,16 @@ export class AgentLoop {
             continue;
           } catch {}
         }
+
+        // Add a nudge message so the model has something to respond to
+        // instead of seeing the same context and returning empty again.
+        const nudges = [
+          'You returned an empty response. Please continue with your analysis or next action based on the results above.',
+          'Your last response was empty. Summarize what you found and state your next step.',
+          'Please provide your response. If you encountered an issue, explain it and suggest an alternative approach.',
+        ];
+        const nudge = nudges[Math.min(consecutiveEmpty - 1, nudges.length - 1)];
+        this.messages.push({ role: 'user', content: `[System] ${nudge}` });
 
         const delay = 3;
         yield { type: 'text', data: `[${consecutiveEmpty}/${MAX_EMPTY}] Empty response (${diagStr}) — retry in ${delay}s...` };
