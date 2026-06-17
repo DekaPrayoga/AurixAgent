@@ -108,73 +108,17 @@ function readClipboard(): Promise<string | undefined> {
 }
 
 export function writeClipboard(text: string): void {
-  const fs = require('node:fs');
-  const logFile = '/tmp/aurix-copy-debug.log';
-  const log = (msg: string) => {
-    try { fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-  };
-
-  log(`--- COPY START ---`);
-  log(`text length=${text.length}, first50=${JSON.stringify(text.slice(0, 50))}`);
-  log(`DISPLAY=${process.env.DISPLAY || '(unset)'}, WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY || '(unset)'}, TMUX=${process.env.TMUX || '(unset)'}`);
-  log(`isMac=${isMac}, isWindows=${isWindows}`);
-
+  // Use ONLY OSC 52 escape sequence - works with most modern terminals
+  // Local tools (xclip/pbcopy) cause race conditions and don't work in SSH/TMUX reliably
   const b64 = Buffer.from(text).toString('base64');
   const osc52 = `\x1b]52;c;${b64}\x07`;
-  const osc52Sent = process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52;
-  process.stdout.write(osc52Sent);
-  log(`OSC52 sent (length=${osc52Sent.length})`);
 
-  if (isWindows) {
-    log(`method: powershell`);
-    const child = execFile('powershell.exe', [
-      '-NoProfile', '-command',
-      `Set-Clipboard -Value '${text.replace(/'/g, "''")}'`,
-    ], { timeout: 2000 }, (err) => {
-      log(`powershell exit: err=${err ? err.message : 'ok'}`);
-    });
-    return;
+  // TMUX requires special wrapping
+  if (process.env.TMUX) {
+    process.stdout.write(`\x1bPtmux;\x1b${osc52}\x1b\\`);
+  } else {
+    process.stdout.write(osc52);
   }
-  if (isMac) {
-    log(`method: pbcopy`);
-    const { spawn } = require('node:child_process');
-    const child = spawn('pbcopy', [], { stdio: ['pipe', 'ignore', 'pipe'] });
-    child.stdin?.end(text);
-    child.on('error', (e: Error) => log(`pbcopy error: ${e.message}`));
-    child.on('exit', (code: number) => log(`pbcopy exit: code=${code}`));
-    return;
-  }
-  if (process.env.WAYLAND_DISPLAY) {
-    log(`method: wl-copy`);
-    const { spawn } = require('node:child_process');
-    const child = spawn('wl-copy', ['--', text], { stdio: ['pipe', 'ignore', 'pipe'] });
-    child.on('error', (e: Error) => log(`wl-copy error: ${e.message}`));
-    child.on('exit', (code: number) => log(`wl-copy exit: code=${code}`));
-    return;
-  }
-  const env = xclipEnv();
-  log(`xclipEnv: ${JSON.stringify(env)}`);
-  if (env || process.env.DISPLAY) {
-    log(`method: xclip`);
-    const { spawn } = require('node:child_process');
-    const fullEnv = env ? { ...process.env, ...env } : undefined;
-    const child = spawn('xclip', ['-selection', 'clipboard'], { stdio: ['pipe', 'pipe', 'pipe'], env: fullEnv });
-    child.stdin?.end(text);
-    child.on('error', (e: Error) => log(`xclip error: ${e.message}`));
-    child.on('exit', (code: number) => log(`xclip exit: code=${code}`));
-    child.stderr?.on('data', (d: Buffer) => log(`xclip stderr: ${d.toString().trim()}`));
-    setTimeout(() => {
-      try {
-        const { execFileSync } = require('node:child_process');
-        const verify = execFileSync('xclip', ['-selection', 'clipboard', '-o'], { encoding: 'utf8', timeout: 2000, env: fullEnv });
-        log(`verify readback: length=${verify.length}, match=${verify === text}`);
-      } catch (e: any) {
-        log(`verify readback FAILED: ${e.message}`);
-      }
-    }, 500);
-    return;
-  }
-  log(`NO METHOD MATCHED — clipboard not written (no DISPLAY, no WAYLAND, not mac, not windows)`);
 }
 
 function readClipboardImage(): Promise<string | undefined> {
@@ -374,29 +318,15 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   }
 
   useKeyboard((evt) => {
-    if (disabled || pasteInProgress) return;
     const name = evt.name;
 
+    // ESC must always propagate to App.tsx for interrupt handling
     if (name === 'escape') {
-      evt.preventDefault();
-      lastPasteStart = -1;
-      lastPasteLen = 0;
-      if (value) {
-        setValue('');
-        setCursor(0);
-        lastEscRef.current = 0;
-        return;
-      }
-      // Input empty: double-press ESC within 800ms triggers rewind.
-      const now = Date.now();
-      if (now - lastEscRef.current <= 800) {
-        lastEscRef.current = 0;
-        onRewind?.();
-      } else {
-        lastEscRef.current = now;
-      }
-      return;
+      return; // Don't preventDefault, don't handle - let App.tsx handle it
     }
+
+    if (disabled || pasteInProgress) return;
+
     if (name === 'return') {
       evt.preventDefault();
       evt.stopPropagation();
