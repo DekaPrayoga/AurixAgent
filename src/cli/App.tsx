@@ -25,6 +25,7 @@ import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.j
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
 import { logoLines } from '../utils/ascii-logo.js';
 import { mcpManager } from '../mcp/McpRegistry.js';
+import { loadTodos as loadTodosFromFile, addTodo as addTodoToFile, completeTodo as completeTodoInFile, getTodoStats } from '../utils/TodoManager.js';
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 type ResearchDepth = typeof VALID_DEPTHS[number];
@@ -76,6 +77,18 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [todos, setTodos] = useState<{ text: string; done: boolean }[]>([]);
   const [btwMessages, setBtwMessages] = useState<string[]>([]);
   const [showOutputPanel, setShowOutputPanel] = useState(false);
+
+  useEffect(() => {
+    const refreshTodos = () => {
+      const fileTodos = loadTodosFromFile();
+      setTodos(fileTodos.map(t => ({ text: t.text, done: t.done })));
+    };
+    
+    refreshTodos();
+    const interval = setInterval(refreshTodos, 2000);
+    
+    return () => clearInterval(interval);
+  }, []);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -1417,16 +1430,16 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
 
       if (commandName === 'todo') {
         if (!slash.args) {
-          const done = todos.filter(t => t.done).length;
-          const total = todos.length;
-          if (total === 0) {
+          const stats = getTodoStats();
+          const fileTodos = loadTodosFromFile();
+          if (stats.total === 0) {
             addAssistant('No todos.\n\nUsage:\n  /todo add <task>\n  /todo done <number>\n  /todo list\n  /todo clear');
           } else {
-            const list = todos.map((t, i) => {
+            const list = fileTodos.map((t) => {
               const check = t.done ? '[x]' : '[ ]';
-              return `  ${i + 1}. ${check} ${t.text}`;
+              return `  ${t.id}. ${check} ${t.text}`;
             }).join('\n');
-            addAssistant(`Todos: ${done}/${total} complete\n\n${list}`);
+            addAssistant(`Todos: ${stats.done}/${stats.total} complete\n\n${list}`);
           }
           return;
         }
@@ -1434,28 +1447,38 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         if (args.startsWith('add ')) {
           const task = args.slice(4).trim();
           if (task) {
-            setTodos(prev => [...prev, { text: task, done: false }]);
+            const newTodo = addTodoToFile(task);
+            setTodos(prev => [...prev, { text: newTodo.text, done: newTodo.done }]);
             addAssistant(`Todo added: "${task}"`);
           }
         } else if (args.startsWith('done ')) {
-          const idx = parseInt(args.slice(5).trim(), 10) - 1;
-          if (idx >= 0 && idx < todos.length) {
-            setTodos(prev => prev.map((t, i) => i === idx ? { ...t, done: !t.done } : t));
-            const task = todos[idx];
-            addAssistant(`Todo ${task.done ? 'uncompleted' : 'completed'}: "${task.text}"`);
+          const idx = parseInt(args.slice(5).trim(), 10);
+          const fileTodos = loadTodosFromFile();
+          const todo = fileTodos.find(t => t.id === idx);
+          if (todo) {
+            completeTodoInFile(idx);
+            const refreshedTodos = loadTodosFromFile();
+            setTodos(refreshedTodos.map(t => ({ text: t.text, done: t.done })));
+            const updatedTodo = refreshedTodos.find(t => t.id === idx);
+            addAssistant(`Todo ${updatedTodo?.done ? 'completed' : 'uncompleted'}: "${todo.text}"`);
           } else {
             addAssistant('Invalid todo number.');
           }
         } else if (args === 'clear') {
-          setTodos(prev => prev.filter(t => !t.done));
+          const fileTodos = loadTodosFromFile();
+          const incompleteTodos = fileTodos.filter(t => !t.done);
+          const { saveTodos } = require('../utils/TodoManager.js');
+          saveTodos(incompleteTodos);
+          setTodos(incompleteTodos.map(t => ({ text: t.text, done: t.done })));
           addAssistant('Completed todos cleared.');
         } else if (args === 'list') {
-          const done = todos.filter(t => t.done).length;
-          const list = todos.map((t, i) => {
+          const stats = getTodoStats();
+          const fileTodos = loadTodosFromFile();
+          const list = fileTodos.map((t) => {
             const check = t.done ? '[x]' : '[ ]';
-            return `  ${i + 1}. ${check} ${t.text}`;
+            return `  ${t.id}. ${check} ${t.text}`;
           }).join('\n');
-          addAssistant(`Todos: ${done}/${todos.length} complete\n\n${list}`);
+          addAssistant(`Todos: ${stats.done}/${stats.total} complete\n\n${list}`);
         } else {
           addAssistant('Usage: /todo add <task> | /todo done <n> | /todo list | /todo clear');
         }

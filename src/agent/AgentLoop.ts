@@ -13,6 +13,7 @@ import { ContextManager } from './ContextManager.js';
 import { MemoryEngine } from './MemoryEngine.js';
 import { ResearchPipeline } from './ResearchPipeline.js';
 import type { ResearchDepth } from './research/types.js';
+import { loadTodos, saveTodos, addTodo, completeTodo, getTodoStats } from '../utils/TodoManager.js';
 
 const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
 
@@ -152,6 +153,32 @@ export class AgentLoop {
     return loaded;
   }
 
+  private autoCreateTodos(userMessage: string): void {
+    const msg = userMessage.toLowerCase();
+    const existingTodos = loadTodos();
+    
+    // Only create todos if none exist and task seems complex
+    if (existingTodos.length > 0) return;
+    
+    // Detect complex task indicators
+    const complexityIndicators = [
+      'implement', 'build', 'create', 'develop', 'fix', 'refactor',
+      'add feature', 'multiple', 'several', 'all the', 'everything',
+      'step by step', 'phase', 'stage'
+    ];
+    
+    if (!complexityIndicators.some(indicator => msg.includes(indicator))) return;
+    
+    // Ask agent to break down the task
+    const breakdownPrompt = `Based on the user's request, identify 3-7 concrete actionable tasks that need to be completed. Return ONLY a JSON array of task strings, no other text. Example: ["Task 1", "Task 2", "Task 3"]`;
+    
+    // Add system message to prompt todo creation
+    this.messages.push({ 
+      role: 'system', 
+      content: `[AUTO-TODO] The user's request appears complex. Please break it down into 3-7 concrete tasks and use the todo_create tool to track them. Then work through each task systematically.` 
+    });
+  }
+
   setMaxIterations(n: number): void {
     if (n >= 10 && n <= 10000) this.maxIterations = n;
   }
@@ -195,6 +222,8 @@ export class AgentLoop {
       const skillInstructions = loadedSkills.map(id => `[Auto-loaded skill: ${id}]`).join('\n');
       this.messages.push({ role: 'system', content: skillInstructions });
     }
+
+    this.autoCreateTodos(userMessage);
 
     if (this.contextManager.shouldCompact(this.messages)) {
       yield { type: 'compact', data: 'Context nearing limit — compacting history...' };

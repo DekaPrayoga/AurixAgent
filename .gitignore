@@ -25,3 +25,6 @@ jurnal-pupuk.*
 # Native modules
 *.node
 native/token-counter/target/
+
+# Training data
+training/*.json
