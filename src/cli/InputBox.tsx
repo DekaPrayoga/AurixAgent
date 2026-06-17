@@ -108,17 +108,25 @@ function readClipboard(): Promise<string | undefined> {
 }
 
 export function writeClipboard(text: string): void {
-  // Use ONLY OSC 52 escape sequence - works with most modern terminals
-  // Local tools (xclip/pbcopy) cause race conditions and don't work in SSH/TMUX reliably
   const b64 = Buffer.from(text).toString('base64');
   const osc52 = `\x1b]52;c;${b64}\x07`;
+  process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
 
-  // TMUX requires special wrapping
-  if (process.env.TMUX) {
-    process.stdout.write(`\x1bPtmux;\x1b${osc52}\x1b\\`);
-  } else {
-    process.stdout.write(osc52);
-  }
+  import('node:child_process').then(({ spawn }) => {
+    const tools: [string, string[]][] = [
+      ['wl-copy', []],
+      ['xclip', ['-selection', 'clipboard']],
+      ['xsel', ['--clipboard', '--input']],
+      ['pbcopy', []],
+    ];
+    for (const [cmd, args] of tools) {
+      try {
+        const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+        child.stdin?.end(text);
+        child.on('error', () => {});
+      } catch {}
+    }
+  }).catch(() => {});
 }
 
 function readClipboardImage(): Promise<string | undefined> {
