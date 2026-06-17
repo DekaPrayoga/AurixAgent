@@ -293,6 +293,7 @@ interface ChatAreaProps {
   isProcessing: boolean;
   activeTool?: { name: string; args?: Record<string, unknown> };
   scrollOffset: number;
+  todos?: { text: string; done: boolean }[];
 }
 
 function ThinkingIndicator() {
@@ -464,14 +465,21 @@ function SystemMessage({ msg }: { msg: ChatMessage }) {
   );
 }
 
-export function ChatArea({ messages, isProcessing, activeTool, scrollOffset }: ChatAreaProps) {
+export function ChatArea({ messages, isProcessing, activeTool, scrollOffset, todos }: ChatAreaProps) {
   const maxVisible = 100;
   const end = Math.max(0, messages.length - scrollOffset);
   const start = Math.max(0, end - maxVisible);
   const visible = messages.slice(start, end);
 
+  const todoCount = todos ? `${todos.filter(t => t.done).length}/${todos.length}` : null;
+
   return (
     <box flexDirection="column" minHeight={0} backgroundColor={theme.bg}>
+      {todoCount && (
+        <box flexDirection="row" justifyContent="flex-end" paddingX={1}>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>Todo: {todoCount}</text>
+        </box>
+      )}
       <scrollbox
         stickyScroll={true}
         stickyStart="bottom"

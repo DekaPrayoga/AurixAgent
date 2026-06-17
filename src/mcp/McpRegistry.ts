@@ -205,6 +205,44 @@ export class McpServerManager {
     }
     return count;
   }
+
+  async healthCheck(name: string): Promise<{ healthy: boolean; latency?: number; error?: string }> {
+    const client = this.clients.get(name);
+    if (!client || !client.running) {
+      return { healthy: false, error: 'Server not running' };
+    }
+
+    const start = Date.now();
+    try {
+      await client.listTools();
+      const latency = Date.now() - start;
+      return { healthy: true, latency };
+    } catch (e: any) {
+      return { healthy: false, error: e.message || String(e) };
+    }
+  }
+
+  async healthCheckAll(): Promise<Record<string, { healthy: boolean; latency?: number; error?: string }>> {
+    const results: Record<string, any> = {};
+    for (const name of this.clients.keys()) {
+      results[name] = await this.healthCheck(name);
+    }
+    return results;
+  }
+
+  autoDiscover(): McpServerConfig[] {
+    const discovered: McpServerConfig[] = [];
+    const commonServers = ['github', 'filesystem', 'postgres', 'sqlite', 'brave_search', 'puppeteer', 'slack', 'memory', 'fetch'];
+    const config = loadMcpConfig();
+    const existing = new Set(config.servers.map(s => s.name));
+
+    for (const name of commonServers) {
+      if (!existing.has(name) && PRESET_SERVERS[name]) {
+        discovered.push({ name, ...PRESET_SERVERS[name], enabled: false });
+      }
+    }
+    return discovered;
+  }
 }
 
 export const mcpManager = new McpServerManager();

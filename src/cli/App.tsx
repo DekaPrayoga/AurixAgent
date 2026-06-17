@@ -14,6 +14,7 @@ import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { CommandPalette } from './CommandPalette.js';
 import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
+import { OutputPanel } from './OutputPanel.js';
 import { theme, switchTheme, ALL_THEME_NAMES, type ThemeName, setBorderStyle, type BorderStyle } from './theme.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
@@ -69,6 +70,12 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingImagesRef = React.useRef<string[]>([]);
+  const [planMode, setPlanMode] = useState<'normal' | 'auto' | 'plan' | 'auto-plan'>('normal');
+  const [sessionRules, setSessionRules] = useState<string[]>([]);
+  const [sessionGoal, setSessionGoal] = useState<string | null>(null);
+  const [todos, setTodos] = useState<{ text: string; done: boolean }[]>([]);
+  const [btwMessages, setBtwMessages] = useState<string[]>([]);
+  const [showOutputPanel, setShowOutputPanel] = useState(false);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -165,14 +172,30 @@ export function App({ config, registry, resumeId }: AppProps) {
       return;
     }
 
+    if (evt.ctrl && name === 'o') {
+      evt.preventDefault();
+      setShowOutputPanel(prev => !prev);
+      return;
+    }
+
     if (name === 'escape' && isProcessing) {
       evt.preventDefault();
-      agent.interrupt();
-      setMessages(prev => [...prev, {
-        role: 'system',
-        content: 'Interrupt requested. AURIX will stop after the current provider/tool boundary.',
-        timestamp: new Date(),
-      }]);
+      if (activeTool) {
+        agent.interrupt();
+        setActiveTool(undefined);
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: 'Tool cancelled. Agent will continue with next action.',
+          timestamp: new Date(),
+        }]);
+      } else {
+        agent.interrupt();
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: 'Agent interrupted. Response stopped.',
+          timestamp: new Date(),
+        }]);
+      }
       return;
     }
 
@@ -818,8 +841,19 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         addAssistant(slash.args ? `Conversation branched: ${slash.args}` : 'Conversation branched from current point.');
         return;
       } else if (commandName === 'btw') {
-        outboundText = slash.args ? `(Side question) ${slash.args}` : '';
-        if (!outboundText) { addAssistant('Usage: /btw <question>'); return; }
+        if (!slash.args) { addAssistant('Usage: /btw <question>'); return; }
+        const btwText = slash.args.trim();
+        if (isProcessing) {
+          setBtwMessages(prev => [...prev, btwText]);
+          setMessages(prev => [...prev, {
+            role: 'system',
+            content: `[BTW] ${btwText}`,
+            timestamp: new Date(),
+          }]);
+          addAssistant(`Side note injected (no tools, temp only): "${btwText}"`);
+        } else {
+          outboundText = `(Side question, no tools) ${btwText}`;
+        }
       } else if (commandName === 'resume') {
         addAssistant(slash.args ? `Resuming session: ${slash.args}` : 'Usage: /resume <session-id>');
         return;
@@ -1186,9 +1220,28 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       if (commandName === 'review') {
         outboundText = 'Review the current repository for bugs, regressions, security issues, and missing tests. Start by inspecting git status and the relevant diff.';
       } else if (commandName === 'plan') {
-        outboundText = slash.args
-          ? `Create a concise implementation plan for: ${slash.args}`
-          : 'Create a concise implementation plan for the current task before editing files.';
+        const modes: Array<'normal' | 'auto' | 'plan' | 'auto-plan'> = ['normal', 'auto', 'plan', 'auto-plan'];
+        if (!slash.args || slash.args.trim() === '') {
+          const current = planMode;
+          const idx = modes.indexOf(current);
+          const next = modes[(idx + 1) % modes.length];
+          setPlanMode(next);
+          const modeDesc: Record<string, string> = {
+            'normal': 'Permission prompts (allow once/always)',
+            'auto': 'No approval needed, auto-execute',
+            'plan': 'Create plan, approve each step (yes/no/type)',
+            'auto-plan': 'Create plan, auto-execute with interrupt',
+          };
+          addAssistant(`Plan mode: ${next}\n${modeDesc[next]}\n\nShift+Tab to cycle modes.`);
+          return;
+        }
+        const arg = slash.args.trim().toLowerCase();
+        if (modes.includes(arg as any)) {
+          setPlanMode(arg as any);
+          addAssistant(`Plan mode set to: ${arg}`);
+        } else {
+          outboundText = `Create a concise implementation plan for: ${slash.args}`;
+        }
       } else if (commandName === 'diff') {
         outboundText = 'Inspect the current git diff and summarize what changed, risks, and recommended next checks.';
       } else if (commandName === 'mcp') {
@@ -1302,6 +1355,110 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         const toolName = commandName.slice(5);
         const tool = registry.get(toolName);
         addAssistant(tool ? `${tool.name}\n${tool.description}` : `Tool not found: ${toolName}`);
+        return;
+      }
+
+      if (commandName === 'rules') {
+        if (!slash.args) {
+          const rulesList = sessionRules.length > 0
+            ? sessionRules.map((r, i) => `  ${i + 1}. ${r}`).join('\n')
+            : '  (none)';
+          addAssistant(`Session Rules:\n${rulesList}\n\nUsage:\n  /rules add <rule>\n  /rules remove <number>\n  /rules clear\n  /rules edit (opens in editor)`);
+          return;
+        }
+        const args = slash.args.trim();
+        if (args.startsWith('add ')) {
+          const rule = args.slice(4).trim();
+          if (rule) {
+            setSessionRules(prev => [...prev, rule]);
+            addAssistant(`Rule added: "${rule}"`);
+          } else {
+            addAssistant('Usage: /rules add <rule text>');
+          }
+        } else if (args.startsWith('remove ')) {
+          const idx = parseInt(args.slice(7).trim(), 10) - 1;
+          if (idx >= 0 && idx < sessionRules.length) {
+            const removed = sessionRules[idx];
+            setSessionRules(prev => prev.filter((_, i) => i !== idx));
+            addAssistant(`Rule removed: "${removed}"`);
+          } else {
+            addAssistant('Invalid rule number.');
+          }
+        } else if (args === 'clear') {
+          setSessionRules([]);
+          addAssistant('All session rules cleared.');
+        } else if (args === 'edit') {
+          addAssistant('Edit rules in ~/.aurix/rules.md or use /rules add/remove commands.');
+        } else {
+          addAssistant('Usage: /rules add <rule> | /rules remove <n> | /rules clear | /rules edit');
+        }
+        return;
+      }
+
+      if (commandName === 'goal') {
+        if (!slash.args) {
+          if (sessionGoal) {
+            addAssistant(`Current Goal:\n  ${sessionGoal}\n\nUsage: /goal <text> to update, /goal clear to remove`);
+          } else {
+            addAssistant('No goal set.\n\nUsage: /goal <text> to set a session goal\nExample: /goal Implement user authentication with JWT');
+          }
+          return;
+        }
+        const args = slash.args.trim();
+        if (args === 'clear') {
+          setSessionGoal(null);
+          addAssistant('Goal cleared.');
+        } else {
+          setSessionGoal(args);
+          addAssistant(`Goal set: "${args}"`);
+        }
+        return;
+      }
+
+      if (commandName === 'todo') {
+        if (!slash.args) {
+          const done = todos.filter(t => t.done).length;
+          const total = todos.length;
+          if (total === 0) {
+            addAssistant('No todos.\n\nUsage:\n  /todo add <task>\n  /todo done <number>\n  /todo list\n  /todo clear');
+          } else {
+            const list = todos.map((t, i) => {
+              const check = t.done ? '[x]' : '[ ]';
+              return `  ${i + 1}. ${check} ${t.text}`;
+            }).join('\n');
+            addAssistant(`Todos: ${done}/${total} complete\n\n${list}`);
+          }
+          return;
+        }
+        const args = slash.args.trim();
+        if (args.startsWith('add ')) {
+          const task = args.slice(4).trim();
+          if (task) {
+            setTodos(prev => [...prev, { text: task, done: false }]);
+            addAssistant(`Todo added: "${task}"`);
+          }
+        } else if (args.startsWith('done ')) {
+          const idx = parseInt(args.slice(5).trim(), 10) - 1;
+          if (idx >= 0 && idx < todos.length) {
+            setTodos(prev => prev.map((t, i) => i === idx ? { ...t, done: !t.done } : t));
+            const task = todos[idx];
+            addAssistant(`Todo ${task.done ? 'uncompleted' : 'completed'}: "${task.text}"`);
+          } else {
+            addAssistant('Invalid todo number.');
+          }
+        } else if (args === 'clear') {
+          setTodos(prev => prev.filter(t => !t.done));
+          addAssistant('Completed todos cleared.');
+        } else if (args === 'list') {
+          const done = todos.filter(t => t.done).length;
+          const list = todos.map((t, i) => {
+            const check = t.done ? '[x]' : '[ ]';
+            return `  ${i + 1}. ${check} ${t.text}`;
+          }).join('\n');
+          addAssistant(`Todos: ${done}/${todos.length} complete\n\n${list}`);
+        } else {
+          addAssistant('Usage: /todo add <task> | /todo done <n> | /todo list | /todo clear');
+        }
         return;
       }
     }
@@ -1491,6 +1648,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                   isProcessing={isProcessing}
                   activeTool={activeTool}
                   scrollOffset={scrollOffset}
+                  todos={todos}
                 />
                 {permissionPrompt && (
                   <PermissionPrompt
@@ -1548,6 +1706,12 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                       handleSubmit(`/${cmdName}`);
                     }}
                     onCancel={() => setShowPalette(false)}
+                  />
+                )}
+                {showOutputPanel && (
+                  <OutputPanel
+                    messages={messages}
+                    onClose={() => setShowOutputPanel(false)}
                   />
                 )}
                 {sessionList && (

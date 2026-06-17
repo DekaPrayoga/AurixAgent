@@ -383,7 +383,14 @@ async function ensureBrowser(): Promise<Page> {
     })();`,
   });
 
-  const page = context.pages()[0] || await context.newPage();
+  let page = context.pages()[0];
+  if (!page || page.url() === 'about:blank' || page.url().startsWith('chrome://')) {
+    if (page) await page.close().catch(() => {});
+    page = await context.newPage();
+    if (process.platform === 'win32') {
+      await page.goto('about:blank').catch(() => {});
+    }
+  }
 
   let pageCrashed = false;
   page.on('crash', () => { pageCrashed = true; });

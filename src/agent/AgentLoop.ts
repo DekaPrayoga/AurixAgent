@@ -134,6 +134,24 @@ export class AgentLoop {
     this.interrupted = true;
   }
 
+  private autoLoadSkills(userMessage: string): string[] {
+    const loaded: string[] = [];
+    const msg = userMessage.toLowerCase();
+    const skillKeywords: Record<string, string[]> = {
+      'planning-with-files': ['plan', 'planning', 'break down', 'organize', 'multi-step', 'task plan'],
+      'research': ['research', 'investigate', 'deep dive', 'analyze'],
+      'cybersec': ['security', 'vulnerability', 'exploit', 'pentest', 'audit'],
+      'devops': ['deploy', 'docker', 'kubernetes', 'ci/cd', 'pipeline'],
+    };
+
+    for (const [skillId, keywords] of Object.entries(skillKeywords)) {
+      if (keywords.some(kw => msg.includes(kw))) {
+        loaded.push(skillId);
+      }
+    }
+    return loaded;
+  }
+
   setMaxIterations(n: number): void {
     if (n >= 10 && n <= 10000) this.maxIterations = n;
   }
@@ -171,6 +189,12 @@ export class AgentLoop {
     if (images?.length) msg.images = images;
     this.messages.push(msg);
     this.ledger.add('userInput', userMessage);
+
+    const loadedSkills = this.autoLoadSkills(userMessage);
+    if (loadedSkills.length > 0) {
+      const skillInstructions = loadedSkills.map(id => `[Auto-loaded skill: ${id}]`).join('\n');
+      this.messages.push({ role: 'system', content: skillInstructions });
+    }
 
     if (this.contextManager.shouldCompact(this.messages)) {
       yield { type: 'compact', data: 'Context nearing limit — compacting history...' };
