@@ -624,6 +624,15 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const fullUrl = url.startsWith('http') ? url : `https://${url}`;
           const diagnostics: string[] = [];
 
+          const targetHost = (() => {
+            try { return new URL(fullUrl).hostname; } catch { return fullUrl; }
+          })();
+
+          const didNavigate = (page: Page): boolean => {
+            const u = page.url();
+            return u.includes(targetHost) || (u.startsWith('http') && !u.includes('chrome://') && !u.startsWith('about:'));
+          };
+
           let firstErr: string | null = null;
           try {
             await p.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout });
@@ -632,7 +641,8 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             diagnostics.push(`1st attempt threw: ${(firstErr || '').slice(0, 120)}`);
           }
 
-          if (p.url() === 'about:blank') {
+          if (!didNavigate(p)) {
+            diagnostics.push(`after 1st: url=${p.url()}`);
             try {
               await p.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 2 });
             } catch (e: any) {
@@ -640,8 +650,9 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             }
           }
 
-          if (p.url() === 'about:blank') {
-            // The initial page from launchPersistentContext may be in a broken state.
+          if (!didNavigate(p)) {
+            diagnostics.push(`after 2nd: url=${p.url()}`);
+            // The initial page may be in a broken state (new tab page, about:blank, etc).
             // Close it and create a fresh page, then retry navigation.
             try {
               const session = getSession()!;
@@ -653,7 +664,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               } catch (e: any) {
                 diagnostics.push(`fresh page attempt threw: ${(e.message || '').slice(0, 120)}`);
               }
-              if (freshPage.url() !== 'about:blank') {
+              if (didNavigate(freshPage)) {
                 return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
               }
               try {
@@ -661,16 +672,17 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
               } catch (e: any) {
                 diagnostics.push(`fresh page 2nd attempt threw: ${(e.message || '').slice(0, 120)}`);
               }
-              if (freshPage.url() !== 'about:blank') {
+              if (didNavigate(freshPage)) {
                 return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
               }
+              diagnostics.push(`fresh page final url: ${freshPage.url()}`);
             } catch (e: any) {
               diagnostics.push(`fresh page creation failed: ${(e.message || '').slice(0, 120)}`);
             }
           }
 
           const currentPage = getSession()?.page;
-          if (currentPage && currentPage.url() !== 'about:blank') {
+          if (currentPage && didNavigate(currentPage)) {
             return ok(`Navigated to ${currentPage.url()}`, { title: await currentPage.title() });
           }
 
@@ -678,6 +690,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const hints = [
             `Proxy: ${activeProxy || 'none'}`,
             `Target: ${fullUrl}`,
+            `Current URL: ${currentPage?.url() || 'unknown'}`,
             `Platform: ${process.platform}`,
             `Headless: ${browserHeadless}`,
           ];
@@ -685,8 +698,8 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           if (process.platform === 'win32') {
             hints.push('Hint: run "npm rebuild cloakbrowser" to re-download the Chromium binary');
           }
-          return err(`Navigation failed — page stayed at about:blank after multiple attempts (including fresh page)`,
-            `Possible causes:\n  1. cloakbrowser binary not installed (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}\n  5. Try setting BROWSER_HEADLESS=false to see the browser window`);
+          return err(`Navigation failed — page stayed at "${currentPage?.url() || 'unknown'}" instead of ${fullUrl}`,
+            `Possible causes:\n  1. cloakbrowser binary issue (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}\n  5. Try setting BROWSER_HEADLESS=false to see the browser window`);
         }
 
         case 'click': {
