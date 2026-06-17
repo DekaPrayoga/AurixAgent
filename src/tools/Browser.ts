@@ -257,11 +257,14 @@ async function ensureBrowser(): Promise<Page> {
       return base;
     })(),
     // Override cloakbrowser's hardcoded ignoreDefaultArgs on Windows:
-    // add --no-sandbox to the strip list so Playwright removes it from
-    // its own Chromium defaults before launching.
+    // - --no-sandbox and --disable-setuid-sandbox: unsupported on Windows Chromium
+    // - "about:blank": Playwright adds this as a positional arg for persistent
+    //   context (coreBundle.js:41657). On Windows + cloakbrowser, the auto-created
+    //   about:blank page CANNOT navigate via goto(). Stripping it lets us create
+    //   our own page that navigates correctly.
     ...(process.platform === 'win32' ? {
       launchOptions: {
-        ignoreDefaultArgs: ['--enable-automation', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-setuid-sandbox'],
+        ignoreDefaultArgs: ['--enable-automation', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-setuid-sandbox', 'about:blank'],
       },
     } : {}),
   };
