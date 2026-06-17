@@ -207,7 +207,17 @@ return "ok"`;
       });
     }
 
-    if (isWindows) return undefined;
+    if (isWindows) {
+      const tmpFileWin = require('path').join(require('os').tmpdir(), `aurix-paste-${Date.now()}.png`);
+      return new Promise<string | undefined>((resolve) => {
+        const psScript = `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('${tmpFileWin.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output '' }`;
+        const child = sp('powershell', ['-NoProfile', '-Command', psScript], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+        let out = '';
+        child.stdout?.on('data', (d: Buffer) => { out += d; });
+        child.on('close', () => resolve(out.includes('ok') ? tmpFileWin : undefined));
+        child.on('error', () => resolve(undefined));
+      });
+    }
 
     if (process.env.WAYLAND_DISPLAY) {
       return new Promise<string | undefined>((resolve) => {

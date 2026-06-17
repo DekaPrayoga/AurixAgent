@@ -243,7 +243,16 @@ async function ensureBrowser(): Promise<Page> {
         '--fingerprint-webrtc-ip=auto',
       ];
       if (process.platform === 'win32') {
-        return base.filter(a => !a.startsWith('--no-sandbox') && !a.startsWith('--disable-setuid-sandbox'));
+        // cloakbrowser's custom Chromium on Windows only supports
+        // --fingerprint-*, --window-size, --no-first-run, --no-default-browser-check.
+        // All --disable-* and --no-sandbox flags cause "unsupported command-line flag"
+        // warnings and silent navigation failures (about:blank).
+        return base.filter(a =>
+          a.startsWith('--fingerprint') ||
+          a.startsWith('--window-size') ||
+          a === '--no-first-run' ||
+          a === '--no-default-browser-check'
+        );
       }
       return base;
     })(),
