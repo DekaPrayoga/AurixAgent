@@ -160,7 +160,12 @@ function classifyRisk(name: string, args: Record<string, unknown>): ToolPermissi
 }
 
 function summarizeToolUse(name: string, args: Record<string, unknown>): string {
-  if (name === 'terminal') return String(args.command || '').slice(0, 180);
+  if (name === 'terminal') return String(args.command || '');
+  if (name === 'code_exec') {
+    const lang = args.language || 'python';
+    const code = String(args.code || '');
+    return `[${lang}] ${code}`;
+  }
   if (name === 'write_file' || name === 'read_file') return String(args.path || '').slice(0, 180);
   if (name === 'search_files') return `${args.pattern || ''} in ${args.path || '.'}`.slice(0, 180);
   if (name === 'email') return `${args.action || 'email'} ${args.to ? `to ${args.to}` : ''}`.trim();

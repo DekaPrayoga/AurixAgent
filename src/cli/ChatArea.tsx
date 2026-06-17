@@ -344,6 +344,10 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
       detail = action + target + value;
     } else if (name === 'web_search' && args.query) {
       detail = String(args.query);
+    } else if (name === 'code_exec') {
+      const lang = args.language ? String(args.language) : 'python';
+      const code = args.code ? String(args.code) : '';
+      detail = `[${lang}] ${code.length > 200 ? code.slice(0, 197) + '...' : code}`;
     } else if (name === 'research') {
       const depth = args.depth ? ` (${String(args.depth)})` : '';
       const query = args.query ? String(args.query).slice(0, 50) : '';
