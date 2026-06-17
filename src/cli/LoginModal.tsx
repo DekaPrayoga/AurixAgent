@@ -3,6 +3,25 @@ import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
 
+async function readClipboard(): Promise<string> {
+  const { execSync } = await import('child_process');
+  try {
+    if (process.platform === 'win32') {
+      return execSync('powershell -NoProfile -Command "Get-Clipboard"', { encoding: 'utf8', timeout: 2000, windowsHide: true }).replace(/\r\n/g, '\n').trimEnd();
+    }
+    if (process.platform === 'darwin') {
+      return execSync('pbpaste', { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
+    }
+    // Linux
+    for (const cmd of ['wl-paste --no-newline', 'xclip -selection clipboard -o', 'xsel --clipboard --output']) {
+      try {
+        return execSync(cmd, { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
+      } catch {}
+    }
+  } catch {}
+  return '';
+}
+
 interface LoginModalProps {
   currentBaseUrl?: string;
   currentModel?: string;
@@ -110,6 +129,18 @@ export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }:
     if (evt.ctrl && name === 'e') {
       evt.preventDefault();
       setCursor(current.value.length);
+      return;
+    }
+
+    if (evt.ctrl && (name === 'v' || name === 'V')) {
+      evt.preventDefault();
+      readClipboard().then(text => {
+        if (text) {
+          const insertAt = cursor;
+          current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+          setCursor(insertAt + text.length);
+        }
+      });
       return;
     }
 

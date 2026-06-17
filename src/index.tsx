@@ -308,18 +308,6 @@ async function main() {
       config,
       registry,
       resumeId,
-      onMcpManage: async () => {
-        renderer.destroy();
-        const { openMcpManager } = await import('./cli/McpManager.js');
-        await openMcpManager();
-        const newRenderer = await createCliRenderer({
-          exitOnCtrlC: false,
-          useMouse: true,
-        });
-        createRoot(newRenderer).render(
-          React.createElement(App, { config, registry, resumeId })
-        );
-      },
     })
   );
 }

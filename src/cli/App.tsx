@@ -32,10 +32,9 @@ interface AppProps {
   config: AurixConfig;
   registry: ToolRegistry;
   resumeId?: string;
-  onMcpManage?: () => Promise<void>;
 }
 
-export function App({ config, registry, resumeId, onMcpManage }: AppProps) {
+export function App({ config, registry, resumeId }: AppProps) {
   const renderer = useRenderer();
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1193,24 +1192,110 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       } else if (commandName === 'diff') {
         outboundText = 'Inspect the current git diff and summarize what changed, risks, and recommended next checks.';
       } else if (commandName === 'mcp') {
-        if (onMcpManage) {
-          await onMcpManage();
-        } else {
+        const subcmd = (slash.args || '').trim().split(/\s+/);
+        const action = subcmd[0]?.toLowerCase() || '';
+        const arg = subcmd.slice(1).join(' ');
+
+        if (!action || action === 'status') {
           const status = mcpManager.getStatus();
           const total = status.length;
           const running = status.filter(s => s.running).length;
           const tools = mcpManager.getToolCount();
           if (total === 0) {
-            addAssistant('No MCP servers configured.\nUse /mcp to open the MCP manager and add servers.');
+            addAssistant(`MCP: No servers configured.\n\nCommands:\n  /mcp presets        — show available presets\n  /mcp add <name>     — add a preset server\n  /mcp catalog        — browse online catalog`);
           } else {
             const lines = status.map(s => {
-              const icon = s.running ? '●' : '○';
+              const icon = s.running ? '●' : s.enabled ? '○' : '⊘';
               const state = s.running ? 'running' : s.enabled ? 'stopped' : 'disabled';
               const toolInfo = s.toolCount > 0 ? ` (${s.toolCount} tools)` : '';
-              return `  ${icon} ${s.name}: ${state}${toolInfo}`;
+              const desc = s.description ? ` — ${s.description}` : '';
+              return `  ${icon} ${s.name}: ${state}${toolInfo}${desc}`;
             });
-            addAssistant(`MCP Servers: ${total} configured, ${running} running, ${tools} tools\n\n${lines.join('\n')}`);
+            addAssistant(`MCP Servers: ${total} configured, ${running} running, ${tools} tools\n\n${lines.join('\n')}\n\nCommands: /mcp list · /mcp presets · /mcp add <name> · /mcp remove <name> · /mcp toggle <name> · /mcp restart <name> · /mcp catalog`);
           }
+        } else if (action === 'list') {
+          const status = mcpManager.getStatus();
+          if (status.length === 0) {
+            addAssistant('No MCP servers configured. Use /mcp presets to see available servers.');
+          } else {
+            const lines = status.map(s => {
+              const icon = s.running ? '●' : s.enabled ? '○' : '⊘';
+              const state = s.running ? 'running' : s.enabled ? 'stopped' : 'disabled';
+              const toolInfo = s.toolCount > 0 ? ` (${s.toolCount} tools)` : '';
+              const err = s.error ? ` [error: ${s.error.slice(0, 50)}]` : '';
+              return `  ${icon} ${s.name}: ${state}${toolInfo}${err}`;
+            });
+            addAssistant(lines.join('\n'));
+          }
+        } else if (action === 'presets') {
+          const { PRESET_SERVERS } = await import('../mcp/McpRegistry.js');
+          const config = (await import('../mcp/McpRegistry.js')).loadMcpConfig();
+          const existing = new Set(config.servers.map(s => s.name));
+          const lines = Object.entries(PRESET_SERVERS).map(([name, p]) => {
+            const added = existing.has(name) ? ' [added]' : '';
+            const envHint = p.env ? ` (env: ${Object.keys(p.env).join(', ')})` : '';
+            return `  ${name}: ${p.description || 'No description'}${envHint}${added}`;
+          });
+          addAssistant(`Available presets:\n\n${lines.join('\n')}\n\nUse: /mcp add <name>`);
+        } else if (action === 'add' || action === 'connect') {
+          if (!arg) {
+            addAssistant('Usage: /mcp add <preset-name>\nUse /mcp presets to see available servers.');
+          } else {
+            const { PRESET_SERVERS, addMcpServer } = await import('../mcp/McpRegistry.js');
+            const preset = PRESET_SERVERS[arg];
+            if (preset) {
+              addMcpServer({ name: arg, ...preset, enabled: true });
+              const envHint = preset.env ? `\n\nSet environment variables:\n${Object.entries(preset.env).map(([k, v]) => `  export ${k}="${v}"`).join('\n')}` : '';
+              addAssistant(`Added MCP server: ${arg}\n${preset.description || ''}${envHint}\n\nUse /reload-mcp to start it.`);
+            } else {
+              addAssistant(`Unknown preset "${arg}". Use /mcp presets to see available servers.\n\nTo add a custom server, edit ~/.aurix/mcp/servers.json directly.`);
+            }
+          }
+        } else if (action === 'remove') {
+          if (!arg) {
+            addAssistant('Usage: /mcp remove <name>');
+          } else {
+            const { removeMcpServer } = await import('../mcp/McpRegistry.js');
+            await mcpManager.stopServer(arg);
+            removeMcpServer(arg);
+            addAssistant(`Removed MCP server: ${arg}`);
+          }
+        } else if (action === 'toggle') {
+          if (!arg) {
+            addAssistant('Usage: /mcp toggle <name>');
+          } else {
+            const { toggleMcpServer } = await import('../mcp/McpRegistry.js');
+            const newState = toggleMcpServer(arg);
+            if (newState === null) {
+              addAssistant(`Server "${arg}" not found.`);
+            } else {
+              addAssistant(`${arg}: ${newState ? 'enabled' : 'disabled'}. Use /reload-mcp to apply.`);
+            }
+          }
+        } else if (action === 'restart') {
+          if (!arg) {
+            addAssistant('Usage: /mcp restart <name>');
+          } else {
+            const ok = await mcpManager.restartServer(arg);
+            const client = mcpManager.getClient(arg);
+            const tools = client?.tools.length || 0;
+            addAssistant(`${arg}: ${ok ? `running (${tools} tools)` : 'failed to start'}`);
+          }
+        } else if (action === 'catalog') {
+          addAssistant('Fetching MCP catalog...');
+          const { fetchCatalog, searchCatalog } = await import('../mcp/McpCatalog.js');
+          const catalog = await fetchCatalog();
+          const results = arg ? searchCatalog(catalog, arg) : catalog;
+          if (results.length === 0) {
+            addAssistant(`No servers found${arg ? ` for "${arg}"` : ''}.`);
+          } else {
+            const lines = results.slice(0, 15).map(e =>
+              `  ${e.name} [${e.category}]: ${e.description}`
+            );
+            addAssistant(`MCP Catalog${arg ? ` (search: "${arg}")` : ''}:\n\n${lines.join('\n')}\n\n${results.length > 15 ? `+${results.length - 15} more. ` : ''}Use /mcp catalog <query> to search.`);
+          }
+        } else {
+          addAssistant(`Unknown MCP command: ${action}\n\nCommands: list, presets, add, remove, toggle, restart, catalog, status`);
         }
         return;
       } else if (commandName.startsWith('tool:')) {
