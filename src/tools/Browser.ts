@@ -633,51 +633,61 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             return u.includes(targetHost) || (u.startsWith('http') && !u.includes('chrome://') && !u.startsWith('about:'));
           };
 
+          // Try CDP navigation (goto)
           let firstErr: string | null = null;
           try {
             await p.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout });
           } catch (e: any) {
             firstErr = e.message || String(e);
-            diagnostics.push(`1st attempt threw: ${(firstErr || '').slice(0, 120)}`);
+            diagnostics.push(`goto threw: ${(firstErr || '').slice(0, 120)}`);
           }
 
           if (!didNavigate(p)) {
-            diagnostics.push(`after 1st: url=${p.url()}`);
+            diagnostics.push(`after goto: url=${p.url()}`);
+
+            // Fallback: JavaScript-based navigation (window.location.href)
+            // This uses a different mechanism than CDP Page.navigate
             try {
-              await p.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 2 });
+              await p.evaluate((u: string) => { window.location.href = u; }, fullUrl);
+              await p.waitForTimeout(3000);
             } catch (e: any) {
-              diagnostics.push(`2nd attempt threw: ${(e.message || '').slice(0, 120)}`);
+              diagnostics.push(`JS nav threw: ${(e.message || '').slice(0, 120)}`);
             }
           }
 
           if (!didNavigate(p)) {
-            diagnostics.push(`after 2nd: url=${p.url()}`);
-            // The initial page may be in a broken state (new tab page, about:blank, etc).
-            // Close it and create a fresh page, then retry navigation.
+            diagnostics.push(`after JS nav: url=${p.url()}`);
+
+            // Close initial page and create a fresh one
             try {
               const session = getSession()!;
               await p.close().catch(() => {});
               const freshPage = await session.context.newPage();
               session.page = freshPage;
+
+              // Try goto on fresh page
               try {
                 await freshPage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: timeout * 2 });
               } catch (e: any) {
-                diagnostics.push(`fresh page attempt threw: ${(e.message || '').slice(0, 120)}`);
+                diagnostics.push(`fresh goto threw: ${(e.message || '').slice(0, 120)}`);
               }
-              if (didNavigate(freshPage)) {
-                return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
+
+              if (!didNavigate(freshPage)) {
+                // Try JS navigation on fresh page
+                try {
+                  await freshPage.evaluate((u: string) => { window.location.href = u; }, fullUrl);
+                  await freshPage.waitForTimeout(3000);
+                } catch (e: any) {
+                  diagnostics.push(`fresh JS nav threw: ${(e.message || '').slice(0, 120)}`);
+                }
               }
-              try {
-                await freshPage.goto(fullUrl, { waitUntil: 'load', timeout: timeout * 3 });
-              } catch (e: any) {
-                diagnostics.push(`fresh page 2nd attempt threw: ${(e.message || '').slice(0, 120)}`);
-              }
+
               if (didNavigate(freshPage)) {
                 return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
               }
               diagnostics.push(`fresh page final url: ${freshPage.url()}`);
             } catch (e: any) {
-              diagnostics.push(`fresh page creation failed: ${(e.message || '').slice(0, 120)}`);
+              diagnostics.push(`fresh page failed: ${(e.message || '').slice(0, 120)}`);
             }
           }
 
@@ -686,20 +696,33 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             return ok(`Navigated to ${currentPage.url()}`, { title: await currentPage.title() });
           }
 
-          const activeProxy = browserProxy || '';
-          const hints = [
-            `Proxy: ${activeProxy || 'none'}`,
-            `Target: ${fullUrl}`,
-            `Current URL: ${currentPage?.url() || 'unknown'}`,
-            `Platform: ${process.platform}`,
-            `Headless: ${browserHeadless}`,
-          ];
-          if (diagnostics.length) hints.push(`Diagnostics: ${diagnostics.join(' | ')}`);
-          if (process.platform === 'win32') {
-            hints.push('Hint: run "npm rebuild cloakbrowser" to re-download the Chromium binary');
+          // DIAGNOSTIC: test if the browser can execute JS and access the page
+          let jsWorks = 'unknown';
+          try {
+            const testPage = currentPage || p;
+            const result = await testPage.evaluate(() => ({
+              url: window.location.href,
+              hostname: window.location.hostname,
+              canFetch: typeof fetch === 'function',
+              navigator: navigator.userAgent?.slice(0, 50),
+            }));
+            jsWorks = JSON.stringify(result);
+          } catch (e: any) {
+            jsWorks = `evaluate failed: ${(e.message || '').slice(0, 100)}`;
           }
-          return err(`Navigation failed — page stayed at "${currentPage?.url() || 'unknown'}" instead of ${fullUrl}`,
-            `Possible causes:\n  1. cloakbrowser binary issue (run: npm rebuild cloakbrowser)\n  2. Proxy unreachable (${activeProxy || 'none'})\n  3. URL unreachable (${fullUrl})\n  4. ${process.platform === 'win32' ? 'cloakbrowser Chromium binary mismatch on Windows' : 'Network or DNS issue'}\n  5. Try setting BROWSER_HEADLESS=false to see the browser window`);
+
+          const activeProxy = browserProxy || '';
+          return err(
+            `Navigation FAILED — page stuck at "${currentPage?.url() || p.url()}"`,
+            `Target: ${fullUrl}\n` +
+            `Headless: ${browserHeadless} (set BROWSER_HEADLESS=false to see the browser)\n` +
+            `Proxy: ${activeProxy || 'none'}\n` +
+            `Platform: ${process.platform}\n` +
+            `JS diagnostic: ${jsWorks}\n` +
+            `Trace: ${diagnostics.join(' → ')}\n\n` +
+            `If JS diagnostic shows url+hostname correctly → network issue (Windows Defender/firewall blocking Chromium)\n` +
+            `If evaluate failed → browser binary issue (run: npm rebuild cloakbrowser)`
+          );
         }
 
         case 'click': {
