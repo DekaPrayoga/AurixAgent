@@ -22,6 +22,8 @@ export interface ChatResponse {
   text: string;
   toolCalls: ToolCall[];
   usage?: { promptTokens: number; completionTokens: number };
+  finishReason?: string;
+  rawSnippet?: string;
 }
 
 export interface ToolDef {
@@ -146,7 +148,7 @@ export class OpenAIProvider implements Provider {
 
   private parseChatResponse(res: OpenAI.ChatCompletion): ChatResponse {
     if (!res.choices || res.choices.length === 0) {
-      return { text: '', toolCalls: [], usage: undefined };
+      return { text: '', toolCalls: [], usage: undefined, finishReason: 'no_choices', rawSnippet: JSON.stringify(res).slice(0, 300) };
     }
     const choice = res.choices[0];
     const toolCalls: ToolCall[] = [];
@@ -168,6 +170,10 @@ export class OpenAIProvider implements Provider {
         promptTokens: res.usage.prompt_tokens,
         completionTokens: res.usage.completion_tokens,
       } : undefined,
+      finishReason: choice.finish_reason || undefined,
+      rawSnippet: (!choice.message?.content && !choice.message?.tool_calls)
+        ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(0, 300)
+        : undefined,
     };
   }
 
@@ -377,6 +383,10 @@ export class AnthropicProvider implements Provider {
         promptTokens: data.usage.input_tokens,
         completionTokens: data.usage.output_tokens,
       } : undefined,
+      finishReason: data.stop_reason || undefined,
+      rawSnippet: (!text && toolCalls.length === 0)
+        ? JSON.stringify({ stop_reason: data.stop_reason, type: data.type, content: data.content }).slice(0, 300)
+        : undefined,
     };
   }
 
@@ -427,7 +437,7 @@ export class AnthropicProvider implements Provider {
 
     const res = await client.chat.completions.create(params);
     if (!res.choices || res.choices.length === 0) {
-      return { text: '', toolCalls: [], usage: undefined };
+      return { text: '', toolCalls: [], usage: undefined, finishReason: 'no_choices', rawSnippet: JSON.stringify(res).slice(0, 300) };
     }
     const choice = res.choices[0];
     const toolCalls: ToolCall[] = [];
@@ -449,6 +459,10 @@ export class AnthropicProvider implements Provider {
         promptTokens: res.usage.prompt_tokens,
         completionTokens: res.usage.completion_tokens,
       } : undefined,
+      finishReason: choice.finish_reason || undefined,
+      rawSnippet: (!choice.message?.content && !choice.message?.tool_calls)
+        ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(0, 300)
+        : undefined,
     };
   }
 }

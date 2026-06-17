@@ -272,14 +272,22 @@ export class AgentLoop {
 
       if (!response.text && response.toolCalls.length === 0) {
         consecutiveEmpty++;
+
+        const diag: string[] = [];
+        if (response.finishReason) diag.push(`finish_reason: ${response.finishReason}`);
+        if (response.rawSnippet) diag.push(`raw: ${response.rawSnippet.slice(0, 200)}`);
+        if (!response.finishReason && !response.rawSnippet) diag.push('no finish_reason or content from API');
+
+        const diagStr = diag.join(' | ');
+
         if (consecutiveEmpty >= MAX_EMPTY) {
-          yield { type: 'error', data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nStopping. Try: /login, /model <id>, or /doctor.` };
+          yield { type: 'error', data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nAPI diagnostic: ${diagStr}\nStopping. Try: /login, /model <id>, or /doctor.` };
           return;
         }
 
         if (consecutiveEmpty >= 2 && this.registry.has('browser')) {
           try {
-            yield { type: 'text', data: `📸 Auto-screenshot (${consecutiveEmpty}/${MAX_EMPTY}) — agent seems stuck, taking visual context...` };
+            yield { type: 'text', data: `[${consecutiveEmpty}/${MAX_EMPTY}] Empty response (${diagStr}) — taking screenshot for context...` };
             const ssResult = await this.registry.execute('browser', { action: 'screenshot' });
             this.messages.push({
               role: 'tool',
@@ -300,7 +308,7 @@ export class AgentLoop {
         }
 
         const delay = 3;
-        yield { type: 'text', data: `⏳ Empty response (${consecutiveEmpty}/${MAX_EMPTY}) — retry in ${delay}s...` };
+        yield { type: 'text', data: `[${consecutiveEmpty}/${MAX_EMPTY}] Empty response (${diagStr}) — retry in ${delay}s...` };
         for (let s = 0; s < delay; s++) {
           if (this.interrupted) {
             this.interrupted = false;
