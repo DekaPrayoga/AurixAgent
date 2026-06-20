@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from 'react';
 
-const CHARS = ['·', '✢', '*', '✶', '✻', '✽'];
-const FULL_CYCLE = [...CHARS, ...[...CHARS].reverse()];
+const CHARS_UNICODE = ['·', '✢', '*', '✶', '✻', '✽'];
+const CHARS_ASCII = ['.', '*', '**', '***', '****', '***', '**', '*'];
+const CHARS = process.platform === 'win32' ? CHARS_ASCII : CHARS_UNICODE;
+const FULL_CYCLE = process.platform === 'win32' ? CHARS : [...CHARS, ...[...CHARS].reverse()];
 
 export function useThinkingAnimation(active: boolean, intervalMs: number = 120): string {
   const [frame, setFrame] = useState(0);

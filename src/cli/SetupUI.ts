@@ -49,6 +49,9 @@ export function drawInputScreen(opts: {
 
     const stdin = process.stdin;
     let buf = '';
+    let cursor = 0; // cursor position in buf
+    let selStart = -1; // selection start (-1 = no selection)
+    let selEnd = -1; // selection end
     const wasRaw = stdin.isRaw;
     if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
@@ -87,7 +90,20 @@ export function drawInputScreen(opts: {
     };
 
     const renderLine = () => {
-      const display = opts.masked ? '●'.repeat(buf.length) : buf;
+      const text = opts.masked ? '●'.repeat(buf.length) : buf;
+      // Show cursor with underline at cursor position
+      let display = '';
+      for (let i = 0; i < text.length; i++) {
+        const inSelection = selStart >= 0 && selEnd >= 0 && i >= Math.min(selStart, selEnd) && i < Math.max(selStart, selEnd);
+        if (i === cursor) {
+          display += '\x1b[4m' + (text[i] || ' ') + '\x1b[24m'; // underline cursor
+        } else if (inSelection) {
+          display += '\x1b[7m' + text[i] + '\x1b[27m'; // reverse video for selection
+        } else {
+          display += text[i];
+        }
+      }
+      if (cursor >= text.length) display += '\x1b[4m \x1b[24m'; // cursor at end
       process.stdout.write(`\r\x1b[2K  ${bg(bright(' ' + display + ' '))}   `);
     };
     renderLine();
@@ -99,23 +115,24 @@ export function drawInputScreen(opts: {
         const startIdx = ch.indexOf('\x1b[200~') + 6;
         const endIdx = ch.indexOf('\x1b[201~', startIdx);
         if (endIdx !== -1) {
-          // Full bracketed paste in one chunk
-          buf += ch.slice(startIdx, endIdx);
+          // Full bracketed paste in one chunk — strip \r and trailing \n
+          const pasted = ch.slice(startIdx, endIdx).replace(/\r/g, '').replace(/\n$/, '');
+          buf += pasted;
           renderLine();
           return;
         } else {
           // Start marker found but no end marker yet — accumulate
-          buf += ch.slice(startIdx);
+          buf += ch.slice(startIdx).replace(/\r/g, '');
           renderLine();
           // Switch to paste accumulator mode
           const onPaste = (p: string) => {
             const pEnd = p.indexOf('\x1b[201~');
             if (pEnd === -1) {
-              buf += p;
+              buf += p.replace(/\r/g, '');
               renderLine();
               return;
             }
-            buf += p.slice(0, pEnd);
+            buf += p.slice(0, pEnd).replace(/\r/g, '').replace(/\n$/, '');
             stdin.removeListener('data', onPaste);
             stdin.on('data', onData);
             renderLine();
@@ -152,9 +169,43 @@ export function drawInputScreen(opts: {
         }
         // Check for known CSI terminators (letter or ~)
         if (/[A-Za-z~]/.test(ch)) {
-          // Arrow keys, etc. — ignore (not useful for text input)
           clearEscTimer();
+          const seq = escBuf;
           escBuf = '';
+
+          // Arrow keys: Left=\x1b[D, Right=\x1b[C, Home=\x1b[H, End=\x1b[F
+          if (seq === '\x1b[D') { cursor = Math.max(0, cursor - 1); selStart = selEnd = -1; renderLine(); return; } // Left
+          if (seq === '\x1b[C') { cursor = Math.min(buf.length, cursor + 1); selStart = selEnd = -1; renderLine(); return; } // Right
+          if (seq === '\x1b[H') { cursor = 0; selStart = selEnd = -1; renderLine(); return; } // Home
+          if (seq === '\x1b[F') { cursor = buf.length; selStart = selEnd = -1; renderLine(); return; } // End
+
+          // Shift+arrows: Shift+Left=\x1b[1;2D, Shift+Right=\x1b[1;2C, Shift+Home=\x1b[1;2H, Shift+End=\x1b[1;2F
+          if (seq === '\x1b[1;2D') { // Shift+Left
+            if (selStart < 0) selStart = cursor;
+            cursor = Math.max(0, cursor - 1);
+            selEnd = cursor;
+            renderLine(); return;
+          }
+          if (seq === '\x1b[1;2C') { // Shift+Right
+            if (selStart < 0) selStart = cursor;
+            cursor = Math.min(buf.length, cursor + 1);
+            selEnd = cursor;
+            renderLine(); return;
+          }
+          if (seq === '\x1b[1;2H') { // Shift+Home
+            if (selStart < 0) selStart = cursor;
+            cursor = 0;
+            selEnd = cursor;
+            renderLine(); return;
+          }
+          if (seq === '\x1b[1;2F') { // Shift+End
+            if (selStart < 0) selStart = cursor;
+            cursor = buf.length;
+            selEnd = cursor;
+            renderLine(); return;
+          }
+
+          // Other escape sequences — discard
           return;
         }
         // Reset timeout
@@ -201,7 +252,26 @@ export function drawInputScreen(opts: {
         return;
       }
 
-      if (c === 3) process.exit(0);
+      // Ctrl+C — copy input to clipboard
+      if (c === 3) {
+        if (buf.length > 0 && readClipboardFn) {
+          // Use writeClipboard from InputBox to copy to system clipboard
+          import('./InputBox.js').then(({ writeClipboard }) => {
+            writeClipboard(buf);
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      // Ctrl+X — exit input
+      if (c === 24) {
+        stdin.removeListener('data', onData);
+        if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+        if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
+        process.stdout.write('\n');
+        resolve('__back__');
+        return;
+      }
 
       // Ctrl+U — clear line
       if (c === 21) {

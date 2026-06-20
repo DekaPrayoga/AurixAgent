@@ -46,11 +46,21 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     }
   }
 
-  // Step 3: API Key
-  const apiKey = state.apiKey || await stepApiKey(provider);
-  if (apiKey === '__skip__' || apiKey === '__back__') {
-    saveSetupState({ step: 'apiKey', provider, baseUrl });
-    return await loadConfigOrDefault();
+  // Step 3: API Key — always offer for custom providers
+  let apiKey = state.apiKey;
+  if (!apiKey || isCustom) {
+    const existingHint = apiKey ? `\nCurrent key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}\nLeave blank to keep existing key.` : '';
+    const key = await stepApiKey(provider, existingHint);
+    if (key === '__skip__' || key === '__back__') {
+      if (apiKey) {
+        drawInfo('Keeping existing API key.\n');
+      } else {
+        saveSetupState({ step: 'apiKey', provider, baseUrl });
+        return await loadConfigOrDefault();
+      }
+    } else if (key) {
+      apiKey = key;
+    }
   }
 
   // Step 4: Model
@@ -74,6 +84,9 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
 
   // Step 9: Plugin/skill loading
   const plugins = await stepPlugins();
+
+  // Step 10: Captcha solving method
+  const captchaAudio = await stepCaptcha();
 
   const resolvedProvider = provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto'
     ? 'custom'
@@ -104,6 +117,8 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     integrations,
     plugins,
     features: (Array.isArray(features) ? features : []) as string[],
+    captchaAudio: captchaAudio.mode,
+    groqApiKey: captchaAudio.groqApiKey,
   };
 
   ensureConfigDir();
@@ -173,7 +188,7 @@ async function stepProvider(): Promise<string> {
   return choice;
 }
 
-async function stepApiKey(provider: string): Promise<string> {
+async function stepApiKey(provider: string, existingHint?: string): Promise<string> {
   const providerNames: Record<string, string> = {
     openai: 'OpenAI',
     anthropic: 'Anthropic',
@@ -191,6 +206,7 @@ async function stepApiKey(provider: string): Promise<string> {
     '',
     'Your key is stored locally in ~/.aurix/config.yaml',
   ];
+  if (existingHint) hintLines.push(existingHint);
 
   const key = await drawInputScreen({
     title: `API Key — ${providerName}`,
@@ -539,6 +555,57 @@ async function stepPlugins(): Promise<AurixConfig['plugins']> {
     sources,
     allowClaudeStore: selected.includes('claude-store'),
   };
+}
+
+async function stepCaptcha(): Promise<{ mode: AurixConfig['captchaAudio']; groqApiKey?: string }> {
+  const selected = await drawSelector({
+    title: 'CAPTCHA Solving Method',
+    items: [
+      { id: 'hybrid', label: 'Hybrid (Recommended)', desc: 'Image first, audio fallback (best success rate)' },
+      { id: 'image', label: 'Image Clicking', desc: 'AI vision analyzes grid tiles' },
+      { id: 'audio', label: 'Audio Captcha', desc: 'Whisper STT transcribes audio challenge' },
+    ],
+    allowSkip: true,
+  });
+
+  if (!selected || selected === '__skip__' || selected === '__back__') {
+    drawInfo('Defaulting to hybrid captcha mode.\n');
+    return { mode: 'hybrid' };
+  }
+
+  const mode = selected as AurixConfig['captchaAudio'];
+
+  // If audio or hybrid, ask for Groq API key or local whisper
+  if (mode === 'audio' || mode === 'hybrid') {
+    const audioMethod = await drawSelector({
+      title: 'Audio Transcription Method',
+      items: [
+        { id: 'groq', label: 'Groq API (Recommended)', desc: 'Free 2000 req/day, fast & accurate' },
+        { id: 'local', label: 'Local Whisper', desc: 'Auto-install whisper, no API key needed' },
+      ],
+      allowSkip: true,
+    });
+
+    if (audioMethod === 'groq') {
+      drawInfo('Get your free API key at: https://console.groq.com/docs/speech-to-text');
+      const groqKey = await drawInputScreen({
+        title: 'Groq API Key',
+        hint: 'Paste your Groq API key (gsk_...). Get free at console.groq.com\nYou Can Change This At ~/.aurix/config.yaml',
+        label: 'API Key:',
+        masked: true,
+      });
+      if (groqKey && groqKey !== '__back__') {
+        return { mode, groqApiKey: groqKey };
+      }
+    }
+
+    if (audioMethod === 'local') {
+      drawInfo('Local Whisper will be auto-installed on first use.');
+      drawInfo('Requires Python 3.8+ and pip.');
+    }
+  }
+
+  return { mode };
 }
 
 function loadSetupState(): Record<string, any> {

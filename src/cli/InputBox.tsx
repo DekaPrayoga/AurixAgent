@@ -238,6 +238,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
+  const [selStart, setSelStart] = useState(-1);
+  const [selEnd, setSelEnd] = useState(-1);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
@@ -271,7 +273,21 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
     if (text) {
       const lines = text.split('\n');
-      if (lines.length >= 2 || text.length > 200) {
+      // If there's a selection, replace it with pasted text
+      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+        const start = Math.min(selStart, selEnd);
+        const end = Math.max(selStart, selEnd);
+        if (lines.length >= 2 || text.length > 200) {
+          const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
+          pastedBlocks.set(placeholder, text);
+          setValue(prev => prev.slice(0, start) + placeholder + prev.slice(end));
+          setCursor(start + placeholder.length);
+        } else {
+          setValue(prev => prev.slice(0, start) + text + prev.slice(end));
+          setCursor(start + text.length);
+        }
+        setSelStart(-1); setSelEnd(-1);
+      } else if (lines.length >= 2 || text.length > 200) {
         const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
         pastedBlocks.set(placeholder, text);
         setValue(prev => prev + placeholder);
@@ -378,11 +394,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
-      const isHintText = value === 'press Ctrl+C again to exit';
-      if (value && !isHintText) {
+      // Copy selected text or all text
+      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+        const start = Math.min(selStart, selEnd);
+        const end = Math.max(selStart, selEnd);
+        writeClipboard(value.slice(start, end));
+      } else if (value && value !== 'press Ctrl+C again to exit') {
         writeClipboard(value);
-        lastCtrlCEmpty = 0;
-      } else {
+      }
+      const isHintText = value === 'press Ctrl+C again to exit';
+      if (!value || isHintText) {
         const now = Date.now();
         if (now - lastCtrlCEmpty < 1000) {
           if (onExit) {
@@ -394,11 +415,19 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           lastCtrlCEmpty = now;
           setValue('press Ctrl+C again to exit');
           setCursor(0);
+          setSelStart(-1); setSelEnd(-1);
           setTimeout(() => {
             setValue(prev => prev === 'press Ctrl+C again to exit' ? '' : prev);
           }, 1500);
         }
       }
+      return;
+    }
+    if (evt.ctrl && name === 'a') {
+      evt.preventDefault();
+      setSelStart(0);
+      setSelEnd(value.length);
+      setCursor(value.length);
       return;
     }
     if (evt.ctrl && name === 'z') {
@@ -440,7 +469,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     }
     if (name === 'backspace' || name === 'delete') {
       evt.preventDefault();
-      if (cursor > 0 && lastPasteStart >= 0 && cursor === lastPasteStart + lastPasteLen) {
+      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+        // Delete selected text
+        const start = Math.min(selStart, selEnd);
+        const end = Math.max(selStart, selEnd);
+        setValue(value.slice(0, start) + value.slice(end));
+        setCursor(start);
+        setSelStart(-1); setSelEnd(-1);
+        lastPasteStart = -1;
+        lastPasteLen = 0;
+      } else if (cursor > 0 && lastPasteStart >= 0 && cursor === lastPasteStart + lastPasteLen) {
         setValue(value.slice(0, lastPasteStart) + value.slice(cursor));
         setCursor(lastPasteStart);
         lastPasteStart = -1;
@@ -455,12 +493,54 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     }
     if (name === 'left') {
       evt.preventDefault();
-      setCursor(Math.max(0, cursor - 1));
+      if (evt.shift) {
+        // Shift+Left: extend selection left
+        if (selStart < 0) setSelStart(cursor);
+        const newCursor = Math.max(0, cursor - 1);
+        setCursor(newCursor);
+        setSelEnd(newCursor);
+      } else {
+        setCursor(Math.max(0, cursor - 1));
+        setSelStart(-1); setSelEnd(-1);
+      }
       return;
     }
     if (name === 'right') {
       evt.preventDefault();
-      setCursor(Math.min(value.length, cursor + 1));
+      if (evt.shift) {
+        // Shift+Right: extend selection right
+        if (selStart < 0) setSelStart(cursor);
+        const newCursor = Math.min(value.length, cursor + 1);
+        setCursor(newCursor);
+        setSelEnd(newCursor);
+      } else {
+        setCursor(Math.min(value.length, cursor + 1));
+        setSelStart(-1); setSelEnd(-1);
+      }
+      return;
+    }
+    if (name === 'home') {
+      evt.preventDefault();
+      if (evt.shift) {
+        if (selStart < 0) setSelStart(cursor);
+        setCursor(0);
+        setSelEnd(0);
+      } else {
+        setCursor(0);
+        setSelStart(-1); setSelEnd(-1);
+      }
+      return;
+    }
+    if (name === 'end') {
+      evt.preventDefault();
+      if (evt.shift) {
+        if (selStart < 0) setSelStart(cursor);
+        setCursor(value.length);
+        setSelEnd(value.length);
+      } else {
+        setCursor(value.length);
+        setSelStart(-1); setSelEnd(-1);
+      }
       return;
     }
     if (fileSuggestionsVisible && name === 'up') {
@@ -511,18 +591,52 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (evt.ctrl || evt.meta) return;
     if (name === 'space' || name === ' ') {
       evt.preventDefault();
-      setValue(value.slice(0, cursor) + ' ' + value.slice(cursor));
-      setCursor(cursor + 1);
+      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+        const start = Math.min(selStart, selEnd);
+        const end = Math.max(selStart, selEnd);
+        setValue(value.slice(0, start) + ' ' + value.slice(end));
+        setCursor(start + 1);
+        setSelStart(-1); setSelEnd(-1);
+      } else {
+        setValue(value.slice(0, cursor) + ' ' + value.slice(cursor));
+        setCursor(cursor + 1);
+        setSelStart(-1); setSelEnd(-1);
+      }
       return;
     }
     if (name.length === 1 && !evt.ctrl && !evt.meta) {
       const input = evt.shift ? name.toUpperCase() : name;
-      setValue(value.slice(0, cursor) + input + value.slice(cursor));
-      setCursor(cursor + input.length);
+      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+        // Replace selected text
+        const start = Math.min(selStart, selEnd);
+        const end = Math.max(selStart, selEnd);
+        setValue(value.slice(0, start) + input + value.slice(end));
+        setCursor(start + input.length);
+        setSelStart(-1); setSelEnd(-1);
+      } else {
+        setValue(value.slice(0, cursor) + input + value.slice(cursor));
+        setCursor(cursor + input.length);
+        setSelStart(-1); setSelEnd(-1);
+      }
     }
   });
 
-  const before = value.slice(0, cursor);
+  // Compute before/cursor/after with selection highlighting
+  const hasSelection = selStart >= 0 && selEnd >= 0 && selStart !== selEnd;
+  const selFrom = hasSelection ? Math.min(selStart!, selEnd!) : -1;
+  const selTo = hasSelection ? Math.max(selStart!, selEnd!) : -1;
+
+  let beforeText = '';
+  let selectedText = '';
+  let afterText = '';
+  if (hasSelection) {
+    beforeText = value.slice(0, selFrom);
+    selectedText = value.slice(selFrom, selTo);
+    afterText = value.slice(selTo);
+  } else {
+    beforeText = value.slice(0, cursor);
+    afterText = value.slice(cursor + 1);
+  }
   const cursorChar = value[cursor] || ' ';
   const after = value.slice(cursor + 1);
   const homeDir = (cwd || process.cwd()).replace(/^\/root\//, '~/');
@@ -579,9 +693,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           >
             {value ? (
               <text fg={theme.text} wrapMode="word">
-                <span style={{ fg: theme.text }}>{before}</span>
-                <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
-                <span style={{ fg: theme.text }}>{after}</span>
+                <span style={{ fg: theme.text }}>{beforeText}</span>
+                {hasSelection ? <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span> : <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>}
+                <span style={{ fg: theme.text }}>{afterText}</span>
               </text>
             ) : (
               <text fg={theme.textMuted}>Ask anything...</text>
@@ -617,9 +731,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         >
           {value ? (
             <text fg={theme.text} wrapMode="word">
-              <span style={{ fg: theme.text }}>{before}</span>
-              <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
-              <span style={{ fg: theme.text }}>{after}</span>
+              <span style={{ fg: theme.text }}>{beforeText}</span>
+              {hasSelection ? <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span> : <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>}
+              <span style={{ fg: theme.text }}>{afterText}</span>
             </text>
           ) : (
             <text fg={theme.textMuted}>Ask anything...</text>
