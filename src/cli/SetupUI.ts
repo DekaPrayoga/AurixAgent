@@ -119,7 +119,7 @@ export function drawInputScreen(opts: {
         }
         // Reset timeout
         clearEscTimer();
-        escTimer = setTimeout(flushEsc, 50);
+        escTimer = setTimeout(flushEsc, 300);
         return;
       }
 
@@ -129,7 +129,7 @@ export function drawInputScreen(opts: {
         // Start of escape sequence — wait to see if more bytes arrive
         escBuf = ch;
         clearEscTimer();
-        escTimer = setTimeout(flushEsc, 50);
+        escTimer = setTimeout(flushEsc, 300);
         return;
       }
 
@@ -332,7 +332,7 @@ export function drawSelector(opts: {
         escTimer = setTimeout(() => {
           // Timed out mid-sequence — not a standalone Esc, just drop it.
           escBuf = '';
-        }, 50);
+        }, 300);
         return;
       }
 
@@ -340,7 +340,7 @@ export function drawSelector(opts: {
 
       if (c === 27) {
         // Could be standalone Esc (back) or start of a sequence.
-        // Buffer and decide after 50ms.
+        // Buffer and decide after 300ms (increased for slow terminals/SSH).
         escBuf = ch;
         clearEscTimer();
         escTimer = setTimeout(() => {
@@ -350,7 +350,7 @@ export function drawSelector(opts: {
           } else {
             escBuf = '';
           }
-        }, 50);
+        }, 300);
         return;
       }
 
