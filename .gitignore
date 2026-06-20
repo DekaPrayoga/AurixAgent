@@ -39,6 +39,16 @@ training/gui-screenshots/
 /tmp/google-*.log
 /tmp/audio-*.log
 
+# Security scan results
+ffuf_main.txt
+inferhub_endpoints.txt
+nmap_vuln_results.txt
+nuclei_results.txt
+
+# Training backups
+training.bak/
+training/manual-screenshots/
+
 # Unrelated files
 jurnal-pupuk.*
 
