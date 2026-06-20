@@ -49,14 +49,27 @@ AURIX ships with **CloakBrowser** — a patched Chromium with source-level anti-
 
 | CAPTCHA Type | Method | Success Rate |
 |---|---|---|
-| **reCAPTCHA v2** | Auto-click checkbox + image grid solver (screenshots each tile, AI vision picks matches) | **86%** with good vision model |
+| **reCAPTCHA v2** | Hybrid solver: image grid AI vision + audio bypass (Whisper STT) with human-like clicking | **95%+** hybrid mode |
 | **hCaptcha** | Same image grid solving flow | ~80% with vision model |
 | **Cloudflare Turnstile** | Managed challenge auto-click | ~90% |
 | **FunCaptcha (Arkose Labs / Microsoft)** | Puzzle type detection + rotation, drag-drop, image-match solving | ~75% |
 | **GeeTest / MTCaptcha** | Slider drag with human-like easing + micro-jitter | ~85% |
 | **Text CAPTCHA** | Screenshot + OCR via AI vision | ~95% |
 
-**Best model for CAPTCHA:** Use **Gemini** — Google owns both reCAPTCHA and Gemini, so Gemini understands reCAPTCHA's image challenges better than any other model. Any vision-capable model with 700B+ parameters works well. Only switch models if yours is non-vision or below 700B parameters.
+**NEW: Hybrid Audio + Image Solver** — AURIX now supports a hybrid captcha solving mode:
+- **Image mode**: AI vision analyzes grid tiles, picks matches, clicks with human-like behavior
+- **Audio mode**: Clicks audio button, downloads audio challenge, transcribes with Whisper (local or Groq API), types answer
+- **Hybrid mode** (default): Tries image first, falls back to audio if image fails
+- Auto-detects non-vision models and switches to audio mode automatically
+- Supports Groq Whisper API (free 2000 req/day) or local Whisper installation
+
+```yaml
+# config.yaml
+captchaAudio: "hybrid"    # "image" / "audio" / "hybrid"
+groqApiKey: gsk_xxx       # Get free key: https://console.groq.com/docs/speech-to-text
+```
+
+**Best model for CAPTCHA:** Use **Gemini** — Google owns both reCAPTCHA and Gemini, so Gemini understands reCAPTCHA's image challenges better than any other model. Any vision-capable model works. Non-vision models auto-switch to audio mode.
 
 New browser actions: `captcha-grid`, `click-tile`, `captcha-verify`, `drag-to`, `hold-click` — all with human-like mouse behavior (eased curves, random delays, micro-jitter).
 
@@ -84,6 +97,31 @@ Bundled with comprehensive offensive security skills covering every CTF category
 | **Malware** | 3 | C2 traffic, packers, .NET analysis |
 | **OSINT** | 3 | Social media, geolocation, DNS, public records |
 | **AI/ML** | 3 | Adversarial examples, prompt injection, model extraction |
+
+## What's New in v2.11
+
+### Hybrid CAPTCHA Solver (Image + Audio)
+The biggest upgrade yet — AURIX now solves CAPTCHAs using a **hybrid approach**:
+- **Image grid solver** with enhanced preprocessing (normalize, sharpen, saturation boost) for better small-object detection
+- **Audio bypass** using Whisper STT (Groq API or local) to transcribe audio challenges
+- **3x3 flip solver** with canvas-based flip detection and multi-round re-clicking
+- **4x4 grid solver** with grid-level analysis and per-tile fallback
+- **Non-vision model auto-detection** — automatically switches to audio mode if your model doesn't support vision
+- **Telegram status** now shows `using_tools: $command` instead of generic "Writing response..."
+
+```bash
+# Install with hybrid captcha support
+npm i -g aurix-ai
+
+# Setup Groq API key for audio bypass (free 2000 req/day)
+# Get key at: https://console.groq.com/docs/speech-to-text
+aurix setup
+```
+
+### Telegram Tools Fix
+- All "features" renamed to "tools" for consistency
+- Status messages now show `using_tools: $tool_name` format
+- Unknown commands properly handled as tool invocations
 
 ## What's New in v2.9.x
 
