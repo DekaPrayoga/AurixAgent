@@ -9,6 +9,38 @@ function cryptoRandomId(): string {
   return crypto.randomBytes(6).toString('hex');
 }
 
+// Convert markdown to plain text for chat platforms (Telegram/Discord/WA)
+// Strips all markdown formatting: bold, headers, code blocks, backticks, etc.
+function stripMarkdown(text: string): string {
+  return text
+    // Remove code blocks (```...```)
+    .replace(/```[\s\S]*?```/g, (match) => {
+      // Extract code content without the fences
+      return match.replace(/^```[a-z]*\n?/g, '').replace(/```$/g, '').trim();
+    })
+    // Remove inline code backticks
+    .replace(/`([^`]+)`/g, '$1')
+    // Convert **bold** and __bold__ to UPPERCASE for emphasis
+    .replace(/\*\*([^*]+)\*\*/g, (_, t) => t.toUpperCase())
+    .replace(/__([^_]+)__/g, (_, t) => t.toUpperCase())
+    // Convert *italic* and _italic_ to plain text
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '$1')
+    .replace(/(?<!_)_([^_]+)_(?!_)/g, '$1')
+    // Convert # headers to plain text (remove # prefix)
+    .replace(/^#{1,6}\s+/gm, '')
+    // Remove ^ carets
+    .replace(/\^/g, '')
+    // Remove ~~strikethrough~~
+    .replace(/~~([^~]+)~~/g, '$1')
+    // Remove [links](url) — keep text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Remove > blockquotes prefix
+    .replace(/^>\s?/gm, '')
+    // Clean up extra whitespace
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export interface IncomingMessage {
   platform: string;
   authorId: string;
@@ -72,6 +104,7 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   /compress — Compress context
   /agents — Show active agents
   /queue <text> — Queue a message
+  /btw <text> — Add context while agent is working
 
 💡 *RESEARCH DEPTH:*
   low — Quick single-agent answers
@@ -132,15 +165,15 @@ Example: !ai make me a python script`;
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const STATUS_EMOJIS: Record<string, string> = {
-  thinking: '⏳',
-  tool_start: '🔧',
-  text: '✍️',
+  thinking: '✻',
+  tool_start: '✻',
+  text: '✻',
   done: '✅',
   error: '❌',
 };
 
 function formatStatus(status: string, detail?: string): string {
-  const emoji = STATUS_EMOJIS[status] || '⏳';
+  const emoji = STATUS_EMOJIS[status] || '✻';
   const label: Record<string, string> = {
     thinking: 'Thinking...',
     tool_start: `using_tools: ${detail || 'tool'}`,
@@ -175,57 +208,57 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
     const sources = args?.sources
       ? String(args.sources).split(',').map(s => SOURCE_LABELS[s.trim().toLowerCase()] || s.trim())
       : ['Reddit', 'X/Twitter', 'YouTube', 'Hacker News', 'GitHub', 'Web'];
-    return `🔧 using_tools: research_forums (${sources.join(', ')})`;
+    return `✻ using_tools: research_forums (${sources.join(', ')})`;
   }
 
   if (toolName === 'research') {
     const depth = args?.depth ? String(args.depth) : 'standard';
     const query = args?.query ? String(args.query).slice(0, 60) : '';
-    return `🔧 using_tools: research "${query}" (${depth})`;
+    return `✻ using_tools: research "${query}" (${depth})`;
   }
 
   if (toolName === 'web_search') {
     const query = args?.query ? String(args.query).slice(0, 60) : '';
-    return `🔧 using_tools: web_search "${query}"`;
+    return `✻ using_tools: web_search "${query}"`;
   }
 
   if (toolName === 'terminal' || toolName === 'bash') {
     const cmd = args?.command ? String(args.command).slice(0, 100) : '';
-    return `🔧 using_tools: ${cmd}`;
+    return `✻ using_tools: ${cmd}`;
   }
 
   if (toolName === 'browser') {
     const action = args?.action ? String(args.action) : '';
     const target = args?.target ? ` → ${String(args.target).slice(0, 40)}` : '';
     const value = args?.value ? ` "${String(args.value).slice(0, 30)}"` : '';
-    return `🔧 using_tools: browser ${action}${target}${value}`;
+    return `✻ using_tools: browser ${action}${target}${value}`;
   }
 
   if (toolName === 'read_file') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `🔧 using_tools: read ${shortFile}`;
+    return `✻ using_tools: read ${shortFile}`;
   }
 
   if (toolName === 'write_file') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `🔧 using_tools: write ${shortFile}`;
+    return `✻ using_tools: write ${shortFile}`;
   }
 
   if (toolName === 'file_edit') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `🔧 using_tools: edit ${shortFile}`;
+    return `✻ using_tools: edit ${shortFile}`;
   }
 
   if (toolName === 'search_files') {
     const pattern = args?.pattern ? String(args.pattern).slice(0, 40) : '';
     const path = args?.path ? ` in ${String(args.path)}` : '';
-    return `🔧 using_tools: search "${pattern}"${path}`;
+    return `✻ using_tools: search "${pattern}"${path}`;
   }
 
-  return `🔧 using_tools: ${toolName}`;
+  return `✻ using_tools: ${toolName}`;
 }
 
 function cleanResponse(text: string): string {
@@ -382,9 +415,28 @@ export class Gateway extends EventEmitter {
       return;
     }
 
+    // /btw — inject additional context while agent is working
+    if (cmd === 'btw') {
+      const btwText = args || '';
+      if (!btwText) {
+        await platform.send('Usage: /btw <additional context>\nInjects extra context into the current conversation.', msg.channelId, msg.replyTo);
+        return;
+      }
+      const agent = this.agents.get(agentKey);
+      if (agent && this.activeProcessing.has(agentKey)) {
+        agent.injectContext(`[User added context while you were working]: ${btwText}`);
+        await platform.send(`✻ Context injected into current task.`, msg.channelId, msg.replyTo);
+      } else {
+        await platform.send(`✻ No active task. Sending as new message...`, msg.channelId, msg.replyTo);
+        msg.content = btwText;
+        setImmediate(() => this.handleMessage(msg));
+      }
+      return;
+    }
+
     if (this.activeProcessing.has(agentKey)) {
       this.messageQueue.set(agentKey, msg);
-      await platform.send('📋 Task queued. Current task still running — your message will be processed after it finishes.\nUse /cancel to stop the current task.', msg.channelId, msg.replyTo);
+      await platform.send(stripMarkdown('📋 Task queued. Current task still running — your message will be processed after it finishes.\nUse /cancel to stop the current task.'), msg.channelId, msg.replyTo);
       return;
     }
 
@@ -395,7 +447,7 @@ export class Gateway extends EventEmitter {
     }
 
     if (cmd === 'start') {
-      await platform.send(isWA ? WA_COMMAND_GUIDE : COMMAND_GUIDE, msg.channelId, msg.replyTo);
+      await platform.send(stripMarkdown(isWA ? WA_COMMAND_GUIDE : COMMAND_GUIDE), msg.channelId, msg.replyTo);
       this.firstTimeUsers.add(agentKey);
       return;
     }
@@ -404,13 +456,13 @@ export class Gateway extends EventEmitter {
       const helpText = isWA
         ? `⏳ AURIX Quick Help\n\n!ai start — Full guide\n!ai reset — Clear context\n!ai model <name> — Switch model\n!ai depth <level> — Research depth\n!ai tools — List tools\n!ai status — Show status\n\nOr just type: !ai <your question>`
         : `⏳ AURIX Quick Help\n\n/start — Full guide\n/reset — Clear context\n/model <name> — Switch model\n/depth <level> — Research depth (low/medium/high/xhigh/max/ultra)\n/tools — List tools\n/skills — List skills\n/status — Show status\n/history — Message count\n\nOr just type your question!`;
-      await platform.send(helpText, msg.channelId, msg.replyTo);
+      await platform.send(stripMarkdown(helpText), msg.channelId, msg.replyTo);
       return;
     }
 
     if (!this.firstTimeUsers.has(agentKey)) {
       this.firstTimeUsers.add(agentKey);
-      await platform.send(isWA ? WA_MINI_GUIDE : MINI_GUIDE, msg.channelId, msg.replyTo);
+      await platform.send(stripMarkdown(isWA ? WA_MINI_GUIDE : MINI_GUIDE), msg.channelId, msg.replyTo);
     }
 
     if (cmd === 'reset') {
@@ -467,9 +519,9 @@ export class Gateway extends EventEmitter {
         return;
       }
       const toolList = tools.slice(0, 30).map(t =>
-        `  🔧 ${t.name} — ${t.description.slice(0, 50)}`
+        `  ✻ ${t.name} — ${t.description.slice(0, 50)}`
       ).join('\n');
-      await platform.send(`🔧 Available tools (${tools.length}):\n${toolList}`, msg.channelId, msg.replyTo);
+      await platform.send(stripMarkdown(`✻ Available tools (${tools.length}):\n${toolList}`), msg.channelId, msg.replyTo);
       return;
     }
 
@@ -641,7 +693,7 @@ export class Gateway extends EventEmitter {
       }
 
       if (fullResponse) {
-        const cleaned = cleanResponse(fullResponse);
+        const cleaned = stripMarkdown(cleanResponse(fullResponse));
         const chunks = splitMessage(cleaned, 1900);
         for (const chunk of chunks) {
           await platform.send(chunk, msg.channelId, msg.replyTo);

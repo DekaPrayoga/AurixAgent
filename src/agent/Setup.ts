@@ -63,8 +63,8 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   // Step 5: LangSmith
   const langsmith = await stepLangSmith();
 
-  // Step 6: Gateway
-  const gateway = state.gateway || await stepGateway();
+  // Step 6: Gateway — always offer to set/update tokens
+  const gateway = await stepGateway(state.gateway);
 
   // Step 7: Features
   const features = await stepFeatures();
@@ -329,24 +329,34 @@ async function stepLangSmith(): Promise<{ enabled: boolean; apiKey?: string; pro
   return { enabled: true, apiKey, project: project || 'aurix-agent' };
 }
 
-async function stepGateway(): Promise<AurixConfig['gateway']> {
+async function stepGateway(existing?: AurixConfig['gateway']): Promise<AurixConfig['gateway']> {
+  const existingList: string[] = [];
+  if (existing?.discord?.token) existingList.push(`Discord (${existing.discord.token.slice(0, 8)}...${existing.discord.token.slice(-4)})`);
+  if (existing?.telegram?.token) existingList.push(`Telegram (${existing.telegram.token.slice(0, 8)}...${existing.telegram.token.slice(-4)})`);
+  if (existing?.whatsapp?.enabled) existingList.push('WhatsApp (QR paired)');
+
+  const extra = existingList.length > 0
+    ? ['', 'Current tokens:', ...existingList.map(t => `  • ${t}`), '', 'Select to update or add new tokens.']
+    : undefined;
+
   const selected = await drawSelector({
     title: 'Messaging Gateway (Optional)',
     items: [
-      { id: 'discord', label: 'Discord Bot', desc: 'Connect to Discord servers' },
-      { id: 'telegram', label: 'Telegram Bot', desc: 'Connect via Bot API' },
-      { id: 'whatsapp', label: 'WhatsApp', desc: 'Connect via Baileys (QR code)' },
+      { id: 'discord', label: 'Discord Bot', desc: existing?.discord?.token ? 'Update token' : 'Connect to Discord servers' },
+      { id: 'telegram', label: 'Telegram Bot', desc: existing?.telegram?.token ? 'Update token' : 'Connect via Bot API' },
+      { id: 'whatsapp', label: 'WhatsApp', desc: existing?.whatsapp?.enabled ? 'Update settings' : 'Connect via Baileys (QR code)' },
     ],
     allowSkip: true,
+    extra,
   });
 
   if (!selected || selected === '__skip__' || selected === '__back__') {
-    drawInfo('No platforms selected.\n');
-    return undefined;
+    drawInfo(existing ? 'Keeping existing gateway tokens.\n' : 'No platforms selected.\n');
+    return existing || undefined;
   }
 
   const platforms = Array.isArray(selected) ? selected : [selected];
-  const gateway: AurixConfig['gateway'] = {};
+  const gateway: AurixConfig['gateway'] = existing ? { ...existing } : {};
 
   for (const platform of platforms) {
     if (platform === 'discord') {

@@ -204,6 +204,11 @@ export class AgentLoop {
     return this.ledger;
   }
 
+  injectContext(text: string): void {
+    this.messages.push({ role: 'user', content: text });
+    this.ledger.add('userInput', text);
+  }
+
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
 

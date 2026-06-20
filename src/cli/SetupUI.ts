@@ -229,18 +229,21 @@ export function drawSelector(opts: {
   items: SelectorItem[];
   allowSkip?: boolean;
   multi: true;
+  extra?: string[];
 }): Promise<string[]>;
 export function drawSelector(opts: {
   title: string;
   items: SelectorItem[];
   allowSkip?: boolean;
   multi?: false;
+  extra?: string[];
 }): Promise<string>;
 export function drawSelector(opts: {
   title: string;
   items: SelectorItem[];
   allowSkip?: boolean;
   multi?: boolean;
+  extra?: string[];
 }): Promise<string | string[]> {
   return new Promise(resolve => {
     const stdin = process.stdin;
@@ -281,6 +284,10 @@ export function drawSelector(opts: {
     const repaint = () => {
       console.clear();
       const lines = [teal.bold(opts.title), ''];
+      if (opts.extra) {
+        opts.extra.forEach(line => lines.push(dim('  ' + line)));
+        lines.push('');
+      }
       opts.items.forEach((item, i) => {
         const isActive = i === active;
         const checked = opts.multi ? (selected.has(item.id) ? green('[x]') : dim('[ ]')) + ' ' : '';
