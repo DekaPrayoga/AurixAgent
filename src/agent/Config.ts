@@ -19,6 +19,9 @@ export interface AurixConfig {
   researchMode?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
   themeName?: 'aurix' | 'opencode' | 'amber' | 'violet' | 'mono' | 'pink' | 'ocean' | 'dark' | 'green' | 'sunset' | 'nebula';
   accentColor?: string;
+  useGroqAudio?: boolean;
+  captchaAudio?: 'image' | 'audio' | 'hybrid' | boolean;
+  groqApiKey?: string;
   langsmith?: {
     apiKey: string;
     project: string;
@@ -90,6 +93,9 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     researchMode: file.researchMode || 'low',
     themeName: file.themeName || 'aurix',
     accentColor: file.accentColor,
+    useGroqAudio: file.useGroqAudio,
+    captchaAudio: file.captchaAudio,
+    groqApiKey: process.env.GROQ_API_KEY || file.groqApiKey,
     langsmith: file.langsmith,
     integrations: file.integrations,
     plugins: file.plugins,

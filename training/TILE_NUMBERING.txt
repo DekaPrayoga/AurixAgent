@@ -1,0 +1,42 @@
+TILE NUMBERING REFERENCE
+========================
+
+Reading order: LEFT to RIGHT, TOP to BOTTOM (same as reading text)
+
+3x3 GRID (9 tiles, numbered 0-8):
+┌───────┬───────┬───────┐
+│       │       │       │
+│   0   │   1   │   2   │
+│       │       │       │
+├───────┼───────┼───────┤
+│       │       │       │
+│   3   │   4   │   5   │
+│       │       │       │
+├───────┼───────┼───────┤
+│       │       │       │
+│   6   │   7   │   8   │
+│       │       │       │
+└───────┴───────┴───────┘
+
+4x4 GRID (16 tiles, numbered 0-15):
+┌─────┬─────┬─────┬─────┐
+│  0  │  1  │  2  │  3  │
+├─────┼─────┼─────┼─────┤
+│  4  │  5  │  6  │  7  │
+├─────┼─────┼─────┼─────┤
+│  8  │  9  │ 10  │ 11  │
+├─────┼─────┼─────┼─────┤
+│ 12  │ 13  │ 14  │ 15  │
+└─────┴─────┴─────┴─────┘
+
+EXAMPLE:
+If instruction is "Select all squares with buses" and buses are in:
+- top-left tile → 0
+- middle row middle → 4 (for 3x3) or 5 (for 4x4)
+- bottom-right tile → 8 (for 3x3) or 15 (for 4x4)
+
+INPUT FORMAT:
+Type numbers separated by comma or space:
+  2,5,6,8     (same as "2 5 6 8")
+  skip        (if no matching tiles)
+  done        (end the round early)

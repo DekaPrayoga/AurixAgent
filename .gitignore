@@ -19,6 +19,26 @@ hello.asm
 hello.o
 *.o
 
+# Training results (DO NOT commit to GitHub)
+training/*.png
+training/*.jpg
+training/*.jpeg
+training/failed-*.json
+training/passed-*.json
+training/captcha-training.json
+training/captcha-training.json.bak
+training/captcha-training-capthai.json
+training/captcha-training-manual.json
+training/captcha-training-gui.json
+training/gui-screenshots/
+
+# Debug/screenshot files
+.aurix-*.png
+/tmp/captcha-debug.log
+/tmp/webshare-*.log
+/tmp/google-*.log
+/tmp/audio-*.log
+
 # Unrelated files
 jurnal-pupuk.*
 

@@ -1,0 +1,16 @@
+# Auto-generated from scanning all Python files in aurix-agent
+# Core dependencies
+python-dotenv>=1.0.0
+pyyaml>=6.0
+Pillow>=10.0.0
+
+# Skills dependencies
+python-pptx>=0.6.21
+manim>=0.18.0
+videodb[capture]>=0.2.0
+reportlab>=4.0.0
+yt-dlp>=2024.0.0
+gateguard-ai>=0.1.0
+
+# Testing
+pytest>=9.0.0

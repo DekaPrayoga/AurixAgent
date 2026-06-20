@@ -2,10 +2,10 @@ import { type Page } from 'playwright-core';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import sharp from 'sharp';
 
-const _TRAINING_DIR = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'training');
+export const TRAINING_DIR = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), 'training');
 import { loadConfig } from '../../agent/Config.js';
 
 export function readFileBase64(path: string): string {
@@ -30,45 +30,80 @@ export async function visionClassify(imageBase64: string, prompt: string): Promi
     max_tokens: 4096,
   };
 
-  const controller = new AbortController();
-  const fetchTimeout = setTimeout(() => controller.abort(), 90_000);
+  const MAX_RETRIES = 3;
+  let lastError: Error | null = null;
 
-  try {
-    const resp = await fetch(`${visionBaseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(visionApiKey ? { Authorization: `Bearer ${visionApiKey}` } : {}),
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    if (!resp.ok) throw new Error(`Vision API error: ${resp.status}`);
-
-    const text = await resp.text();
-
-    if (text.includes('data: ')) {
-      let content = '';
-      for (const line of text.split('\n')) {
-        if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
-          try {
-            const ev = JSON.parse(line.slice(6));
-            const delta = ev.choices?.[0]?.delta;
-            if (delta?.content) content += delta.content;
-            if (delta?.text) content += delta.text;
-            if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
-          } catch {}
-        }
-      }
-      return content.trim();
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000);
+      await new Promise(r => setTimeout(r, delay));
     }
 
-    const json = JSON.parse(text);
-    return (json.choices?.[0]?.message?.content || '').trim();
-  } finally {
-    clearTimeout(fetchTimeout);
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 30_000);
+
+    try {
+      const resp = await fetch(`${visionBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(visionApiKey ? { Authorization: `Bearer ${visionApiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const status = resp.status;
+        if (status === 404 || status === 429 || status >= 500) {
+          lastError = new Error(`Vision API error: ${status}`);
+          clearTimeout(fetchTimeout);
+          continue;
+        }
+        throw new Error(`Vision API error: ${status}`);
+      }
+
+      const text = await resp.text();
+      clearTimeout(fetchTimeout);
+
+      if (text.includes('data: ')) {
+        let content = '';
+        for (const line of text.split('\n')) {
+          if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
+            try {
+              const ev = JSON.parse(line.slice(6));
+              const delta = ev.choices?.[0]?.delta;
+              if (delta?.content) content += delta.content;
+              if (delta?.text) content += delta.text;
+              if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
+            } catch {}
+          }
+        }
+        if (content.trim()) return content.trim();
+        lastError = new Error('Vision API returned empty response');
+        continue;
+      }
+
+      const json = JSON.parse(text);
+      const result = (json.choices?.[0]?.message?.content || '').trim();
+      if (result) return result;
+      lastError = new Error('Vision API returned empty response');
+      continue;
+    } catch (e: any) {
+      clearTimeout(fetchTimeout);
+      if (e.name === 'AbortError') {
+        lastError = new Error('Vision API timeout');
+        continue;
+      }
+      if (attempt < MAX_RETRIES && /ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|network/i.test(e.message)) {
+        lastError = e;
+        continue;
+      }
+      throw e;
+    }
   }
+
+  throw lastError || new Error('Vision API failed after retries');
 }
 
 export async function analyzeTileCrops(
@@ -107,10 +142,26 @@ export async function analyzeTileCrops(
       const height = (r === gridRows - 1) ? imgH - top : tileH;
 
       try {
-        const tileBuf = await sharp(gridScreenshotPath)
+        let tileBuf = await sharp(gridScreenshotPath)
           .extract({ left, top, width, height })
-          .png()
           .toBuffer();
+        if (width < 600 || height < 600) {
+          const upscale = Math.max(1, Math.floor(600 / Math.max(width, height)));
+          tileBuf = await sharp(tileBuf)
+            .resize(width * upscale, height * upscale, { kernel: sharp.kernel.lanczos3 })
+            .normalize()
+            .sharpen({ sigma: 2.0, m1: 0.5, m2: 1.0 })
+            .modulate({ brightness: 1.1, saturation: 1.4 })
+            .png()
+            .toBuffer();
+        } else {
+          tileBuf = await sharp(tileBuf)
+            .normalize()
+            .sharpen({ sigma: 1.5, m1: 0.5, m2: 0.8 })
+            .modulate({ brightness: 1.1, saturation: 1.4 })
+            .png()
+            .toBuffer();
+        }
         tileCrops.push({ idx, base64: tileBuf.toString('base64') });
       } catch {}
     }
@@ -118,24 +169,74 @@ export async function analyzeTileCrops(
 
   _dbg(`analyzeTileCrops: ${tileCrops.length} tiles cropped, classifying in batches...`);
 
+  try {
+    for (let i = 0; i < Math.min(3, tileCrops.length); i++) {
+      writeFileSync(join(homedir(), `.aurix-tile-${i}.png`), Buffer.from(tileCrops[i].base64, 'base64'));
+    }
+  } catch {}
+
   const results: { idx: number; isMatch: boolean }[] = [];
-  const BATCH_SIZE = 4;
+  const BATCH_SIZE = 3;
   for (let i = 0; i < tileCrops.length; i += BATCH_SIZE) {
     const batch = tileCrops.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(batch.map(async ({ idx, base64 }) => {
       try {
-        const prompt = `Look at this image tile from a reCAPTCHA grid. The task is to find tiles containing "${objectName}".
+        const objLower = objectName.toLowerCase();
+        const hints: Record<string, string> = {
+          bus: 'Buses: large vehicle with ROW of passenger windows, tall rectangular body, destination sign. NOT fire hydrants (small barrel on ground), NOT vans, NOT trucks, NOT cars.',
+          car: 'Cars: passenger vehicle with 4 wheels, windshield, hood, trunk/hatch. Must see actual car body shape. NOT motorcycles, NOT buses, NOT trucks, NOT close-ups of single parts.',
+          motorcycle: 'Motorcycles: 2 wheels, visible engine block, gas tank, handlebars, exhaust pipe. Must see bike frame. NOT cars (4 wheels, enclosed), NOT bicycles (no engine/gas tank), NOT scooters.',
+          bicycle: 'Bicycles: 2 thin wheels, thin metal frame, pedals, NO engine, NO gas tank. NOT motorcycles (have engine), NOT scooters.',
+          traffic_light: 'Traffic lights: pole with 2-3 colored circles (red/yellow/green) stacked vertically. NOT street lamps (single white light on pole), NOT building lights.',
+          fire_hydrant: 'Fire hydrants: SHORT barrel-shaped object on ground/sidewalk, dome cap, 2-3 side nozzles/caps, bright red/yellow/orange. They are SMALL (knee-height). NOT buses, NOT vehicles, NOT mailboxes, NOT bollards.',
+          crosswalk: 'Crosswalks: white parallel stripes or zebra pattern PAINTED ON ROAD surface for pedestrians. NOT lane dividers, NOT road arrows, NOT regular pavement markings.',
+          stairs: 'Stairs: visible step edges with distinct risers and treads, ascending or descending. NOT ramps, NOT sloped surfaces, NOT escalators.',
+        };
+        let hint = '';
+        for (const [key, h] of Object.entries(hints)) {
+          if (objLower.includes(key.replace('_', ' ')) || objLower.includes(key)) { hint = `\n- ${h}`; break; }
+        }
 
-Does this image show ${objectName} (or a recognizable part of it, like a pole/sign/housing associated with ${objectName})?
+        const prompt = `You are solving a reCAPTCHA image challenge. The task: find tiles containing "${objectName}".
+This is ONE tile from a grid. Each tile shows a real-world photo.
 
-- Answer YES if you can identify ${objectName} or a significant part of it
-- Answer NO if it clearly does not contain ${objectName}
+First, carefully describe what you see in detail. Then decide: does this tile contain ${objectName}?
 
-Answer with exactly one word: YES or NO`;
+Rules:
+- YES if you can clearly identify ${objectName} in the image — you can see it with confidence
+- YES if ${objectName} is partially visible but clearly identifiable (e.g., front half of a bus, partial view of a bicycle)
+- NO if the tile shows only roads, sky, buildings, trees, or other objects without ${objectName}
+- NO if you see a similar-looking but DIFFERENT object
+- When you're not sure, say NO${hint}
+
+Describe: [detailed description of what you see]
+Answer: YES or NO`;
 
         const response = await visionClassify(base64, prompt);
-        const isMatch = /\byes\b/i.test(response);
-        _dbg(`analyzeTileCrops: tile ${idx} → ${isMatch ? 'YES' : 'NO'} (${response.substring(0, 40).trim()})`);
+        const answerLine = response.split('\n').find(l => /^answer:/i.test(l.trim())) || response;
+        let isMatch = /\byes\b/i.test(answerLine);
+        const describeLine = response.split('\n').find(l => /^describe:/i.test(l.trim())) || '';
+        const descText = describeLine.replace(/^describe:\s*/i, '').toLowerCase();
+
+        // Reject obvious hallucinations: if model says YES but description only
+        // mentions clearly unrelated objects (no mention of target or related terms)
+        if (isMatch) {
+          const falsePositiveHints: Record<string, string[]> = {
+            bus: ['only a car', 'only a van', 'only a truck', 'no bus'],
+            motorcycle: ['only a car', 'only a bicycle', 'no motorcycle'],
+            bicycle: ['only a motorcycle', 'only a car', 'no bicycle'],
+            fire_hydrant: ['only a car', 'only a bus', 'only a building', 'no hydrant', 'no fire'],
+            car: ['only a motorcycle', 'only a bicycle', 'only a bus', 'no car'],
+          };
+          const fpHints = falsePositiveHints[objLower.replace(/\s+/g, '_')] || falsePositiveHints[objLower] || [];
+          const hasFalsePositiveHint = fpHints.some(h => descText.includes(h));
+          if (hasFalsePositiveHint) {
+            _dbg(`analyzeTileCrops: tile ${idx} YES but description contradicts — rejecting`);
+            isMatch = false;
+          }
+        }
+
+        _dbg(`analyzeTileCrops: tile ${idx} → ${isMatch ? 'YES' : 'NO'} (${describeLine.substring(0, 60).trim()})`);
         return { idx, isMatch };
       } catch (e: any) {
         _dbg(`analyzeTileCrops: tile ${idx} failed: ${e.message}`);
@@ -167,7 +268,7 @@ export interface CaptchaTrainingExample {
 
 export function loadCaptchaTraining(): CaptchaTrainingExample[] {
   try {
-    const path = join(_TRAINING_DIR, 'captcha-training.json');
+    const path = join(TRAINING_DIR, 'captcha-training.json');
     if (existsSync(path)) {
       return JSON.parse(readFileSync(path, 'utf-8'));
     }
@@ -177,8 +278,8 @@ export function loadCaptchaTraining(): CaptchaTrainingExample[] {
 
 export function saveCaptchaTraining(example: CaptchaTrainingExample) {
   try {
-    if (!existsSync(_TRAINING_DIR)) mkdirSync(_TRAINING_DIR, { recursive: true });
-    const path = join(_TRAINING_DIR, 'captcha-training.json');
+    if (!existsSync(TRAINING_DIR)) mkdirSync(TRAINING_DIR, { recursive: true });
+    const path = join(TRAINING_DIR, 'captcha-training.json');
     const data = loadCaptchaTraining();
     const existing = data.findIndex(e =>
       e.objectType && example.objectType &&
@@ -194,6 +295,70 @@ export function saveCaptchaTraining(example: CaptchaTrainingExample) {
     }
     if (data.length > 200) data.splice(0, data.length - 200);
     writeFileSync(path, JSON.stringify(data, null, 2));
+  } catch {}
+}
+
+export interface CaptchaResult {
+  instruction: string;
+  objectType: string;
+  gridSize: string;
+  tileCount: number;
+  matchedIndices: number[];
+  result: 'pass' | 'fail' | 'verified' | 'new_challenge';
+  timestamp: number;
+  source?: string;
+  tileDescriptions?: { idx: number; description: string; selected: boolean }[];
+  gridAnalysis?: { result: number[]; rawResponse?: string };
+  perTileAnalysis?: { result: number[] };
+  directAnalysis?: { result: number[] };
+  verifyResults?: { idx: number; kept: boolean; description: string }[];
+  mergeInfo?: string;
+  gridImagePath?: string;
+  is3x3Flip?: boolean;
+  errorNotes?: string;
+}
+
+export function saveCaptchaResult(r: CaptchaResult) {
+  try {
+    if (!existsSync(TRAINING_DIR)) mkdirSync(TRAINING_DIR, { recursive: true });
+
+    if (r.gridImagePath && existsSync(r.gridImagePath)) {
+      try {
+        const ext = r.result === 'fail' ? 'failed' : 'passed';
+        const imgDest = join(TRAINING_DIR, `${ext}-${r.timestamp}-${r.objectType.replace(/\s/g, '_')}.png`);
+        copyFileSync(r.gridImagePath, imgDest);
+        r.gridImagePath = imgDest;
+      } catch {}
+    }
+
+    if (r.result === 'fail' || r.result === 'new_challenge') {
+      const path = join(TRAINING_DIR, 'failed-captcha.json');
+      let list: CaptchaResult[] = [];
+      if (existsSync(path)) { try { list = JSON.parse(readFileSync(path, 'utf-8')); } catch {} }
+      list.push(r);
+      if (list.length > 200) list.splice(0, list.length - 200);
+      writeFileSync(path, JSON.stringify(list, null, 2));
+    }
+
+    if (r.result === 'pass' || r.result === 'verified') {
+      const path = join(TRAINING_DIR, 'captcha-training.json');
+      let list: any[] = [];
+      if (existsSync(path)) { try { list = JSON.parse(readFileSync(path, 'utf-8')); } catch {} }
+      const existing = list.findIndex(e =>
+        e.objectType && r.objectType &&
+        e.objectType.toLowerCase() === r.objectType.toLowerCase() &&
+        e.gridSize === r.gridSize &&
+        JSON.stringify(e.matchedIndices) === JSON.stringify(r.matchedIndices)
+      );
+      if (existing >= 0) {
+        list[existing].successCount = (list[existing].successCount || 1) + 1;
+        list[existing].timestamp = r.timestamp;
+      } else {
+        list.push({ ...r, successCount: 1 });
+      }
+      if (list.length > 200) list.splice(0, list.length - 200);
+      writeFileSync(path, JSON.stringify(list, null, 2));
+    }
   } catch {}
 }
 
@@ -252,30 +417,37 @@ export async function capthaiSolve(imageBase64: string, instruction: string, gri
     const createResp = await fetch('https://ocr.captchaai.com/in.php', { method: 'POST', body: form });
     const createText = await createResp.text();
     console.error(`[CapTCHAi] create: ${createText.substring(0, 200)}`);
-    const createJson = JSON.parse(createText) as any;
+    let createJson: any;
+    try { createJson = JSON.parse(createText); } catch { console.error(`[CapTCHAi] non-JSON create response`); return null; }
     if (createJson.status !== 1 || !createJson.request) {
       console.error(`[CapTCHAi] create failed: status=${createJson.status}, request=${createJson.request}`);
       return null;
     }
 
     const taskId = createJson.request;
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 2000));
       const pollUrl = `https://ocr.captchaai.com/res.php?key=${CAPTCHAI_KEY}&action=get&id=${taskId}&json=1`;
       const pollResp = await fetch(pollUrl);
       const pollText = await pollResp.text();
       console.error(`[CapTCHAi] poll ${i}: ${pollText.substring(0, 200)}`);
-      const pollJson = JSON.parse(pollText) as any;
+      let pollJson: any;
+      try { pollJson = JSON.parse(pollText); } catch { continue; }
       if (pollJson.status === 1) {
         const raw = pollJson.request;
-        if (Array.isArray(raw)) return raw.map(Number);
+        const convertToZeroIndexed = (arr: number[]) => arr.map((n: number) => n - 1).filter((n: number) => n >= 0);
+        if (Array.isArray(raw)) {
+          const result = convertToZeroIndexed(raw.map(Number));
+          return result.length > 0 ? result : null;
+        }
         if (typeof raw === 'string') {
           try {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(Number);
+            if (Array.isArray(parsed) && parsed.length > 0) return convertToZeroIndexed(parsed.map(Number));
+            if (Array.isArray(parsed) && parsed.length === 0) return null;
           } catch {}
           const nums = raw.match(/\d+/g);
-          return nums ? nums.map(Number) : null;
+          return nums ? convertToZeroIndexed(nums.map(Number)) : null;
         }
         return null;
       }
@@ -293,14 +465,44 @@ export function saveCapthaiTraining(data: {
   timestamp: number;
 }) {
   try {
-    if (!existsSync(_TRAINING_DIR)) mkdirSync(_TRAINING_DIR, { recursive: true });
-    const path = join(_TRAINING_DIR, 'captcha-training-capthai.json');
+    if (!existsSync(TRAINING_DIR)) mkdirSync(TRAINING_DIR, { recursive: true });
+    const path = join(TRAINING_DIR, 'captcha-training-capthai.json');
     let list: any[] = [];
     if (existsSync(path)) list = JSON.parse(readFileSync(path, 'utf-8'));
     list.push(data);
     if (list.length > 500) list.splice(0, list.length - 500);
     writeFileSync(path, JSON.stringify(list, null, 2));
   } catch {}
+}
+
+export function getCapthaiCorrectionHint(objectName: string, gridSize: string): string {
+  try {
+    const path = join(TRAINING_DIR, 'captcha-training-capthai.json');
+    if (!existsSync(path)) return '';
+    const list: any[] = JSON.parse(readFileSync(path, 'utf-8'));
+    const objLower = objectName.toLowerCase();
+    const relevant = list.filter(e =>
+      (e.objectType || '').toLowerCase().includes(objLower) ||
+      objLower.includes((e.objectType || '').toLowerCase())
+    ).filter(e => !e.correct);
+
+    if (relevant.length === 0) return '';
+
+    const recent = relevant.slice(-5);
+    const corrections = recent.map(e => {
+      const vision = `[${(e.visionIndices || []).join(',')}]`;
+      const correct = `[${(e.capthaiIndices || []).join(',')}]`;
+      const missed = (e.capthaiIndices || []).filter((i: number) => !(e.visionIndices || []).includes(i));
+      const extra = (e.visionIndices || []).filter((i: number) => !(e.capthaiIndices || []).includes(i));
+      return `predicted ${vision}, correct was ${correct}` +
+        (missed.length ? ` (missed: ${missed.join(',')})` : '') +
+        (extra.length ? ` (extra: ${extra.join(',')})` : '');
+    });
+
+    return `\n\n[PAST CORRECTIONS] Your previous mistakes on "${objectName}" challenges:\n` +
+      corrections.map((c, i) => `  ${i + 1}. ${c}`).join('\n') +
+      `\nLearn from these errors. Pay attention to tiles you tend to miss or wrongly include.`;
+  } catch { return ''; }
 }
 // END TEMP: CapTCHAi training integration
 
@@ -320,12 +522,14 @@ export function easeInOut(t: number): number {
   return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 }
 
+let _lastMousePos: [number, number] = [640, 360];
+
 export async function humanMove(x: number, y: number, page: Page): Promise<void> {
   const mouse = page.mouse;
   const vp = page.viewportSize() || { width: 1280, height: 720 };
 
-  const startX = Math.random() * vp.width * 0.3;
-  const startY = Math.random() * vp.height * 0.3;
+  const startX = _lastMousePos[0];
+  const startY = _lastMousePos[1];
 
   const numControls = 2 + Math.floor(Math.random() * 3);
   const controlPoints: [number, number][] = [[startX, startY]];
@@ -361,6 +565,8 @@ export async function humanMove(x: number, y: number, page: Page): Promise<void>
     await mouse.move(x, y);
     await page.waitForTimeout(20 + Math.random() * 30);
   }
+
+  _lastMousePos = [x, y];
 }
 
 let lastWarmupTime = 0;
@@ -425,6 +631,14 @@ export async function humanClick(locator: any, page: Page): Promise<void> {
   } else {
     await locator.first().click({ force: true });
   }
+}
+
+export async function humanClickAt(x: number, y: number, page: Page): Promise<void> {
+  await humanMove(x, y, page);
+  await page.waitForTimeout(40 + Math.random() * 80);
+  await page.mouse.down();
+  await page.waitForTimeout(50 + Math.random() * 100);
+  await page.mouse.up();
 }
 
 export async function findGridTiles(frame: any, provider: string) {

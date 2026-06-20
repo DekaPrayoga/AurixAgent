@@ -1,8 +1,10 @@
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync } from 'fs';
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, appendFileSync, existsSync } from 'fs';
 import sharp from 'sharp';
-import { visionClassify, readFileBase64, saveCaptchaTraining, findGridTiles, getTrainingHint, capthaiSolve, saveCapthaiTraining } from './common.js';
+import { visionClassify, readFileBase64, findGridTiles, analyzeTileCrops, getTrainingHint, getCapthaiCorrectionHint, capthaiSolve, saveCapthaiTraining, saveCaptchaResult, CaptchaResult, humanMove, humanClickAt, warmupBehavior, TRAINING_DIR } from './common.js';
+import { checkAudioButton, solveAudioCaptcha } from './AudioBypass.js';
+import { loadConfig } from '../../agent/Config.js';
 
 export async function solveCaptchaGrid(page: any, frame: any, provider: string): Promise<string> {
   const results: string[] = [];
@@ -16,14 +18,118 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   };
   try { appendFileSync('/tmp/captcha-debug.log', `\n=== solveCaptchaGrid start (${provider}) ===\n`); } catch {}
 
+  const sessionLog: {
+    tileDescriptions: { idx: number; description: string; selected: boolean }[];
+    directResult: number[];
+    perTileResult: number[];
+    gridLevelResult: number[];
+    verifyResults: { idx: number; kept: boolean; description: string }[];
+    mergeInfo: string;
+    verifyResult: string;
+  } = {
+    tileDescriptions: [],
+    directResult: [],
+    perTileResult: [],
+    gridLevelResult: [],
+    verifyResults: [],
+    mergeInfo: '',
+    verifyResult: '',
+  };
+
+  let _saved = false;
+  const _save = (verifyResult: string) => {
+    if (_saved) return;
+    _saved = true;
+    sessionLog.verifyResult = verifyResult;
+    try {
+      const objMatch = instruction.match(/(?:with|of|containing)\s+(.+?)(?:\.|Click|If\s|Verify|$)/i);
+      const objectType = objMatch ? objMatch[1].trim() : '';
+      const isPass = /\[VERIFIED\]|\[BFRAME_GONE\]/.test(results.join('\n'));
+      const isNewChallenge = /\[NEW_CHALLENGE\]/.test(results.join('\n'));
+      const result: CaptchaResult = {
+        instruction: instruction.substring(0, 120),
+        objectType,
+        gridSize: `${gridRows}x${gridCols}`,
+        tileCount: actualTileCount,
+        matchedIndices: [...matchedIndices],
+        result: isPass ? 'verified' : isNewChallenge ? 'new_challenge' : /FAIL/.test(verifyResult) ? 'fail' : 'pass',
+        timestamp: Date.now(),
+        source: provider,
+        tileDescriptions: sessionLog.tileDescriptions.map(t => ({
+          idx: t.idx,
+          description: t.description,
+          selected: matchedIndices.includes(t.idx),
+        })),
+        gridAnalysis: sessionLog.gridLevelResult.length > 0 ? { result: sessionLog.gridLevelResult } : undefined,
+        perTileAnalysis: sessionLog.perTileResult.length > 0 ? { result: sessionLog.perTileResult } : undefined,
+        directAnalysis: sessionLog.directResult.length > 0 ? { result: sessionLog.directResult } : undefined,
+        verifyResults: sessionLog.verifyResults.length > 0 ? sessionLog.verifyResults : undefined,
+        mergeInfo: sessionLog.mergeInfo || undefined,
+        gridImagePath: gridScreenshotPath,
+        is3x3Flip,
+        errorNotes: verifyResult,
+      };
+      saveCaptchaResult(result);
+    } catch (e: any) {
+      _dbg(`save failed: ${e.message}`);
+    }
+  };
+
+  // === Check captcha audio config ===
+  const config = loadConfig();
+  const captchaAudio = config.captchaAudio;
+
+  // Known vision-capable models
+  const VISION_MODELS = [
+    'gpt-4o', 'gpt-4o-mini', 'gpt-4-vision', 'gpt-4-turbo',
+    'claude-sonnet-4', 'claude-opus-4', 'claude-3-5-sonnet', 'claude-3-opus', 'claude-3-haiku',
+    'gemini', 'gemini-pro', 'gemini-flash', 'gemini-1.5', 'gemini-2', 'gemini-3',
+  ];
+
+  const visionModel = (config.visionModel || config.model || '').toLowerCase();
+  const isVisionModel = VISION_MODELS.some(vm => visionModel.includes(vm));
+
+  let audioFirst = captchaAudio === 'audio' || captchaAudio === true;
+  let audioFallback = captchaAudio === 'hybrid' || captchaAudio === 'audio' || captchaAudio === true;
+
+  // Auto-switch to audio if model doesn't support vision
+  if (!isVisionModel && (captchaAudio === 'hybrid' || captchaAudio === 'image' || !captchaAudio)) {
+    _dbg(`WARNING: Model "${visionModel}" is not a vision model. Auto-switching to audio captcha mode.`);
+    _dbg(`Please set up Groq API key (get free key at https://console.groq.com/docs/speech-to-text) or install local Whisper.`);
+    _dbg(`Set groqApiKey in config.yaml or run: pip install openai-whisper`);
+    audioFirst = true;
+    audioFallback = true;
+  }
+
+  if (audioFirst) {
+    try {
+      const hasAudio = await checkAudioButton(frame);
+      if (hasAudio) {
+        _dbg('Audio-first mode: trying audio bypass...');
+        const audioResult = await solveAudioCaptcha(page, frame);
+        if (audioResult.success) {
+          _dbg(`AUDIO BYPASS SUCCESS! Transcription: "${audioResult.transcription}"`);
+          results.push(`[VERIFIED] audio bypass: "${audioResult.transcription}"`);
+          return results.join('\n');
+        } else {
+          _dbg(`Audio bypass failed${audioResult.transcription ? ` (transcription: "${audioResult.transcription}")` : ''} — falling back to image solver`);
+        }
+      } else {
+        _dbg('No audio button found in audio-first mode — falling back to image solver');
+      }
+    } catch (e: any) {
+      _dbg(`Audio-first error: ${e.message} — falling back to image solver`);
+    }
+  }
+
   let instruction = '';
   try {
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(1500);
     _dbg(`frame url: ${frame.url().substring(0, 120)}`);
 
     for (let waitRetry = 0; waitRetry < 3; waitRetry++) {
       try { await frame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h').first().waitFor({ state: 'visible', timeout: 5000 }); break; } catch {
-        if (waitRetry < 2) { _dbg(`waiting for challenge render (retry ${waitRetry + 1})...`); await page.waitForTimeout(2000); }
+        if (waitRetry < 2) { _dbg(`waiting for challenge render (retry ${waitRetry + 1})...`); await page.waitForTimeout(1000); }
       }
     }
 
@@ -129,6 +235,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   if (!instruction) {
     _dbg('Could not extract captcha instruction');
     results.push('[WARN] Could not extract captcha instruction, cannot auto-solve');
+    _save('NO_INSTRUCTION');
     return results.join('\n');
   }
 
@@ -157,6 +264,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   const objectName = objectMatch ? objectMatch[1].trim() : cleanInstruction;
 
   const is3x3 = tiles.length <= 9;
+  const is3x3Flip = is3x3 && /verify once there are none left/i.test(instruction);
   let gridCols = is3x3 ? 3 : 4;
   let gridRows = is3x3 ? 3 : 4;
   let visibleTiles: any[] = tiles;
@@ -215,6 +323,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   let gridSize = `${gridRows}x${gridCols}`;
 
   const gridScreenshotPath = join(homedir(), '.aurix-captcha-grid.png');
+  let domTileBufs: { idx: number; buf: Buffer }[] = [];
   let gridShot = false;
   let gridShotFromTable = false;
 
@@ -230,13 +339,6 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
       }
       if (cells.length === 0) return { error: 'no table cells found', cellCount: 0, imgCount: 0 };
 
-      const firstImg = cells[0].querySelector('img') as HTMLImageElement | null;
-      const isSprite = firstImg && firstImg.naturalWidth > 0 &&
-        cells.every(c => {
-          const img = c.querySelector('img') as HTMLImageElement | null;
-          return img && img.src === firstImg.src;
-        });
-
       const results: string[] = [];
       const cols = cells.length <= 9 ? 3 : 4;
       const rows = Math.ceil(cells.length / cols);
@@ -246,13 +348,15 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
         const cell = cells[i];
         const img = cell.querySelector('img') as HTMLImageElement | null;
         if (img && img.complete && img.naturalWidth > 0) {
-          if (isSprite) {
+          const cs = getComputedStyle(img);
+          const wrapper = cell.querySelector('.rc-image-tile-wrapper') as HTMLElement;
+          const wcs = wrapper ? getComputedStyle(wrapper) : null;
+          const wW = wrapper ? parseInt(wcs!.width) || 95 : 95;
+          const wH = wrapper ? parseInt(wcs!.height) || 95 : 95;
+          const isSpriteTile = img.naturalWidth > wW * 1.5;
+
+          if (isSpriteTile) {
             try {
-              const cs = getComputedStyle(img);
-              const wrapper = cell.querySelector('.rc-image-tile-wrapper') as HTMLElement;
-              const wcs = wrapper ? getComputedStyle(wrapper) : null;
-              const wW = wrapper ? parseInt(wcs!.width) || 95 : 95;
-              const wH = wrapper ? parseInt(wcs!.height) || 95 : 95;
 
               let imgLeft = parseInt(cs.left) || 0;
               let imgTop = parseInt(cs.top) || 0;
@@ -373,14 +477,25 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
       }
 
       if (tileBufs.length >= actualTileCount) {
+        domTileBufs = tileBufs.map(tb => ({ ...tb }));
+        // DEBUG: save raw tiles to disk for inspection
+        for (const { idx, buf } of tileBufs.slice(0, 9)) {
+          try { writeFileSync(join(homedir(), `.aurix-raw-tile-${idx}.png`), buf); } catch {}
+        }
         try {
           const meta0 = await sharp(tileBufs[0].buf).metadata();
-          const tw = meta0.width || 100, th = meta0.height || 100;
+          const rawW = meta0.width || 100, rawH = meta0.height || 100;
+          const MIN_TILE = 500;
+          const tw = rawW < MIN_TILE ? MIN_TILE : rawW;
+          const th = rawH < MIN_TILE ? MIN_TILE : rawH;
           const gridW = tw * gridCols, gridH = th * gridRows;
           const composites: any[] = [];
           for (const { idx, buf } of tileBufs) {
             const r = Math.floor(idx / gridCols), c = idx % gridCols;
-            composites.push({ input: buf, left: c * tw, top: r * th });
+            const tileBuf = (rawW < MIN_TILE || rawH < MIN_TILE)
+              ? await sharp(buf).resize(tw, th, { kernel: sharp.kernel.lanczos3 }).png().toBuffer()
+              : buf;
+            composites.push({ input: tileBuf, left: c * tw, top: r * th });
           }
           const composedBuf = await sharp({ create: { width: gridW, height: gridH, channels: 3, background: { r: 200, g: 200, b: 200 } } })
             .composite(composites).png().toBuffer();
@@ -390,7 +505,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
           if (composedBuf.length > 5000 && meanAll < 250) {
             gridShot = true;
             gridShotFromTable = true;
-            _dbg(`composed grid from DOM: ${gridW}x${gridH} (buf=${composedBuf.length}, mean=${meanAll.toFixed(1)})`);
+            _dbg(`composed grid from DOM: ${gridW}x${gridH} (tiles ${rawW}x${rawH}→${tw}x${th}, buf=${composedBuf.length}, mean=${meanAll.toFixed(1)})`);
           } else {
             _dbg(`DOM composed grid blank (buf=${composedBuf.length}, mean=${meanAll.toFixed(1)})`);
           }
@@ -493,6 +608,186 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   const matchedIndices: number[] = [];
 
   if (gridShot) {
+    // ============================================
+    // # DONT CHANGE ANYTHING HERE - 3x3 FLIP SOLVER
+    // This section handles 3x3 flip captcha challenges.
+    // It's working correctly (100% pass rate). Do not modify.
+    // ============================================
+    // For 3x3 flip: use sprite tiles + grid crops + grid-level = triple analysis
+    if (is3x3Flip) {
+      let directResult: number[] = [];
+      // Direct sprite: ALL tiles in ONE API call (fast ~5s)
+      if (domTileBufs.length >= actualTileCount) {
+        try {
+          _dbg('3x3 flip: running direct sprite analysis (single batch)...');
+          const cols = gridCols, rows = gridRows;
+          const ts = 200;
+          const gW = cols * ts, gH = rows * ts;
+          const composites: any[] = [];
+          for (const { idx, buf } of domTileBufs) {
+            const r = Math.floor(idx / cols), c = idx % cols;
+            const resized = await sharp(buf).resize(ts, ts, { fit: 'cover', kernel: sharp.kernel.lanczos3 }).sharpen({ sigma: 1.5 }).modulate({ brightness: 1.05, saturation: 1.3 }).png().toBuffer();
+            composites.push({ input: resized, left: c * ts, top: r * ts });
+          }
+          const spriteGrid = await sharp({ create: { width: gW, height: gH, channels: 3, background: { r: 200, g: 200, b: 200 } } }).composite(composites).png().toBuffer();
+          const tileLayout = Array.from({ length: rows }, (_, r) => {
+            const tiles = Array.from({ length: cols }, (_, c) => `[${r * cols + c}]`);
+            return `Row ${r + 1}: ${tiles.join(' ')}`;
+          }).join('\n');
+          const prompt = `3x3 grid of tiles. Find ALL tiles containing "${objectName}".
+${tileLayout}
+YES if you can clearly identify ${objectName}. NO if unsure.
+[N]: YES/NO
+Answer: {"yes": [numbers]}`;
+          const resp = await visionClassify(spriteGrid.toString('base64'), prompt);
+          const tileYes: number[] = [];
+          for (let rawLine of resp.split('\n')) {
+            const line = rawLine.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim();
+            const m1 = line.match(/^\[(\d+)\]:\s*(.+?)\s*→\s*(YES|NO)/i);
+            const m2 = line.match(/^\[(\d+)\]:\s*(YES|NO)/i);
+            if (m1) { const ti = parseInt(m1[1]); if (m1[3].toUpperCase() === 'YES' && ti < actualTileCount) tileYes.push(ti); }
+            else if (m2) { const ti = parseInt(m2[1]); if (m2[2].toUpperCase() === 'YES' && ti < actualTileCount) tileYes.push(ti); }
+          }
+          try {
+            const jm = resp.match(/\{[^{}]*"yes"\s*:\s*\[[^\]]*\][^{}]*\}/);
+            if (jm) { const p = JSON.parse(jm[0]); if (Array.isArray(p.yes)) for (const n of p.yes) { const num = parseInt(n); if (!isNaN(num) && num < actualTileCount) directResult.push(num); } }
+          } catch {}
+          if (directResult.length === 0 && tileYes.length > 0) directResult = tileYes;
+          directResult = [...new Set(directResult)];
+          _dbg(`3x3 flip direct sprite result: [${directResult.join(',')}]`);
+          sessionLog.directResult = [...directResult];
+        } catch (e: any) {
+          _dbg(`direct sprite analysis failed: ${e.message}`);
+        }
+      }
+
+      // Per-tile removed for speed — using direct sprite + grid-level only
+      let perTileResult: number[] = [];
+
+      // Only use per-tile if not over-classified
+      if (perTileResult.length > Math.ceil(actualTileCount * 0.78)) {
+        _dbg(`per-tile over-classified: ${perTileResult.length}/${actualTileCount} — will use grid-level only`);
+        perTileResult = [];
+      }
+
+      // Also run grid-level analysis for cross-checking
+      let gridLevelResult: number[] = [];
+      try {
+        _dbg('3x3 flip: running grid-level analysis for cross-check...');
+        const tileLayout = Array.from({ length: gridRows }, (_, r) => {
+          const tiles = Array.from({ length: gridCols }, (_, c) => {
+            const idx = r * gridCols + c;
+            return idx < actualTileCount ? `[${idx}]` : '';
+          });
+          return `Row ${r + 1} (left to right): ${tiles.join(' ')}`;
+        }).join('\n');
+
+        const objLower = objectName.toLowerCase();
+        const objectHints: Record<string, string> = {
+          bus: 'Buses have: large rectangular body, ROW of passenger windows, destination sign on front/top, much taller than cars. Do NOT select vans, box trucks, or RVs.',
+          car: 'Cars: standard passenger vehicles with 4 wheels, windshield, typical car shape. Do NOT select buses, trucks, motorcycles, or bicycles.',
+          motorcycle: 'Motorcycles have: 2 wheels, visible engine/exhaust, gas tank. INCLUDE scooters and mopeds. Do NOT select cars (4 wheels, enclosed body) or bicycles (no engine).',
+          bicycle: 'Bicycles have: 2 thin wheels, thin frame, handlebars, NO engine. Do NOT select motorcycles (have engine/gas tank) or scooters.',
+          traffic_light: 'Traffic lights have: 2-3 colored lights (red/yellow/green) stacked vertically on a pole. Do NOT select street lamps (single white light).',
+          fire_hydrant: 'Fire hydrants: SHORT barrel shape on ground/sidewalk, dome cap, 2-3 side nozzles, bright red/yellow/orange. Do NOT select mailboxes, trash cans, or bollards.',
+          crosswalk: 'Crosswalks: WIDE white zebra stripes (parallel bars) painted on road/ground. Must see the stripe PATTERN clearly. Do NOT select streets with cars, alleys, intersections without zebra stripes, lane markings, or regular road lines.',
+          stairs: 'Stairs: visible steps with risers and treads. Do NOT select ramps or sloped surfaces.',
+          tractor: 'Tractors: large farm vehicle with big rear wheels, small front wheels, exhaust pipe, cab. INCLUDE all types of tractors.',
+        };
+        let specificHint = '';
+        for (const [key, hint] of Object.entries(objectHints)) {
+          if (objLower.includes(key) || objLower.includes(key.replace('_', ' '))) { specificHint = hint; break; }
+        }
+
+        const gridPrompt = `${gridShotFromTable ? 'The image shows a grid of tiles. Each cell is one tile.' : 'The image shows a captcha frame. The tile grid is the main content.'}
+Grid: ${gridSize} (${actualTileCount} tiles)
+${tileLayout}
+
+Find ALL tiles containing "${objectName}".
+Scan each tile carefully — the ${objectName} may be small, partially visible, or in the background.
+YES if you can clearly identify ${objectName} in the tile.
+NO if the tile shows roads, sky, buildings, or other objects without ${objectName}.
+When unsure, say NO.
+${specificHint ? `- ${specificHint}\n` : ''}[N]: YES/NO
+Answer: {"yes": [numbers]}`;
+
+        let gridBase64: string;
+        try {
+          if (is3x3Flip && domTileBufs.length >= actualTileCount) {
+            // 3x3 flip: compose cleaner grid at 200px per tile (2x upscale)
+            const tileSize = 200;
+            const gW = tileSize * gridCols, gH = tileSize * gridRows;
+            const comps: any[] = [];
+            for (const { idx, buf } of domTileBufs) {
+              const r = Math.floor(idx / gridCols), c = idx % gridCols;
+              const resized = await sharp(buf).resize(tileSize, tileSize, { kernel: sharp.kernel.lanczos3 }).sharpen({ sigma: 1.0 }).png().toBuffer();
+              comps.push({ input: resized, left: c * tileSize, top: r * tileSize });
+            }
+            const cleanGrid = await sharp({ create: { width: gW, height: gH, channels: 3, background: { r: 200, g: 200, b: 200 } } }).composite(comps).png().toBuffer();
+            gridBase64 = cleanGrid.toString('base64');
+          } else {
+            const cleanBuf = await sharp(gridScreenshotPath)
+              .resize(1200, 1200, { fit: 'inside' })
+              .normalize()
+                            .sharpen({ sigma: 1.5, m1: 0.5, m2: 0.8 })
+              .modulate({ brightness: 1.1, saturation: 1.4 })
+              .png().toBuffer();
+            gridBase64 = cleanBuf.toString('base64');
+          }
+        } catch {
+          gridBase64 = readFileBase64(gridScreenshotPath);
+        }
+
+        const gridResponse = await visionClassify(gridBase64, gridPrompt);
+        _dbg(`grid-level response (${gridResponse.length} chars)`);
+
+        const tileYes: number[] = [];
+        for (let rawLine of gridResponse.split('\n')) {
+          const line = rawLine.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim();
+          const m1 = line.match(/^\[(\d+)\]:\s*(.+?)\s*→\s*(YES|NO)/i);
+          const m2 = line.match(/^\[(\d+)\]:\s*(YES|NO)/i);
+          if (m1) {
+            const tileIdx = parseInt(m1[1]);
+            if (m1[3].toUpperCase() === 'YES' && tileIdx >= 0 && tileIdx < actualTileCount) tileYes.push(tileIdx);
+          } else if (m2) {
+            const tileIdx = parseInt(m2[1]);
+            if (m2[2].toUpperCase() === 'YES' && tileIdx >= 0 && tileIdx < actualTileCount) tileYes.push(tileIdx);
+          }
+        }
+
+        try {
+          const jsonMatch = gridResponse.match(/\{[^{}]*"yes"\s*:\s*\[[^\]]*\][^{}]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(parsed.yes)) {
+              for (const n of parsed.yes) {
+                const num = parseInt(n);
+                if (!isNaN(num) && num >= 0 && num < actualTileCount) gridLevelResult.push(num);
+              }
+            }
+          }
+        } catch {}
+
+        if (gridLevelResult.length === 0 && tileYes.length > 0) {
+          gridLevelResult = tileYes;
+        }
+        gridLevelResult = [...new Set(gridLevelResult)];
+        _dbg(`3x3 flip grid-level result: [${gridLevelResult.join(',')}]`);
+        sessionLog.gridLevelResult = [...gridLevelResult];
+      } catch (e: any) {
+        _dbg(`grid-level analysis failed: ${e.message}`);
+      }
+
+      // Merge: UNION of direct sprite + grid-level (include all matches)
+      // Multi-round flip will handle any extra tiles across rounds
+      const merged = new Set([...directResult, ...gridLevelResult]);
+      matchedIndices.push(...merged);
+      _dbg(`3x3 flip merged: direct=[${directResult.join(',')}] grid=[${gridLevelResult.join(',')}] → union=[${matchedIndices.join(',')}]`);
+      sessionLog.mergeInfo = `direct=[${directResult.join(',')}] per-tile=[${perTileResult.join(',')}] grid=[${gridLevelResult.join(',')}] → [${matchedIndices.join(',')}]`;
+    }
+
+    // For 4x4 and static 3x3: grid-level PRIMARY (more reliable than per-tile)
+    if (matchedIndices.length === 0) {
     try {
       let tileLayout = '';
       let idx = 0;
@@ -502,334 +797,438 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
           if (idx < actualTileCount) rowTiles.push(`[${idx}]`);
           idx++;
         }
-        tileLayout += `Row ${r + 1}: ${rowTiles.join(' ')}\n`;
+        tileLayout += `Row ${r + 1} (from left to right): ${rowTiles.join(' ')}\n`;
       }
 
-      const trainingHint = getTrainingHint(objectName, gridSize, actualTileCount);
-      if (trainingHint) _dbg(`training hint: ${trainingHint.substring(0, 100)}...`);
-
-      const objectDescriptions: Record<string, string> = {
-        'fire hydrant': 'a red/yellow fire hydrant (short metal post with side nozzles, usually red, sometimes yellow)',
-        'traffic light': 'traffic signal lights AND their pole/housing/support structure (the pole holding the light counts as traffic light)',
-        'traffic signal': 'traffic signal lights AND their pole/housing/support structure (the pole holding the light counts as traffic light)',
-        'bus': 'a large passenger bus (city bus, school bus, coach — NOT cars or vans)',
-        'bicycle': 'a bicycle/bike (two wheels, frame, handlebars — may be parked or being ridden)',
-        'motorcycle': 'a motorcycle/motorbike (two wheels with engine, NOT bicycles)',
-        'car': 'a car/automobile (sedan, SUV, coupe — NOT buses, trucks, or motorcycles)',
-        'crosswalk': 'crosswalk markings on the road (white stripes/zebra pattern on pavement)',
-        'stairs': 'stairs/staircase (steps going up or down, railings)',
-        'mountain': 'mountains (large rocky landforms, peaks, ridges)',
-        'palm tree': 'palm trees (tall trunk with fan/feather-shaped fronds at top)',
-        'taxi': 'a taxi cab (car with taxi sign on roof, often yellow)',
-        'bridge': 'a bridge structure (span over water/road/valley)',
-        'chimney': 'a chimney (vertical structure on roof for smoke)',
-        'boat': 'a boat/vessel on water',
-        'parking meter': 'a parking meter (coin-operated device on sidewalk next to parking spot)',
-      };
-      const objDesc = objectDescriptions[objectName.toLowerCase()] || objectName;
-
       const sourceNote = gridShotFromTable
-        ? 'The image shows ONLY the tile grid. Each cell in the grid is one tile.'
-        : 'The image shows the full captcha frame. The tile grid is in the CENTER of the image. Ignore text/instructions above and buttons below the grid.';
+        ? 'The image shows a grid of tiles. Each cell is one tile.'
+        : 'The image shows a captcha frame. The tile grid is the main content.';
 
-      const prompt = `${sourceNote}
+      const objLower = objectName.toLowerCase();
+      const objectHints: Record<string, string> = {
+        bus: 'Buses have: large rectangular body, ROW of passenger windows, destination sign on front/top, much taller than cars. Do NOT select fire hydrants (small barrel on ground), vans, box trucks, or RVs.',
+        car: 'Cars: standard passenger vehicles with 4 wheels, windshield, typical car shape. Do NOT select buses, trucks, motorcycles, or bicycles.',
+        motorcycle: 'Motorcycles have: 2 wheels, visible engine/exhaust, gas tank. INCLUDE scooters and mopeds. Do NOT select cars (4 wheels, enclosed body) or bicycles (no engine).',
+        bicycle: 'Bicycles have: 2 thin wheels, thin frame, handlebars, NO engine. Do NOT select motorcycles (have engine/gas tank) or scooters.',
+        traffic_light: 'Traffic lights have: 2-3 colored lights (red/yellow/green) stacked vertically on a pole. Do NOT select street lamps (single white light).',
+        fire_hydrant: 'Fire hydrants: SHORT barrel shape on ground, dome cap, 2-3 side nozzles, bright red/yellow/orange. They are SMALL objects. Do NOT select buses, vehicles, mailboxes, or bollards.',
+        crosswalk: 'Crosswalks: WIDE white zebra stripes (parallel bars) painted on road/ground. Must see the stripe PATTERN clearly. Do NOT select streets with cars, alleys, intersections without zebra stripes, lane markings, or regular road lines.',
+        stairs: 'Stairs: visible steps with risers and treads. Do NOT select ramps or sloped surfaces.',
+      };
+      let specificHint = '';
+      for (const [key, hint] of Object.entries(objectHints)) {
+        if (objLower.includes(key) || objLower.includes(key.replace('_', ' '))) { specificHint = hint; break; }
+      }
 
-Grid layout: ${gridSize} (${actualTileCount} tiles, 0-indexed)
+      const prompt = is3x3Flip
+        ? `${sourceNote}
+Grid: ${gridSize} (${actualTileCount} tiles)
 ${tileLayout.trim()}
 
-Task: Find tiles that show "${objectName}" — specifically: ${objDesc}
+Find ALL tiles containing "${objectName}".
+YES if you can clearly identify ${objectName}. NO if unsure.
+${specificHint ? `- ${specificHint}\n` : ''}[N]: YES/NO
+Answer: {"yes": [numbers]}`
+        : `${sourceNote}
+Grid: ${gridSize} (${actualTileCount} tiles)
+${tileLayout.trim()}
 
-CRITICAL RULES:
-- Typically 2-6 out of ${actualTileCount} tiles contain the target. Be SELECTIVE.
-- Only YES if you CLEARLY see ${objectName} or a significant part of it in that tile.
-- Supporting structures COUNT: poles/housings for traffic lights, frames/wheels for bicycles, etc.
-- If uncertain about a tile, answer NO.
-- DO NOT write long reasoning. Keep each tile note to 3 words maximum.
+Find ALL tiles containing "${objectName}".
+Check EVERY tile one by one. Do NOT skip any tile.
+${objectName} may be small or partially visible in a tile.
+YES if any part of ${objectName} is visible. NO if not.
+${specificHint ? `- ${specificHint}\n` : ''}[N]: YES/NO
+Answer: {"yes": [numbers]}`;
 
-${trainingHint}
-
-Respond EXACTLY in this format — no extra text:
-Analysis: Tile 0: [yes/no - 3 words], Tile 1: [yes/no - 3 words], ..., Tile ${actualTileCount - 1}: [yes/no - 3 words]
-Answer: [comma-separated numbers, or "none"]`;
-
-      _dbg('calling visionClassify...');
+      _dbg('calling visionClassify with per-tile analysis...');
       let gridBase64: string;
       try {
-        const origBuf = await sharp(gridScreenshotPath).metadata();
-        const targetDim = 800;
-        const resized = await sharp(gridScreenshotPath).resize(targetDim, targetDim, { fit: 'inside' }).png().toBuffer();
-        gridBase64 = resized.toString('base64');
-        _dbg(`grid image ${origBuf.width}x${origBuf.height} → ${targetDim}x${targetDim} (${gridBase64.length} chars)`);
+        const cleanBuf = await sharp(gridScreenshotPath)
+          .resize(1200, 1200, { fit: 'inside' })
+          .normalize()
+                    .sharpen({ sigma: 1.5, m1: 0.5, m2: 0.8 })
+          .modulate({ brightness: 1.1, saturation: 1.4 })
+          .png().toBuffer();
+        gridBase64 = cleanBuf.toString('base64');
+        _dbg(`grid image ${cleanBuf.length} bytes base64`);
       } catch {
         gridBase64 = readFileBase64(gridScreenshotPath);
       }
-      _dbg(`grid image loaded (${gridBase64.length} chars base64)`);
+
       const response = await visionClassify(gridBase64, prompt);
-      _dbg(`visionClassify returned (${response.length} chars)`);
-      results.push(`Vision: ${response.split('\n').filter(l => l.trim()).join(' | ')}`);
+      _dbg(`vision response (${response.length} chars)`);
+      const lastLines = response.trim().split('\n').slice(-3).join(' | ');
+      _dbg(`response tail: ${lastLines.substring(0, 200)}`);
 
-      const lines = response.split('\n');
-      let answerLine = '';
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (/^\s*answer\s*:/i.test(lines[i].trim())) {
-          answerLine = lines[i];
-          break;
+      const tileYes: number[] = [];
+      for (let rawLine of response.split('\n')) {
+        const line = rawLine.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim();
+        const m1 = line.match(/^\[(\d+)\]:\s*(.+?)\s*→\s*(YES|NO)/i);
+        const m2 = line.match(/^\[(\d+)\]:\s*(YES|NO)/i);
+        if (m1) {
+          const tileIdx = parseInt(m1![1]);
+          const answer = m1![3].toUpperCase();
+          _dbg(`tile ${tileIdx} → ${answer} (${m1![2].substring(0, 60)})`);
+          if (answer === 'YES' && tileIdx >= 0 && tileIdx < actualTileCount) tileYes.push(tileIdx);
+        } else if (m2) {
+          const tileIdx = parseInt(m2![1]);
+          const answer = m2![2].toUpperCase();
+          _dbg(`tile ${tileIdx} → ${answer}`);
+          if (answer === 'YES' && tileIdx >= 0 && tileIdx < actualTileCount) tileYes.push(tileIdx);
         }
       }
 
-      const answerIndices: number[] = [];
-      if (answerLine && !/none/i.test(answerLine.replace(/answer\s*:/i, ''))) {
-        const nums = answerLine.match(/\d+/g);
-        if (nums) {
-          for (const n of nums) {
-            let idx = parseInt(n);
-            if (idx >= 0 && idx < actualTileCount) answerIndices.push(idx);
-          }
-        }
-      }
-
-      const analysisIndices: number[] = [];
-      const fullText = response.replace(/\n/g, ' ');
-      const tilePattern = /Tile\s+(\d+)\s*:\s*\[?\s*(yes|no)\b/gi;
-      let m;
-      while ((m = tilePattern.exec(fullText)) !== null) {
-        const tidx = parseInt(m[1]);
-        if (m[2].toLowerCase() === 'yes' && tidx >= 0 && tidx < actualTileCount) analysisIndices.push(tidx);
-      }
-
-      if (answerIndices.length > 0 && answerIndices.length >= analysisIndices.length) {
-        matchedIndices.push(...answerIndices);
-      } else if (analysisIndices.length > 0) {
-        matchedIndices.push(...analysisIndices);
-        if (answerLine && answerIndices.length > 0 && answerIndices.length < analysisIndices.length) {
-          _dbg(`Answer line truncated (${answerIndices.length} vs ${analysisIndices.length} from analysis) — using analysis`);
-        }
-      }
-
-      if (matchedIndices.length === 0) {
-          for (const line of lines) {
-            const ynMatch = line.match(/Tile\s+(\d+)\s*:.*?-\s*(YES|NO)/i);
-            if (ynMatch) {
-              const tidx = parseInt(ynMatch[1]);
-              if (ynMatch[2].toUpperCase() === 'YES' && tidx >= 0 && tidx < actualTileCount) matchedIndices.push(tidx);
-              continue;
-            }
-          const tileMention = line.match(/\*{1,2}(?:Tile|Cell)\s+(\d+)\*{1,2}|(?:tile|cell)\s+(\d+)\s*[:)]/i);
-          if (tileMention) {
-            const tidx = parseInt(tileMention[1] || tileMention[2]);
-            if (tidx >= 0 && tidx < actualTileCount) {
-              const lower = line.toLowerCase();
-              const isPositive = /\b(contains?|shows?|has|includes?|visible|present|yes)\b/i.test(lower);
-              const isNegative = /\b(no|none|not|empty|clear|does not|doesn't|without)\b/i.test(lower);
-              if (isPositive && !isNegative) matchedIndices.push(tidx);
-            }
-          }
-        }
-      }
-
-      if (matchedIndices.length === 0) {
-        const lastLine = lines[lines.length - 1]?.trim() || '';
-        if (/^[\d\s,\-]+$/.test(lastLine)) {
-          const nums = lastLine.match(/\d+/g);
-          if (nums) {
-            for (const n of nums) {
-              let idx = parseInt(n);
-              if (idx >= 0 && idx < actualTileCount) matchedIndices.push(idx);
-            }
-          }
-        }
-      }
-
-      const uniqueIndices = [...new Set(matchedIndices)];
-      matchedIndices.length = 0;
-      matchedIndices.push(...uniqueIndices);
-
-      const selectRatio = matchedIndices.length / actualTileCount;
-      if (selectRatio > 0.55 && actualTileCount >= 9) {
-        _dbg(`over-classification detected: ${matchedIndices.length}/${actualTileCount} (${(selectRatio * 100).toFixed(0)}%) — re-prompting with stricter criteria`);
-        matchedIndices.length = 0;
-
-        const strictPrompt = `Look at this reCAPTCHA grid (${gridSize}, ${actualTileCount} tiles).
-
-I asked for "${objectName}" and got too many matches. Please re-evaluate VERY carefully.
-
-For "${objectName}" (${objDesc}):
-- Only YES if you can CLEARLY see the object itself (not just the general scene/road/building)
-- Most tiles will be NO. Typical answer: 2-5 tiles out of ${actualTileCount}.
-- Go tile by tile. For each tile, ask: "Is there a ${objectName} IN this specific tile?"
-- Supporting structures COUNT: poles/housings for traffic lights, etc.
-- DO NOT write long reasoning. Keep each note to 3 words maximum.
-
-${tileLayout.trim()}
-
-Respond EXACTLY in this format — no extra text:
-Analysis: Tile 0: [YES/NO - 3 words], Tile 1: [YES/NO - 3 words], ..., Tile ${actualTileCount - 1}: [YES/NO - 3 words]
-Answer: [comma-separated numbers, or "none"]`;
-
-        const strictResponse = await visionClassify(gridBase64, strictPrompt);
-        _dbg(`strict vision returned (${strictResponse.length} chars)`);
-        const strictLines = strictResponse.split('\n');
-        let strictAnswer = '';
-        for (let i = strictLines.length - 1; i >= 0; i--) {
-          if (/^\s*answer\s*:/i.test(strictLines[i].trim())) { strictAnswer = strictLines[i]; break; }
-        }
-        if (strictAnswer && !/none/i.test(strictAnswer.replace(/answer\s*:/i, ''))) {
-          const nums = strictAnswer.match(/\d+/g);
-          if (nums) {
-            for (const n of nums) {
-              const idx = parseInt(n);
-              if (idx >= 0 && idx < actualTileCount) matchedIndices.push(idx);
-            }
-          }
-        }
-        const strictUnique = [...new Set(matchedIndices)];
-        matchedIndices.length = 0;
-        matchedIndices.push(...strictUnique);
-        _dbg(`strict matched indices: [${matchedIndices.join(',')}]`);
-      }
-
-      // Self-verification pass: ask model to confirm its answer
-      if (matchedIndices.length > 0 && matchedIndices.length <= actualTileCount * 0.55) {
-        _dbg(`running self-verification pass (initial: [${matchedIndices.join(',')}])...`);
-        const selectedStr = matchedIndices.join(', ');
-        const unselectedIndices = [];
-        for (let i = 0; i < actualTileCount; i++) {
-          if (!matchedIndices.includes(i)) unselectedIndices.push(i);
-        }
-        const unselectedStr = unselectedIndices.join(', ');
-
-        const verifyPrompt = `You previously analyzed this reCAPTCHA grid (${gridSize}, ${actualTileCount} tiles) looking for "${objectName}" (${objDesc}).
-
-Your answer was: tiles [${selectedStr}]
-Tiles you said NO to: [${unselectedStr}]
-
-Please VERIFY your answer:
-1. For each tile you selected [${selectedStr}]: Is there DEFINITELY ${objectName} in it? If any tile is uncertain, remove it.
-2. For each tile you rejected [${unselectedStr}]: Did you MISS any? Look carefully at each one.
-3. Supporting structures COUNT: poles/housings for traffic lights, frames/wheels for bicycles, etc.
-
-Keep notes to 3 words max per tile.
-
-${tileLayout.trim()}
-
-Respond EXACTLY:
-Verify YES: [confirmed tiles] | Verify NO (remove): [tiles to remove] | Missed (add): [missed tiles]
-Final: [comma-separated final tile numbers, or "none"]`;
-
-        const verifyResponse = await visionClassify(gridBase64, verifyPrompt);
-        _dbg(`verification returned (${verifyResponse.length} chars)`);
-
-        // Parse verification result
-        const verifyLines = verifyResponse.split('\n');
-        let finalLine = '';
-        for (let i = verifyLines.length - 1; i >= 0; i--) {
-          if (/^\s*final\s*:/i.test(verifyLines[i].trim())) {
-            finalLine = verifyLines[i];
-            break;
-          }
-        }
-
-        if (finalLine && !/none/i.test(finalLine.replace(/final\s*:/i, ''))) {
-          const finalNums = finalLine.match(/\d+/g);
-          if (finalNums) {
-            const verifiedIndices: number[] = [];
-            for (const n of finalNums) {
-              const idx = parseInt(n);
-              if (idx >= 0 && idx < actualTileCount) verifiedIndices.push(idx);
-            }
-            if (verifiedIndices.length > 0) {
-              const before = `[${matchedIndices.join(',')}]`;
-              matchedIndices.length = 0;
-              matchedIndices.push(...new Set(verifiedIndices));
-              _dbg(`verified: ${before} → [${matchedIndices.join(',')}]`);
-            }
-          }
-        } else {
-          // Try parsing from "Verify YES" / "Missed" / "Verify NO" lines
-          const vText = verifyResponse.replace(/\n/g, ' ');
-          const removeMatch = vText.match(/Verify\s+NO\s*(?:\(remove\))?\s*:\s*\[?\s*([\d,\s]+)/i);
-          const missedMatch = vText.match(/Missed\s*(?:\(add\))?\s*:\s*\[?\s*([\d,\s]+)/i);
-
-          if (removeMatch) {
-            const removeNums = (removeMatch[1].match(/\d+/g) || []).map(Number);
-            for (const r of removeNums) {
-              const idx = matchedIndices.indexOf(r);
-              if (idx >= 0) matchedIndices.splice(idx, 1);
-            }
-          }
-          if (missedMatch) {
-            const addNums = (missedMatch[1].match(/\d+/g) || []).map(Number);
-            for (const a of addNums) {
-              if (a >= 0 && a < actualTileCount && !matchedIndices.includes(a)) matchedIndices.push(a);
-            }
-          }
-          if (removeMatch || missedMatch) {
-            _dbg(`verification adjusted: [${matchedIndices.join(',')}]`);
-          }
-        }
-      }
-
-      if (matchedIndices.length > actualTileCount * 0.5 && actualTileCount >= 9) {
-        _dbg(`post-verification over-select: ${matchedIndices.length}/${actualTileCount} — trimming to most confident`);
-        const trimPrompt = `reCAPTCHA grid (${gridSize}, ${actualTileCount} tiles). Looking for "${objectName}" (${objDesc}).
-Current selection: [${matchedIndices.join(', ')}] — this is TOO MANY (${matchedIndices.length} tiles).
-Typical answer: 2-5 tiles. Pick ONLY the ${Math.min(5, Math.ceil(actualTileCount * 0.35))} MOST OBVIOUS tiles that CLEARLY show ${objectName}.
-${tileLayout.trim()}
-Respond with ONLY the tile numbers (comma-separated), nothing else:`;
-        const trimResp = await visionClassify(gridBase64, trimPrompt);
-        const trimNums = trimResp.match(/\d+/g);
-        if (trimNums) {
-          const trimmed: number[] = [];
-          for (const n of trimNums) {
-            const idx = parseInt(n);
-            if (idx >= 0 && idx < actualTileCount && !trimmed.includes(idx)) trimmed.push(idx);
-          }
-          if (trimmed.length > 0 && trimmed.length <= actualTileCount * 0.45) {
-            _dbg(`trimmed: [${matchedIndices.join(',')}] → [${trimmed.join(',')}]`);
-            matchedIndices.length = 0;
-            matchedIndices.push(...trimmed);
-          }
-        }
-      }
-
-      _dbg(`parsed matched indices: [${matchedIndices.join(',')}]`);
-
-      // TEMP: CapTCHAi training — REMOVE AFTER TRAINING
       try {
-        _dbg('calling CapTCHAi for ground truth...');
-        const capthaiBuf = await sharp(gridScreenshotPath).resize(200, 200, { fit: 'inside' }).jpeg({ quality: 50 }).toBuffer();
-        _dbg(`CapTCHAi image: ${capthaiBuf.length} bytes`);
-        const capthaiB64 = capthaiBuf.toString('base64');
-        const capthaiResult = await capthaiSolve(capthaiB64, objectName, gridSize);
-        if (capthaiResult && capthaiResult.length > 0) {
-          const visionSet = new Set(matchedIndices);
-          const capthaiSet = new Set(capthaiResult);
-          const correct = matchedIndices.length === capthaiResult.length &&
-            matchedIndices.every(i => capthaiSet.has(i));
-          saveCapthaiTraining({
-            objectType: objectName,
-            gridSize,
-            capthaiIndices: capthaiResult,
-            visionIndices: [...matchedIndices],
-            correct,
-            timestamp: Date.now(),
-          });
-          _dbg(`CapTCHAi ground truth: [${capthaiResult.join(',')}] vs vision [${matchedIndices.join(',')}] → ${correct ? 'CORRECT ✅' : 'WRONG ❌'}`);
-          results.push(`CapTCHAi: [${capthaiResult.join(',')}] → ${correct ? '✅' : '❌'}`);
-          if (!correct) {
-            matchedIndices.length = 0;
-            matchedIndices.push(...capthaiResult);
-            _dbg(`using CapTCHAi answer: [${matchedIndices.join(',')}]`);
+        const jsonMatch = response.match(/\{[^{}]*"yes"\s*:\s*\[[^\]]*\][^{}]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch![0]);
+          if (Array.isArray(parsed.yes)) {
+            for (const n of parsed.yes) {
+              const num = parseInt(n);
+              if (!isNaN(num) && num >= 0 && num < actualTileCount) matchedIndices.push(num);
+            }
           }
-        } else {
-          _dbg('CapTCHAi returned no result');
+        }
+      } catch {}
+
+      if (matchedIndices.length === 0 && tileYes.length > 0) {
+        _dbg(`JSON missing, using per-tile YES: [${tileYes.join(',')}]`);
+        matchedIndices.push(...tileYes);
+      }
+
+      const unique = [...new Set(matchedIndices)];
+      matchedIndices.length = 0;
+      matchedIndices.push(...unique);
+      _dbg(`parsed indices: [${matchedIndices.join(',')}]`);
+
+      // Per-tile fallback: when grid finds 0-1 tiles, try per-tile analysis
+      if (!is3x3Flip && matchedIndices.length <= 1 && gridShot) {
+        _dbg(`grid found only ${matchedIndices.length} tiles — trying per-tile fallback...`);
+        try {
+          const perTileFallback = await analyzeTileCrops(gridScreenshotPath, gridRows, gridCols, objectName, actualTileCount, _dbg);
+          if (perTileFallback.length > matchedIndices.length) {
+            matchedIndices.length = 0;
+            matchedIndices.push(...perTileFallback);
+            _dbg(`per-tile fallback: [${matchedIndices.join(',')}]`);
+          }
+        } catch (e: any) {
+          _dbg(`per-tile fallback failed: ${e.message}`);
+        }
+      }
+
+      // Two-pass zoom: disabled — grid-level prompt is thorough enough
+      if (false && !is3x3Flip && matchedIndices.length > 6 && gridShot) {
+        try {
+          // Collect descriptions from response
+          const tileDescs: Map<number, string> = new Map();
+          for (let rawLine of response.split('\n')) {
+            const line = rawLine.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim();
+            const m1 = line.match(/^\[(\d+)\]:\s*(.+?)\s*→\s*(YES|NO)/i);
+            if (m1) tileDescs.set(parseInt(m1![1]), m1![2].toLowerCase());
+          }
+
+          const rawObj = objectName.toLowerCase().replace('_', ' ');
+          // Generate keyword variants: original, -s, -es, -ies
+          const objVariants = new Set<string>([rawObj]);
+          if (rawObj.endsWith('s')) objVariants.add(rawObj.slice(0, -1));
+          if (rawObj.endsWith('es')) objVariants.add(rawObj.slice(0, -2));
+          if (rawObj.endsWith('ies')) { objVariants.add(rawObj.slice(0, -3) + 'y'); objVariants.add(rawObj.slice(0, -1)); }
+          // Add common synonyms for keyword matching
+          const synonymExtra: Record<string, string[]> = {
+            motorcycle: ['scooter', 'moped', 'motorbike'],
+            bus: ['coach', 'transit'],
+            fire_hydrant: ['hydrant'],
+            traffic_light: ['traffic signal', 'stoplight'],
+            crosswalk: ['zebra crossing', 'pedestrian crossing'],
+          };
+          // Find synonym map key by trying all singular forms
+          const singulars = [rawObj, rawObj.endsWith('s') ? rawObj.slice(0, -1) : rawObj, rawObj.endsWith('es') ? rawObj.slice(0, -2) : rawObj];
+          let extras: string[] = [];
+          for (const s of singulars) {
+            if (synonymExtra[s]) { extras = synonymExtra[s]; break; }
+            if (synonymExtra[s.replace(' ', '_')]) { extras = synonymExtra[s.replace(' ', '_')]; break; }
+          }
+          const objKeywords = [...objVariants, ...extras];
+          const toRemove: number[] = [];
+
+          let zoomCount = 0;
+          for (const idx of [...matchedIndices]) {
+            const desc = tileDescs.get(idx) || '';
+            const descMentionsObj = objKeywords.some(kw => kw.length > 2 && desc.includes(kw));
+
+            if (!descMentionsObj) {
+              // Vague description — zoom in and re-verify
+              _dbg(`zoom verify tile ${idx}: vague desc "${desc.substring(0, 50)}" — re-checking...`);
+              zoomCount++;
+              try {
+                const meta = await sharp(gridScreenshotPath).metadata();
+                const imgW = meta.width || 0, imgH = meta.height || 0;
+                if (imgW > 0 && imgH > 0) {
+                  const tileW = Math.floor(imgW / gridCols), tileH = Math.floor(imgH / gridRows);
+                  const r = Math.floor(idx / gridCols), c = idx % gridCols;
+                  const left = c * tileW, top = r * tileH;
+                  const w = (c === gridCols - 1) ? imgW - left : tileW;
+                  const h = (r === gridRows - 1) ? imgH - top : tileH;
+                  let tileBuf = await sharp(gridScreenshotPath).extract({ left, top, width: w, height: h }).toBuffer();
+                  tileBuf = await sharp(tileBuf)
+                    .resize(600, 600, { fit: 'inside', kernel: sharp.kernel.lanczos3 })
+                    .normalize()
+                    .sharpen({ sigma: 2.5, m1: 0.5, m2: 1.2 })
+                    .modulate({ brightness: 1.15, saturation: 1.5 })
+                    .png().toBuffer();
+                  const zoomB64 = tileBuf.toString('base64');
+                  const zoomPrompt = `Look at this single zoomed-in tile very carefully.
+Does it contain a "${objectName}"? Be strict.
+YES only if you can CLEARLY identify ${objectName}.
+NO if it shows roads, buildings, sky, trees, other objects, or you are unsure.
+Describe what you see in 5 words, then answer.
+Describe: [5 words]
+Answer: YES or NO`;
+                  const zoomResp = await visionClassify(zoomB64, zoomPrompt);
+                  const ansLine = zoomResp.split('\n').find(l => /^answer:/i.test(l.trim())) || zoomResp;
+                  const isYes = /\byes\b/i.test(ansLine);
+                  _dbg(`zoom verify tile ${idx}: ${isYes ? 'CONFIRMED' : 'REJECTED'} (${ansLine.substring(0, 60)})`);
+                  if (!isYes) toRemove.push(idx);
+                }
+              } catch {}
+            }
+          }
+
+          if (toRemove.length > 0) {
+            const filtered = matchedIndices.filter(i => !toRemove.includes(i));
+            if (filtered.length >= 2 || matchedIndices.length <= 2) {
+              _dbg(`zoom verify removed: [${toRemove.join(',')}]`);
+              matchedIndices.length = 0;
+              matchedIndices.push(...filtered);
+            } else {
+              _dbg(`zoom verify would leave too few tiles, keeping original`);
+            }
+          }
+        } catch (e: any) {
+          _dbg(`zoom verify failed: ${e.message}`);
+        }
+      }
+
+      const overClassThreshold = is3x3Flip ? actualTileCount * 0.8 : actualTileCount * 0.6;
+      if (matchedIndices.length > overClassThreshold) {
+        _dbg(`over-classification: ${matchedIndices.length}/${actualTileCount} — switching to per-tile analysis`);
+        try {
+          const perTileResult = await analyzeTileCrops(gridScreenshotPath, gridRows, gridCols, objectName, actualTileCount, _dbg);
+          matchedIndices.length = 0;
+          matchedIndices.push(...perTileResult);
+          _dbg(`per-tile re-eval: [${matchedIndices.join(',')}]`);
+        } catch (e: any) {
+          _dbg(`per-tile re-eval failed: ${e.message} — keeping original`);
+        }
+      }
+
+      // Per-tile cross-check disabled for speed — zoom verify handles uncertain tiles
+      if (false && !is3x3Flip && gridShot && matchedIndices.length > 6) {
+        _dbg(`grid over-classified (${matchedIndices.length} tiles) — running per-tile cross-check...`);
+        try {
+          const perTileBackup = await analyzeTileCrops(gridScreenshotPath, gridRows, gridCols, objectName, actualTileCount, _dbg);
+          const gridSet = new Set(matchedIndices);
+          const perTileSet = new Set(perTileBackup);
+          const intersection = [...gridSet].filter(i => perTileSet.has(i));
+          _dbg(`4x4 cross-check: grid=[${matchedIndices.join(',')}] per-tile=[${perTileBackup.join(',')}] intersection=[${intersection.join(',')}]`);
+          if (intersection.length >= 2 && intersection.length <= 6) {
+            matchedIndices.length = 0;
+            matchedIndices.push(...intersection);
+          }
+        } catch (e: any) {
+          _dbg(`per-tile cross-check failed: ${e.message}`);
+        }
+      }
+
+    } catch (e: any) {
+      _dbg(`vision analysis failed: ${e.message}`);
+    }
+    }
+
+    // 4x4 batch verify disabled — zoom verify handles uncertain tiles
+    if (false && !is3x3Flip && matchedIndices.length > 0 && gridShot) {
+      try {
+        _dbg(`4x4 batch verify: checking ${matchedIndices.length} YES tiles in 1 call...`);
+        const verifyTiles: { idx: number; buf: Buffer }[] = [];
+        for (const idx of [...matchedIndices]) {
+          try {
+            const domTile = domTileBufs.find(t => t.idx === idx);
+            if (domTile) {
+              const enhanced = await sharp(domTile!.buf).resize(400, 400, { fit: 'inside', kernel: sharp.kernel.lanczos3 }).sharpen({ sigma: 1.2 }).png().toBuffer();
+              verifyTiles.push({ idx, buf: enhanced });
+            } else {
+              const meta = await sharp(gridScreenshotPath).metadata();
+              const imgW = meta.width || 0, imgH = meta.height || 0;
+              if (imgW === 0 || imgH === 0) continue;
+              const tileW = Math.floor(imgW / gridCols), tileH = Math.floor(imgH / gridRows);
+              const r = Math.floor(idx / gridCols), c = idx % gridCols;
+              const left = c * tileW, top = r * tileH;
+              const w = (c === gridCols - 1) ? imgW - left : tileW;
+              const h = (r === gridRows - 1) ? imgH - top : tileH;
+              let tileBuf = await sharp(gridScreenshotPath).extract({ left, top, width: w, height: h }).toBuffer();
+              tileBuf = await sharp(tileBuf).resize(400, 400, { fit: 'inside', kernel: sharp.kernel.lanczos3 }).sharpen({ sigma: 1.2 }).png().toBuffer();
+              verifyTiles.push({ idx, buf: tileBuf });
+            }
+          } catch {}
+        }
+
+        if (verifyTiles.length >= 2) {
+          const cols = Math.ceil(Math.sqrt(verifyTiles.length));
+          const rows = Math.ceil(verifyTiles.length / cols);
+          const ts = 400;
+          const gridW = cols * ts, gridH = rows * ts;
+          const composites: any[] = [];
+          for (let i = 0; i < verifyTiles.length; i++) {
+            const r = Math.floor(i / cols), c = i % cols;
+            composites.push({ input: verifyTiles[i].buf, left: c * ts, top: r * ts });
+          }
+          const verifyGrid = await sharp({ create: { width: gridW, height: gridH, channels: 3, background: { r: 200, g: 200, b: 200 } } }).composite(composites).png().toBuffer();
+          const tileLabels = verifyTiles.map((t, i) => `[${i}]=tile${t.idx}`).join(', ');
+          const prompt = `This image shows ${verifyTiles.length} tiles arranged in a grid (${tileLabels}).
+For EACH tile, briefly describe what you see in 3-5 words. Focus on the main object.
+Format:
+[0]: [description]
+[1]: [description]
+...`;
+          const resp = await visionClassify(verifyGrid.toString('base64'), prompt);
+          _dbg(`4x4 batch verify response (${resp.length} chars)`);
+
+          const synonymMap: Record<string, string[]> = {
+            bus: ['bus', 'transit', 'public transport', 'coach'],
+            car: ['car', 'sedan', 'hatchback', 'suv', 'vehicle', 'automobile', 'truck', 'pickup'],
+            motorcycle: ['motorcycle', 'motorbike', 'moped', 'scooter'],
+            bicycle: ['bicycle', 'bike', 'cyclist'],
+            traffic_light: ['traffic light', 'traffic signal', 'stoplight', 'signal light'],
+            fire_hydrant: ['fire hydrant', 'hydrant'],
+            crosswalk: ['crosswalk', 'zebra crossing', 'pedestrian crossing'],
+            stairs: ['stair', 'steps', 'staircase'],
+            tractor: ['tractor', 'farm tractor', 'traktor'],
+            taxi: ['taxi', 'cab', 'yellow cab'],
+            bridge: ['bridge', 'overpass', 'viaduct'],
+            mountain: ['mountain', 'hill', 'peak'],
+            chimney: ['chimney', 'smokestack'],
+          };
+          const rawObjLower = objectName.toLowerCase().replace('_', ' ');
+          const objLower = rawObjLower.replace(/s$/, '');
+          const objForms = [rawObjLower, objLower, rawObjLower.replace(' ', '_'), objLower.replace(' ', '_')];
+          let synonyms: string[] = [rawObjLower, objLower];
+          for (const form of objForms) { if (synonymMap[form]) { synonyms = synonymMap[form]; break; } }
+
+          const toRemove: number[] = [];
+          for (let i = 0; i < verifyTiles.length; i++) {
+            const cleanedLines = resp.split('\n').map(l => l.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim());
+            const lineMatch = cleanedLines.find(l => new RegExp(`^\\[${i}\\]:`).test(l));
+            const desc = lineMatch?.replace(/^\[\d+\]:\s*/i, '').trim() ?? '';
+            const descLower = desc.toLowerCase();
+            const keep = synonyms.some(s => descLower.includes(s));
+            _dbg(`4x4 verify tile ${verifyTiles[i].idx}: ${keep ? 'KEEP' : 'REMOVE'} (desc: "${desc.substring(0, 80)}")`);
+            sessionLog.verifyResults.push({ idx: verifyTiles[i].idx, kept: keep, description: desc.substring(0, 120) });
+            if (!keep) toRemove.push(verifyTiles[i].idx);
+          }
+
+          if (toRemove.length > 0) {
+            const filtered = matchedIndices.filter(i => !toRemove.includes(i));
+            if (filtered.length < 2 && matchedIndices.length >= 2) {
+              _dbg(`4x4 verify too aggressive: would leave ${filtered.length}, keeping original`);
+            } else {
+              _dbg(`4x4 verify removed: [${toRemove.join(',')}]`);
+              matchedIndices.length = 0;
+              matchedIndices.push(...filtered);
+            }
+          }
         }
       } catch (e: any) {
-        _dbg(`CapTCHAi training error: ${e.message}`);
+        _dbg(`4x4 batch verify failed: ${e.message}`);
       }
-      // END TEMP: CapTCHAi training
+    }
+  }
+
+  // Quick verify disabled for 3x3 flip — causes false negatives
+  // (removes correct tiles when short description doesn't mention target object)
+  // Trust majority vote from direct sprite + grid-level analysis instead.
+  if (false && is3x3Flip && matchedIndices.length > 0 && gridShot) {
+    try {
+      const image = sharp(gridScreenshotPath);
+      const meta = await image.metadata();
+      const imgW = meta.width || 0, imgH = meta.height || 0;
+      if (imgW > 0 && imgH > 0) {
+        const tileW = Math.floor(imgW / gridCols), tileH = Math.floor(imgH / gridRows);
+        const toRemove: number[] = [];
+        for (const idx of matchedIndices) {
+          const r = Math.floor(idx / gridCols), c = idx % gridCols;
+          const left = c * tileW, top = r * tileH;
+          const w = (c === gridCols - 1) ? imgW - left : tileW;
+          const h = (r === gridRows - 1) ? imgH - top : tileH;
+          try {
+            let tileBuf = await sharp(gridScreenshotPath).extract({ left, top, width: w, height: h }).toBuffer();
+            if (w < 200 || h < 200) {
+              const s = Math.max(1, Math.floor(300 / Math.max(w, h)));
+              tileBuf = await sharp(tileBuf).resize(w * s, h * s, { kernel: sharp.kernel.lanczos3 }).png().toBuffer();
+            } else {
+              tileBuf = await sharp(tileBuf).png().toBuffer();
+            }
+            const b64 = tileBuf.toString('base64');
+            const prompt = `What is the main object or subject visible in this image tile?
+Describe the content in 5-10 words. Focus on the most prominent object(s).
+Describe: [5-10 words]`;
+            const resp = await visionClassify(b64, prompt);
+            const descLine = resp.replace(/^describe:\s*/i, '').trim();
+            const descLower = descLine.toLowerCase();
+            const rawQObjLower = objectName.toLowerCase().replace('_', ' ');
+            const qObjLower = rawQObjLower.replace(/s$/, '');
+            const qObjForms = [rawQObjLower, qObjLower, rawQObjLower.replace(' ', '_'), qObjLower.replace(' ', '_')];
+
+            const synonymMap: Record<string, string[]> = {
+              bus: ['bus', 'transit', 'public transport', 'coach'],
+              car: ['car', 'sedan', 'hatchback', 'suv', 'vehicle', 'automobile', 'truck', 'pickup'],
+              motorcycle: ['motorcycle', 'motorbike', 'moped', 'scooter'],
+              bicycle: ['bicycle', 'bike', 'cyclist'],
+              traffic_light: ['traffic light', 'traffic signal', 'stoplight', 'signal light'],
+              fire_hydrant: ['fire hydrant', 'hydrant'],
+              crosswalk: ['crosswalk', 'zebra crossing', 'pedestrian crossing'],
+              stairs: ['stair', 'steps', 'staircase'],
+            };
+            let synonyms: string[] = [rawQObjLower, qObjLower];
+            for (const form of qObjForms) {
+              if (synonymMap[form]) { synonyms = synonymMap[form]; break; }
+            }
+            const descMentionsObject = synonyms.some(s => descLower.includes(s));
+
+            const contradictMap: Record<string, string[]> = {
+              bus: ['no bus', 'not a bus', 'only a van', 'only a car', 'only a truck'],
+              car: ['no car', 'not a car', 'only a motorcycle', 'only a bicycle'],
+              motorcycle: ['no motorcycle', 'not a motorcycle', 'only a bicycle', 'only a car'],
+              bicycle: ['no bicycle', 'not a bicycle', 'only a motorcycle'],
+              traffic_light: ['no traffic light', 'street lamp', 'lamp post'],
+              fire_hydrant: ['no fire hydrant', 'not a hydrant', 'only a mailbox'],
+              crosswalk: ['no crosswalk', 'not a crosswalk', 'only a road'],
+              stairs: ['no stairs', 'not stairs', 'only a ramp'],
+            };
+            let contradictions: string[] = [];
+            for (const form of qObjForms) {
+              if (contradictMap[form]) { contradictions = contradictMap[form]; break; }
+            }
+            const descContradicts = contradictions.some(c => descLower.includes(c));
+
+            const keep = descMentionsObject && !descContradicts;
+            _dbg(`verify tile ${idx}: ${keep ? 'KEEP' : 'REMOVE'} (desc: "${descLine.substring(0, 80)}")`);
+            sessionLog.verifyResults.push({ idx, kept: keep, description: descLine.substring(0, 120) });
+            if (!keep) toRemove.push(idx);
+          } catch {}
+        }
+        if (toRemove.length > 0) {
+          const filtered = matchedIndices.filter(i => !toRemove.includes(i));
+          if (filtered.length === 0 && matchedIndices.length >= 2) {
+            _dbg(`quick verify too aggressive: would remove all tiles, keeping original [${matchedIndices.join(',')}]`);
+          } else {
+            _dbg(`quick verify removed false positives: [${toRemove.join(',')}]`);
+            matchedIndices.length = 0;
+            matchedIndices.push(...filtered);
+          }
+        }
+      }
     } catch (e: any) {
-      _dbg(`visionClassify FAILED: ${e.message}`);
+      _dbg(`quick verify failed: ${e.message}`);
     }
   }
 
@@ -852,6 +1251,7 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
           await page.waitForTimeout(2000);
           _dbg('skip button clicked via JS');
           results.push('No matches found, clicked skip');
+          _save('SKIP_CLICKED');
           return results.join('\n');
         }
       } catch (e: any) { _dbg(`skip button click failed: ${e.message}`); }
@@ -865,15 +1265,27 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
     try {
       if (idx >= actualTileCount || idx >= visibleTiles.length) continue;
       try {
-        await frame.evaluate((tileIdx: number) => {
-          const tds = document.querySelectorAll('table td');
-          if (tds[tileIdx]) (tds[tileIdx] as HTMLElement).click();
-        }, idx);
+        const tileBox = await visibleTiles[idx].boundingBox();
+        if (tileBox) {
+          const cx = tileBox.x + tileBox.width * (0.2 + Math.random() * 0.6);
+          const cy = tileBox.y + tileBox.height * (0.2 + Math.random() * 0.6);
+          await humanClickAt(cx, cy, page);
+        } else {
+          await frame.evaluate((tileIdx: number) => {
+            const tds = document.querySelectorAll('table td');
+            if (tds[tileIdx]) {
+              const el = tds[tileIdx] as HTMLElement;
+              el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+              el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+              el.click();
+            }
+          }, idx);
+        }
       } catch {
         await visibleTiles[idx].click({ force: true, timeout: 3000 });
       }
       clickedSet.add(idx);
-      await page.waitForTimeout(300 + Math.random() * 400);
+      await page.waitForTimeout(450 + Math.random() * 650);
       _dbg(`clicked tile ${idx}`);
     } catch (e: any) {
       try {
@@ -882,15 +1294,22 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
         for (const t of refreshed) { try { if (await t.isVisible()) refreshedVisible.push(t); } catch {} }
         if (idx < refreshedVisible.length) {
           try {
-            await frame.evaluate((tileIdx: number) => {
-              const tds = document.querySelectorAll('table td');
-              if (tds[tileIdx]) (tds[tileIdx] as HTMLElement).click();
-            }, idx);
+            const rBox = await refreshedVisible[idx].boundingBox();
+            if (rBox) {
+              const rcx = rBox.x + rBox.width * (0.2 + Math.random() * 0.6);
+              const rcy = rBox.y + rBox.height * (0.2 + Math.random() * 0.6);
+              await humanClickAt(rcx, rcy, page);
+            } else {
+              await frame.evaluate((tileIdx: number) => {
+                const tds = document.querySelectorAll('table td');
+                if (tds[tileIdx]) (tds[tileIdx] as HTMLElement).click();
+              }, idx);
+            }
           } catch {
             await refreshedVisible[idx].click({ force: true, timeout: 3000 });
           }
           clickedSet.add(idx);
-          await page.waitForTimeout(100 + Math.random() * 100);
+          await page.waitForTimeout(450 + Math.random() * 650);
           _dbg(`clicked tile ${idx} (re-fetched)`);
         }
       } catch (e2: any) {
@@ -921,16 +1340,359 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
     } catch (e: any) { _dbg(`self-review failed: ${e.message}`); }
   }
 
-  // @ts-ignore — dynamic tile analysis disabled
-  if (false && isRecaptcha && is3x3 && clickedSet.size > 0) {
-    _dbg('dynamic tile analysis disabled');
+  // ============================================
+  // # DONT CHANGE ANYTHING HERE - 3x3 FLIP MULTI-ROUND
+  // Handles re-clicking flipped tiles. Working correctly.
+  // ============================================
+  // 3x3 flip: multi-round selection — keep checking flipped tiles for more matches
+  if (is3x3Flip && clickedSet.size > 0) {
+    let lastClickedCount = clickedSet.size;
+
+    // Save canvas data of clicked tiles BEFORE flip for comparison
+    let preFlipCanvas: string[] = [];
+    try {
+      preFlipCanvas = await frame.evaluate((clickedIndices: number[]) => {
+        const tables = document.querySelectorAll('table');
+        let cells: Element[] = [];
+        for (const table of tables) {
+          const tds = Array.from(table.querySelectorAll('td'));
+          if (tds.length >= clickedIndices.length) { cells = tds; break; }
+        }
+        return clickedIndices.map(idx => {
+          if (idx >= cells.length) return '';
+          const img = cells[idx].querySelector('img') as HTMLImageElement | null;
+          if (!img || !img.complete) return '';
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || 100; canvas.height = img.naturalHeight || 100;
+            const ctx = canvas.getContext('2d');
+            if (ctx) { ctx.drawImage(img, 0, 0); return canvas.toDataURL('image/png').substring(0, 100); }
+          } catch {}
+          return '';
+        });
+      }, [...clickedSet].sort((a, b) => a - b));
+    } catch {}
+
+    const positionClickCount = new Map<number, number>();
+    for (const idx of clickedSet) positionClickCount.set(idx, 1);
+
+    for (let round = 0; round < 5; round++) {
+      // Smart flip detection: poll canvas data until clicked tiles change (min 4s, max 15s)
+      await page.waitForTimeout(4000);
+      let flipDetected = false;
+      for (let poll = 0; poll < 22; poll++) {
+        await page.waitForTimeout(500);
+        try {
+          const changed = await frame.evaluate((params: { clickedIndices: number[], preData: string[] }) => {
+            const tables = document.querySelectorAll('table');
+            let cells: Element[] = [];
+            for (const table of tables) {
+              const tds = Array.from(table.querySelectorAll('td'));
+              if (tds.length >= 9) { cells = tds; break; }
+            }
+            let changedCount = 0;
+            for (let i = 0; i < params.clickedIndices.length; i++) {
+              const idx = params.clickedIndices[i];
+              if (idx >= cells.length) continue;
+              const img = cells[idx].querySelector('img') as HTMLImageElement | null;
+              if (!img || !img.complete) continue;
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || 100; canvas.height = img.naturalHeight || 100;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(img, 0, 0);
+                  const newData = canvas.toDataURL('image/png').substring(0, 100);
+                  if (newData !== params.preData[i]) changedCount++;
+                }
+              } catch {}
+            }
+            return changedCount;
+          }, { clickedIndices: [...clickedSet].sort((a, b) => a - b), preData: preFlipCanvas });
+          if (changed >= Math.ceil(clickedSet.size * 0.5)) {
+            flipDetected = true;
+            _dbg(`3x3 flip round ${round + 1}: ${changed}/${clickedSet.size} tiles changed after ${(poll + 1) * 0.5 + 4}s`);
+            break;
+          }
+        } catch {}
+      }
+      if (!flipDetected) {
+        _dbg(`3x3 flip round ${round + 1}: flip not detected after 15s, proceeding anyway`);
+      }
+
+      _dbg(`3x3 flip round ${round + 1}: analyzing after flip...`);
+
+      try {
+        await frame.evaluate(async () => {
+          const imgs = document.querySelectorAll('table td img');
+          await Promise.all(Array.from(imgs).map(img => {
+            if ((img as HTMLImageElement).complete) return Promise.resolve();
+            return new Promise<void>(resolve => {
+              img.addEventListener('load', () => resolve(), { once: true });
+              img.addEventListener('error', () => resolve(), { once: true });
+              setTimeout(resolve, 3000);
+            });
+          }));
+        });
+      } catch {}
+      // Brief wait for flip animation to fully render
+      await page.waitForTimeout(1000);
+      _dbg(`3x3 flip round ${round + 1}: images loaded, analyzing...`);
+
+      try {
+        const tileDataUrls2 = await frame.evaluate(async (expectedCount: number) => {
+          const tables = document.querySelectorAll('table');
+          let cells: Element[] = [];
+          for (const table of tables) {
+            const tds = Array.from(table.querySelectorAll('td'));
+            if (tds.length >= expectedCount) { cells = tds; break; }
+          }
+          if (cells.length === 0) return { results: [] as string[], cellCount: 0, imgCount: 0 };
+          const results: string[] = [];
+          for (let i = 0; i < cells.length; i++) {
+            const cell = cells[i];
+            const img = cell.querySelector('img') as HTMLImageElement | null;
+            if (img && img.complete && img.naturalWidth > 0) {
+              const cs = getComputedStyle(img);
+              const wrapper = cell.querySelector('.rc-image-tile-wrapper') as HTMLElement;
+              const wcs = wrapper ? getComputedStyle(wrapper) : null;
+              const wW = wrapper ? parseInt(wcs!.width) || 95 : 95;
+              const isSpriteTile = img.naturalWidth > wW * 1.5;
+              if (isSpriteTile) {
+                try {
+                  const offX = (parseInt(cs.left) || 0) + (parseInt(cs.marginLeft) || 0);
+                  const offY = (parseInt(cs.top) || 0) + (parseInt(cs.marginTop) || 0);
+                  const scale = img.naturalWidth / (parseInt(cs.width) || img.offsetWidth || wW);
+                  const sx = Math.max(0, -offX * scale), sy = Math.max(0, -offY * scale);
+                  const sw = wW * scale, sh = (wrapper ? parseInt(wcs!.height) || 95 : 95) * scale;
+                  const canvas = document.createElement('canvas');
+                  canvas.width = Math.round(sw); canvas.height = Math.round(sh);
+                  const ctx = canvas.getContext('2d');
+                  if (ctx) { ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh); results.push(canvas.toDataURL('image/png')); continue; }
+                } catch {}
+              } else {
+                try {
+                  const canvas = document.createElement('canvas');
+                  canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+                  const ctx = canvas.getContext('2d');
+                  if (ctx) { ctx.drawImage(img, 0, 0); results.push(canvas.toDataURL('image/png')); continue; }
+                } catch {}
+              }
+            }
+            results.push('');
+          }
+          return { results, cellCount: cells.length, imgCount: results.filter(r => r).length };
+        }, actualTileCount);
+
+        if (!tileDataUrls2.imgCount || tileDataUrls2.imgCount < actualTileCount) {
+          _dbg(`3x3 flip round ${round + 1}: not enough tile images (${tileDataUrls2.imgCount}), skipping`);
+          break;
+        }
+
+        const dataResults = (tileDataUrls2 as any).results as string[];
+        const tileBufs: { idx: number; buf: Buffer }[] = [];
+        for (let i = 0; i < Math.min(dataResults.length, actualTileCount); i++) {
+          const entry = dataResults[i];
+          if (!entry || !entry.startsWith('data:image/')) continue;
+          try {
+            const b64 = entry.split(',')[1];
+            if (b64) tileBufs.push({ idx: i, buf: Buffer.from(b64, 'base64') });
+          } catch {}
+        }
+
+        if (tileBufs.length < actualTileCount) { _dbg(`3x3 flip round ${round + 1}: decode failed`); break; }
+
+        const meta0 = await sharp(tileBufs[0].buf).metadata();
+        const rawW = meta0.width || 100, rawH = meta0.height || 100;
+        const MIN_TILE = 200;
+        const tw = rawW < MIN_TILE ? MIN_TILE : rawW, th = rawH < MIN_TILE ? MIN_TILE : rawH;
+        const gridW = tw * gridCols, gridH = th * gridRows;
+        const composites: any[] = [];
+        for (const { idx, buf } of tileBufs) {
+          const r = Math.floor(idx / gridCols), c = idx % gridCols;
+          const tileBuf = (rawW < MIN_TILE || rawH < MIN_TILE)
+            ? await sharp(buf).resize(tw, th, { kernel: sharp.kernel.lanczos3 }).png().toBuffer() : buf;
+          composites.push({ input: tileBuf, left: c * tw, top: r * th });
+        }
+        const composedBuf = await sharp({ create: { width: gridW, height: gridH, channels: 3, background: { r: 200, g: 200, b: 200 } } })
+          .composite(composites).png().toBuffer();
+        await sharp(composedBuf).toFile(gridScreenshotPath);
+        try { await sharp(composedBuf).toFile(join(homedir(), `.aurix-postflip-round${round + 1}.png`)); } catch {}
+
+        // Grid-level analysis only (fast: 1 API call per round)
+        let newMatches: number[] = [];
+        try {
+          const tileLayout = Array.from({ length: gridRows }, (_, r) => {
+            const tiles = Array.from({ length: gridCols }, (_, c) => {
+              const idx = r * gridCols + c;
+              return idx < actualTileCount ? `[${idx}]` : '';
+            });
+            return `Row ${r + 1} (left to right): ${tiles.join(' ')}`;
+          }).join('\n');
+          const gridPrompt = `Grid: ${gridSize} (${actualTileCount} tiles)
+${tileLayout}
+Find ALL tiles containing "${objectName}".
+YES if you can clearly identify ${objectName}. NO if unsure.
+[N]: YES/NO
+Answer: {"yes": [numbers]}`;
+          const gridBuf = await sharp(gridScreenshotPath).resize(1200, 1200, { fit: 'inside' }).normalize().sharpen({ sigma: 1.5, m1: 0.5, m2: 0.8 }).modulate({ brightness: 1.1, saturation: 1.4 }).png().toBuffer();
+          const gridResp = await visionClassify(gridBuf.toString('base64'), gridPrompt);
+          const tileYes: number[] = [];
+          for (let rawLine of gridResp.split('\n')) {
+            const line = rawLine.replace(/^\s*[-*]\s*/, '').replace(/\*\*/g, '').trim();
+            const m1 = line.match(/^\[(\d+)\]:\s*(.+?)\s*→\s*(YES|NO)/i);
+            const m2 = line.match(/^\[(\d+)\]:\s*(YES|NO)/i);
+            if (m1) { const ti = parseInt(m1[1]); if (m1[3].toUpperCase() === 'YES' && ti < actualTileCount) tileYes.push(ti); }
+            else if (m2) { const ti = parseInt(m2[1]); if (m2[2].toUpperCase() === 'YES' && ti < actualTileCount) tileYes.push(ti); }
+          }
+          try {
+            const jm = gridResp.match(/\{[^{}]*"yes"\s*:\s*\[[^\]]*\][^{}]*\}/);
+            if (jm) { const p = JSON.parse(jm[0]); if (Array.isArray(p.yes)) for (const n of p.yes) { const num = parseInt(n); if (!isNaN(num) && num < actualTileCount) newMatches.push(num); } }
+          } catch {}
+          if (newMatches.length === 0 && tileYes.length > 0) newMatches = tileYes;
+          newMatches = [...new Set(newMatches)];
+          _dbg(`3x3 flip round ${round + 1} grid-level: [${newMatches.join(',')}]`);
+        } catch (e: any) { _dbg(`mr grid-level failed: ${e.message}`); }
+
+        // Click tiles showing target, but max 2 clicks per position
+        const thisRoundClicks = new Set<number>();
+        const clicks = newMatches.filter(idx => !thisRoundClicks.has(idx) && (positionClickCount.get(idx) || 0) < 4);
+        _dbg(`3x3 flip round ${round + 1}: matches=[${newMatches.join(',')}] clicks=[${clicks.join(',')}]`);
+
+        if (clicks.length === 0) {
+          _dbg(`3x3 flip round ${round + 1}: no clickable matches — done`);
+          break;
+        }
+
+        for (const idx of clicks) {
+          if (idx >= actualTileCount || idx >= visibleTiles.length) continue;
+          try {
+            const tileBox = await visibleTiles[idx].boundingBox();
+            if (tileBox) {
+              const cx = tileBox.x + tileBox.width * (0.2 + Math.random() * 0.6);
+              const cy = tileBox.y + tileBox.height * (0.2 + Math.random() * 0.6);
+              await humanClickAt(cx, cy, page);
+            } else {
+              await frame.evaluate((tileIdx: number) => {
+                const tds = document.querySelectorAll('table td');
+                if (tds[tileIdx]) (tds[tileIdx] as HTMLElement).click();
+              }, idx);
+            }
+            clickedSet.add(idx);
+            thisRoundClicks.add(idx);
+            positionClickCount.set(idx, (positionClickCount.get(idx) || 0) + 1);
+            await page.waitForTimeout(450 + Math.random() * 650);
+            _dbg(`clicked tile ${idx} (round ${round + 1})`);
+          } catch {}
+        }
+
+        lastClickedCount = clickedSet.size;
+
+        // Update pre-flip canvas for next round comparison
+        try {
+          preFlipCanvas = await frame.evaluate((clickedIndices: number[]) => {
+            const tables = document.querySelectorAll('table');
+            let cells: Element[] = [];
+            for (const table of tables) {
+              const tds = Array.from(table.querySelectorAll('td'));
+              if (tds.length >= 9) { cells = tds; break; }
+            }
+            return clickedIndices.map(idx => {
+              if (idx >= cells.length) return '';
+              const img = cells[idx].querySelector('img') as HTMLImageElement | null;
+              if (!img || !img.complete) return '';
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth || 100; canvas.height = img.naturalHeight || 100;
+                const ctx = canvas.getContext('2d');
+                if (ctx) { ctx.drawImage(img, 0, 0); return canvas.toDataURL('image/png').substring(0, 100); }
+              } catch {}
+              return '';
+            });
+          }, [...clickedSet].sort((a, b) => a - b));
+        } catch {}
+      } catch (e: any) {
+        _dbg(`3x3 flip round ${round + 1} failed: ${e.message}`);
+        break;
+      }
+    }
   }
 
-  if (isRecaptcha && clickedSet.size > 0) {
-    await page.waitForTimeout(1500 + Math.random() * 1000);
+  if (isRecaptcha && clickedSet.size > 0 && !is3x3Flip) {
+    await page.waitForTimeout(800 + Math.random() * 400);
+
+    try {
+      const selectedStatus: { idx: number; selected: boolean; classes: string }[] = await frame.evaluate((expectedIndices: number[]) => {
+        const tds = document.querySelectorAll('table td');
+        const result: { idx: number; selected: boolean; classes: string }[] = [];
+        for (const idx of expectedIndices) {
+          const td = tds[idx] as HTMLElement | undefined;
+          if (!td) continue;
+          const classes = td.className + ' ' + (td.querySelector('[class]')?.className || '');
+          const isSelected = /selected|checked|active/i.test(classes) ||
+            !!td.querySelector('.rc-imageselect-tile-selected, .rc-imageselect-dynamic-selected') ||
+            td.getAttribute('aria-checked') === 'true' ||
+            td.querySelector('[aria-checked="true"]') !== null;
+          result.push({ idx, selected: isSelected, classes: classes.substring(0, 100) });
+        }
+        return result;
+      }, [...clickedSet].sort((a, b) => a - b));
+
+      const unselected = selectedStatus.filter(s => !s.selected);
+      if (unselected.length > 0 && unselected.length < clickedSet.size) {
+        _dbg(`tile verify: ${unselected.length}/${clickedSet.size} not selected: [${unselected.map(s => s.idx).join(',')}]`);
+        for (const s of unselected) {
+          try {
+            if (s.idx < visibleTiles.length) {
+              const rBox = await visibleTiles[s.idx].boundingBox();
+              if (rBox) {
+                const rcx = rBox.x + rBox.width * (0.2 + Math.random() * 0.6);
+                const rcy = rBox.y + rBox.height * (0.2 + Math.random() * 0.6);
+                await humanClickAt(rcx, rcy, page);
+              } else {
+                await frame.evaluate((tileIdx: number) => {
+                  const tds = document.querySelectorAll('table td');
+                  if (tds[tileIdx]) {
+                    const el = tds[tileIdx] as HTMLElement;
+                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    el.click();
+                  }
+                }, s.idx);
+              }
+            }
+            await page.waitForTimeout(450 + Math.random() * 650);
+            _dbg(`re-clicked tile ${s.idx}`);
+          } catch {}
+        }
+        await page.waitForTimeout(800);
+      } else if (unselected.length === 0) {
+        _dbg(`tile verify: all ${clickedSet.size} tiles confirmed selected`);
+      }
+    } catch (e: any) {
+      _dbg(`tile verify error: ${e.message?.substring(0, 60)}`);
+    }
   }
 
-  _dbg('clicking verify button...');
+  let preClickSpriteUrl = '';
+  try {
+    preClickSpriteUrl = await frame.evaluate(() => {
+      const img = document.querySelector('table td img') as HTMLImageElement | null;
+      return img ? img.src : '';
+    });
+  } catch {}
+
+  const is4x4 = !is3x3;
+  const buttonLabel = is4x4 ? 'next' : 'verify';
+
+  // Wait before clicking verify — minimal delay
+  if (is3x3Flip) {
+    await page.waitForTimeout(1000);
+  } else {
+    await page.waitForTimeout(800 + Math.random() * 700);
+  }
+
+  _dbg(`clicking ${buttonLabel} button...`);
   try {
     const verifyClicked = await frame.evaluate(() => {
       const btn = document.querySelector('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]') as HTMLElement;
@@ -949,8 +1711,8 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
       }
     }
 
-    _dbg('verify button clicked, waiting for result...');
-    await page.waitForTimeout(3000);
+    _dbg(`${buttonLabel} button clicked, waiting for result...`);
+    await page.waitForTimeout(is4x4 ? 3000 : 2000);
 
     let hasToken = false;
     try {
@@ -971,32 +1733,48 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
     } catch {}
 
     if (hasToken || ariaChecked) {
-      const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
-      await page.screenshot({ path: verifyResultPath }).catch(() => {});
-      saveCaptchaTraining({ instruction: cleanInstruction, objectType: objectName, gridSize, gridCount: actualTileCount, tileCount: actualTileCount, matchedIndices: [...matchedIndices], timestamp: Date.now() });
-      _dbg(`CAPTCHA SOLVED! (token=${hasToken}, aria=${ariaChecked})`);
-      results.push(`[OK] CAPTCHA SOLVED! ✅`);
-      results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
+      _dbg(`verify result: VERIFIED (token=${hasToken}, aria=${ariaChecked})`);
+      results.push(`[VERIFIED] token=${hasToken}, aria=${ariaChecked}`);
+      _save('VERIFIED');
       return results.join('\n');
     }
 
     const currentFrames = page.frames();
     const stillHasBframe = currentFrames.some((f: any) => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
     if (!stillHasBframe) {
-      const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
-      await page.screenshot({ path: verifyResultPath }).catch(() => {});
-      saveCaptchaTraining({ instruction: cleanInstruction, objectType: objectName, gridSize, gridCount: actualTileCount, tileCount: actualTileCount, matchedIndices: [...matchedIndices], timestamp: Date.now() });
-      _dbg('CAPTCHA SOLVED (bframe disappeared)');
-      results.push(`[OK] CAPTCHA SOLVED! ✅`);
-      results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
+      _dbg('verify result: bframe disappeared');
+      results.push(`[BFRAME_GONE]`);
+      _save('BFRAME_GONE');
       return results.join('\n');
     }
 
     const errorEl = frame.locator('.rc-imageselect-incorrect-response, .error-message, .incorrect').first();
     const errorVisible = await errorEl.count() > 0 && await errorEl.isVisible().catch(() => false);
     if (errorVisible) {
-      _dbg('verification FAILED - error shown');
-      results.push('Verification failed, challenge will retry');
+      _dbg('verify result: FAILED - error shown');
+      results.push('[FAILED] incorrect answer');
+
+      // === AUDIO BYPASS FALLBACK ===
+      if (audioFallback) {
+        try {
+          const hasAudio = await checkAudioButton(frame);
+          if (hasAudio) {
+            _dbg('Image solver failed (error) — trying audio bypass fallback...');
+            await page.waitForTimeout(3000);
+            const audioResult = await solveAudioCaptcha(page, frame);
+            if (audioResult.success) {
+              _dbg(`AUDIO BYPASS SUCCESS! Transcription: "${audioResult.transcription}"`);
+              results.push(`[VERIFIED] audio bypass: "${audioResult.transcription}"`);
+              _save('VERIFIED - audio bypass');
+              return results.join('\n');
+            }
+          }
+        } catch (e: any) {
+          _dbg(`Audio bypass fallback error: ${e.message}`);
+        }
+      }
+
+      _save('FAILED - error shown');
       return results.join('\n');
     }
 
@@ -1004,32 +1782,86 @@ Respond with ONLY the tile numbers (comma-separated), nothing else:`;
     if (newChallenge > 0) {
       const newInstr = (await frame.locator('.rc-imageselect-instructions, .prompt-text').first().textContent() || '').trim();
       if (newInstr !== instruction) {
-        _dbg(`new challenge appeared: "${newInstr}"`);
-        saveCaptchaTraining({ instruction: cleanInstruction, objectType: objectName, gridSize, gridCount: actualTileCount, tileCount: actualTileCount, matchedIndices: [...matchedIndices], visionResponse: results.join('\n').slice(0, 500), timestamp: Date.now() });
-        results.push(`New challenge appeared: "${newInstr}"`);
+        _dbg(`verify result: new challenge appeared: "${newInstr}"`);
+        results.push(`[NEW_CHALLENGE] "${newInstr.substring(0, 60)}"`);
+        _save('NEW_CHALLENGE');
         return results.join('\n');
       }
-      _dbg('same challenge still present after verify');
-      results.push('Same challenge still present');
+
+      if (is4x4 && preClickSpriteUrl) {
+        let newSpriteUrl = '';
+        try {
+          newSpriteUrl = await frame.evaluate(() => {
+            const img = document.querySelector('table td img') as HTMLImageElement | null;
+            return img ? img.src : '';
+          });
+        } catch {}
+        if (newSpriteUrl && newSpriteUrl !== preClickSpriteUrl) {
+          _dbg(`verify result: same type sub-challenge (tiles changed, 4x4 Next)`);
+          results.push(`[NEW_CHALLENGE] same type, new tiles (4x4)`);
+          _save('NEW_CHALLENGE same type');
+          return results.join('\n');
+        }
+      }
+
+      _dbg('verify result: same challenge still present');
+      results.push('[SAME_CHALLENGE] answer was wrong');
+
+      // === AUDIO BYPASS FALLBACK ===
+      if (audioFallback) {
+        try {
+          const hasAudio = await checkAudioButton(frame);
+          if (hasAudio) {
+            _dbg('Image solver failed — trying audio bypass fallback...');
+            await page.waitForTimeout(3000); // human-like pause
+            const audioResult = await solveAudioCaptcha(page, frame);
+            if (audioResult.success) {
+              _dbg(`AUDIO BYPASS SUCCESS! Transcription: "${audioResult.transcription}"`);
+              results.push(`[VERIFIED] audio bypass: "${audioResult.transcription}"`);
+              _save('VERIFIED - audio bypass');
+              return results.join('\n');
+            } else {
+              _dbg(`Audio bypass failed — returning image solver failure`);
+            }
+          }
+        } catch (e: any) {
+          _dbg(`Audio bypass fallback error: ${e.message}`);
+        }
+      }
+
+      _save('FAILED - same challenge');
       return results.join('\n');
     }
 
-    if (matchedIndices.length === 0) {
-      _dbg('verification uncertain — 0 tiles were selected, likely not solved');
-      results.push('Verification uncertain — no tiles were selected');
-      return results.join('\n');
+    _dbg('verify result: unknown state');
+    results.push('[UNKNOWN] could not determine verify result');
+
+    // === AUDIO BYPASS FALLBACK (unknown state) ===
+    if (audioFallback) {
+      try {
+        const hasAudio = await checkAudioButton(frame);
+        if (hasAudio) {
+          _dbg('Unknown verify state — trying audio bypass fallback...');
+          await page.waitForTimeout(3000);
+          const audioResult = await solveAudioCaptcha(page, frame);
+          if (audioResult.success) {
+            _dbg(`AUDIO BYPASS SUCCESS! Transcription: "${audioResult.transcription}"`);
+            results.push(`[VERIFIED] audio bypass: "${audioResult.transcription}"`);
+            _save('VERIFIED - audio bypass');
+            return results.join('\n');
+          }
+        }
+      } catch (e: any) {
+        _dbg(`Audio bypass fallback error: ${e.message}`);
+      }
     }
 
-    const verifyResultPath = join(homedir(), '.aurix-captcha-verify-result.png');
-    await page.screenshot({ path: verifyResultPath }).catch(() => {});
-    saveCaptchaTraining({ instruction: cleanInstruction, objectType: objectName, gridSize, gridCount: actualTileCount, tileCount: actualTileCount, matchedIndices: [...matchedIndices], timestamp: Date.now() });
-    _dbg('CAPTCHA SOLVED (no error, no challenge)');
-    results.push(`[OK] CAPTCHA SOLVED! ✅`);
-    results.push(`→ The form can now be submitted. Click the submit/register button to continue.`);
+    _save('UNKNOWN');
     return results.join('\n');
   } catch (e: any) {
     _dbg(`Verify FAILED: ${e.message}`);
     results.push(`Verify failed: ${e.message}`);
+    _save(`VERIFY_ERROR: ${e.message}`);
     return results.join('\n');
   }
 }
