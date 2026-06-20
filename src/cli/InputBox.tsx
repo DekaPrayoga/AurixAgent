@@ -26,11 +26,10 @@ const isMac = process.platform === 'darwin';
 let cachedDisplay: { display: string; xauth: string } | null | undefined;
 
 function findDisplay(): { display: string; xauth: string } | null {
-  if (isWindows || isMac) return null;
   if (cachedDisplay !== undefined) return cachedDisplay;
 
   const fs = require('fs');
-  const home = process.env.HOME || '';
+  const home = process.env.HOME || process.env.USERPROFILE || '';
 
   const xauthCandidates = [
     process.env.XAUTHORITY,
@@ -113,15 +112,19 @@ export function writeClipboard(text: string): void {
   process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
 
   import('node:child_process').then(({ spawn }) => {
+    const clipEnv: Record<string, string> = { ...process.env as Record<string, string> };
+    if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
+    if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
     const tools: [string, string[]][] = [
       ['wl-copy', []],
       ['xclip', ['-selection', 'clipboard']],
       ['xsel', ['--clipboard', '--input']],
       ['pbcopy', []],
+      ['clip.exe', []],
     ];
     for (const [cmd, args] of tools) {
       try {
-        const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+        const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
         child.stdin?.end(text);
         child.on('error', () => {});
       } catch {}

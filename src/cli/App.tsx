@@ -236,15 +236,20 @@ export function App({ config, registry, resumeId }: AppProps) {
         const seq = `\x1b]52;c;${b64}\x07`;
         process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
         import('node:child_process').then(({ spawn }) => {
+          // Build env with DISPLAY for xclip/xsel (works on all platforms with X11)
+          const clipEnv: Record<string, string> = { ...process.env as Record<string, string> };
+          if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
+          if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
           const tools: [string, string[]][] = [
             ['wl-copy', []],
             ['xclip', ['-selection', 'clipboard']],
             ['xsel', ['--clipboard', '--input']],
             ['pbcopy', []],
+            ['clip.exe', []],
           ];
           for (const [cmd, args] of tools) {
             try {
-              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
               child.stdin?.end(text);
               child.on('error', () => {});
             } catch {}
@@ -796,15 +801,19 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${seq}\x1b\\` : seq);
         try {
           const { spawn } = await import('node:child_process');
+          const clipEnv: Record<string, string> = { ...process.env as Record<string, string> };
+          if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
+          if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
           const tools: [string, string[]][] = [
             ['wl-copy', []],
             ['xclip', ['-selection', 'clipboard']],
             ['xsel', ['--clipboard', '--input']],
             ['pbcopy', []],
+            ['clip.exe', []],
           ];
           for (const [cmd, args] of tools) {
             try {
-              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'] });
+              const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
               child.stdin?.end(text);
               child.on('error', () => {});
               break;
