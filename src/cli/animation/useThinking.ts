@@ -1,28 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 
-const FRAMES_GROW = [
-  '*',
-  '**',
-  '***',
-  '****',
-  '*****',
-  '******',
-  '*******',
-  '********',
-];
-
-const FRAMES_SHRINK = [
-  '********',
-  '*******',
-  '******',
-  '*****',
-  '****',
-  '***',
-  '**',
-  '*',
-];
-
-const FULL_CYCLE = [...FRAMES_GROW, ...FRAMES_SHRINK];
+const CHARS = ['·', '✢', '*', '✶', '✻', '✽'];
+const FULL_CYCLE = [...CHARS, ...[...CHARS].reverse()];
 
 export function useThinkingAnimation(active: boolean, intervalMs: number = 120): string {
   const [frame, setFrame] = useState(0);

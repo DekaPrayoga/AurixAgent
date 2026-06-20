@@ -307,7 +307,8 @@ function ThinkingIndicator() {
 
 function ToolSpinner({ name, args }: { name: string; args?: Record<string, unknown> }) {
   const [tick, setTick] = useState(0);
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const chars = ['·', '✢', '*', '✶', '✻', '✽'];
+  const frames = [...chars, ...[...chars].reverse()];
   useEffect(() => {
     const id = setInterval(() => setTick(n => n + 1), 120);
     return () => clearInterval(id);
