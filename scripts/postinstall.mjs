@@ -82,5 +82,26 @@ try {
   }
 }
 
+// ─── 4. Fix react-reconciler/constants ESM import ──────────────────────────
+try {
+  const { readFileSync, writeFileSync } = await import('fs');
+  const chunkPath = join(projectRoot, 'node_modules', '@opentui', 'react', 'chunk-fm0c65gm.js');
+  if (existsSync(chunkPath)) {
+    let content = readFileSync(chunkPath, 'utf8');
+    if (content.includes('from "react-reconciler/constants"')) {
+      content = content.replace(
+        /from "react-reconciler\/constants"/g,
+        'from "react-reconciler/constants.js"'
+      );
+      writeFileSync(chunkPath, content);
+      log('✓ Fixed react-reconciler/constants ESM import');
+    } else {
+      log('✓ react-reconciler/constants import already fixed');
+    }
+  }
+} catch (e) {
+  log(`⚠ Could not fix react-reconciler/constants import: ${e.message}`);
+}
+
 log('');
 log('✓ postinstall complete. Run `aurix` to start.');

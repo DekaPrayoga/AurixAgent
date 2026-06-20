@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import readline from 'readline';
 
 const teal = chalk.hex('#fab283');
 const orange = chalk.hex('#9d7cd8');
@@ -202,6 +203,7 @@ export function drawSelector(opts: {
     if (stdin.isTTY) stdin.setRawMode(true);
     stdin.resume();
     stdin.setEncoding('utf8');
+    readline.emitKeypressEvents(stdin);
     enableMouse();
     // Bracketed paste — in case the user pastes while a selector is open.
     if (process.stdout.isTTY) process.stdout.write('\x1b[?2004h');
@@ -215,6 +217,7 @@ export function drawSelector(opts: {
     const cleanup = () => {
       clearEscTimer();
       stdin.removeListener('data', onData);
+      stdin.removeListener('keypress', onKeypress as any);
       disableMouse();
       if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
       if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
@@ -279,6 +282,29 @@ export function drawSelector(opts: {
     };
 
     function onData(ch: string) {
+      // Debug: show raw bytes for troubleshooting
+      if (process.env.AURIX_DEBUG_KEYS) {
+        const codes = Array.from(ch).map(c => c.charCodeAt(0).toString(16).padStart(2, '0'));
+        process.stderr.write(`\n  [DEBUG] keys: ${codes.join(' ')} (${JSON.stringify(ch)})\n`);
+      }
+
+      // Windows console arrow keys: 0x00 or 0xE0 followed by scan code
+      if (ch.charCodeAt(0) === 0 || ch.charCodeAt(0) === 0xE0) {
+        // Next byte will be the scan code — buffer it
+        escBuf = ch;
+        clearEscTimer();
+        escTimer = setTimeout(() => { escBuf = ''; }, 300);
+        return;
+      }
+      if (escBuf.length === 1 && (escBuf.charCodeAt(0) === 0 || escBuf.charCodeAt(0) === 0xE0)) {
+        clearEscTimer();
+        const scanCode = ch.charCodeAt(0);
+        escBuf = '';
+        if (scanCode === 0x48 || scanCode === 0x53) { move(-1); return; } // Up or Page Up
+        if (scanCode === 0x50 || scanCode === 0x51) { move(1); return; }  // Down or Page Down
+        return; // Other Windows keys — ignore
+      }
+
       // Continuing an escape sequence (arrow keys, mouse, bracketed paste)
       if (escBuf.length > 0) {
         escBuf += ch;
@@ -396,7 +422,20 @@ export function drawSelector(opts: {
       }
     }
 
+    // Cross-platform keypress handler (arrow keys work on Windows/Linux/macOS)
+    const onKeypress = (_ch: string | undefined, key: readline.Key | undefined) => {
+      if (!key) return;
+      if (process.env.AURIX_DEBUG_KEYS) {
+        process.stderr.write(`\n  [DEBUG] key: name=${key.name} ctrl=${key.ctrl} shift=${key.shift}\n`);
+      }
+      if (key.name === 'up') { move(-1); return; }
+      if (key.name === 'down') { move(1); return; }
+      if (key.name === 'pageup') { move(-1); return; }
+      if (key.name === 'pagedown') { move(1); return; }
+    };
+
     repaint();
+    stdin.on('keypress', onKeypress);
     stdin.on('data', onData);
   });
 }
