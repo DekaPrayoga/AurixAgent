@@ -165,15 +165,15 @@ Example: !ai make me a python script`;
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 const STATUS_EMOJIS: Record<string, string> = {
-  thinking: '✻',
-  tool_start: '✻',
-  text: '✻',
+  thinking: '❄️',
+  tool_start: '❄️',
+  text: '❄️',
   done: '✅',
   error: '❌',
 };
 
 function formatStatus(status: string, detail?: string): string {
-  const emoji = STATUS_EMOJIS[status] || '✻';
+  const emoji = STATUS_EMOJIS[status] || '❄️';
   const label: Record<string, string> = {
     thinking: 'Thinking...',
     tool_start: `using_tools: ${detail || 'tool'}`,
@@ -208,57 +208,57 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
     const sources = args?.sources
       ? String(args.sources).split(',').map(s => SOURCE_LABELS[s.trim().toLowerCase()] || s.trim())
       : ['Reddit', 'X/Twitter', 'YouTube', 'Hacker News', 'GitHub', 'Web'];
-    return `✻ using_tools: research_forums (${sources.join(', ')})`;
+    return `❄️ using_tools: research_forums (${sources.join(', ')})`;
   }
 
   if (toolName === 'research') {
     const depth = args?.depth ? String(args.depth) : 'standard';
     const query = args?.query ? String(args.query).slice(0, 60) : '';
-    return `✻ using_tools: research "${query}" (${depth})`;
+    return `❄️ using_tools: research "${query}" (${depth})`;
   }
 
   if (toolName === 'web_search') {
     const query = args?.query ? String(args.query).slice(0, 60) : '';
-    return `✻ using_tools: web_search "${query}"`;
+    return `❄️ using_tools: web_search "${query}"`;
   }
 
   if (toolName === 'terminal' || toolName === 'bash') {
     const cmd = args?.command ? String(args.command).slice(0, 100) : '';
-    return `✻ using_tools: ${cmd}`;
+    return `❄️ using_tools: ${cmd}`;
   }
 
   if (toolName === 'browser') {
     const action = args?.action ? String(args.action) : '';
     const target = args?.target ? ` → ${String(args.target).slice(0, 40)}` : '';
     const value = args?.value ? ` "${String(args.value).slice(0, 30)}"` : '';
-    return `✻ using_tools: browser ${action}${target}${value}`;
+    return `❄️ using_tools: browser ${action}${target}${value}`;
   }
 
   if (toolName === 'read_file') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `✻ using_tools: read ${shortFile}`;
+    return `❄️ using_tools: read ${shortFile}`;
   }
 
   if (toolName === 'write_file') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `✻ using_tools: write ${shortFile}`;
+    return `❄️ using_tools: write ${shortFile}`;
   }
 
   if (toolName === 'file_edit') {
     const file = args?.file_path || args?.path ? String(args.file_path || args.path) : '';
     const shortFile = String(file).split('/').pop() || file;
-    return `✻ using_tools: edit ${shortFile}`;
+    return `❄️ using_tools: edit ${shortFile}`;
   }
 
   if (toolName === 'search_files') {
     const pattern = args?.pattern ? String(args.pattern).slice(0, 40) : '';
     const path = args?.path ? ` in ${String(args.path)}` : '';
-    return `✻ using_tools: search "${pattern}"${path}`;
+    return `❄️ using_tools: search "${pattern}"${path}`;
   }
 
-  return `✻ using_tools: ${toolName}`;
+  return `❄️ using_tools: ${toolName}`;
 }
 
 function cleanResponse(text: string): string {

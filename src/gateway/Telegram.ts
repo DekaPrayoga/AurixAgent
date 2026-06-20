@@ -11,6 +11,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   name = 'telegram';
   private token: string;
   private polling: boolean = false;
+  private _polling: boolean = false;
   private offset: number = 0;
 
   constructor(token: string) {
@@ -135,6 +136,9 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   }
 
   private async poll() {
+    if (this._polling) return; // Prevent multiple polling loops
+    this._polling = true;
+
     while (this.polling) {
       try {
         const updates = await this.api('getUpdates', {
@@ -192,10 +196,17 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           } as IncomingMessage);
         }
       } catch (e: any) {
-        console.error(`  Telegram poll error: ${e.message}`);
-        await new Promise(r => setTimeout(r, 5000));
+        if (e.message?.includes('Conflict')) {
+          // Another bot instance is polling - wait and retry
+          console.error(`  Telegram poll conflict - another instance polling. Waiting 10s...`);
+          await new Promise(r => setTimeout(r, 10000));
+        } else {
+          console.error(`  Telegram poll error: ${e.message}`);
+          await new Promise(r => setTimeout(r, 5000));
+        }
       }
     }
+    this._polling = false;
   }
 
   private async downloadTelegramFile(fileId: string): Promise<string | null> {
