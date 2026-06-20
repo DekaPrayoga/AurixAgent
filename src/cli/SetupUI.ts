@@ -55,8 +55,14 @@ export function drawInputScreen(opts: {
     stdin.setEncoding('utf8');
 
     // Enable bracketed paste so terminals that support it wrap paste
-    // content in ESC[200~ ... ESC[201~, even when raw mode is on.
     if (process.stdout.isTTY) process.stdout.write('\x1b[?2004h');
+
+    // Pre-import readClipboard synchronously to avoid async race conditions
+    let readClipboardFn: (() => Promise<string | undefined>) | null = null;
+    try {
+      const mod = require('./InputBox.js');
+      readClipboardFn = mod.readClipboard || null;
+    } catch {}
 
     let escBuf = '';
     let escTimer: NodeJS.Timeout | null = null;
@@ -87,6 +93,39 @@ export function drawInputScreen(opts: {
     renderLine();
 
     function onData(ch: string) {
+      // Dont Change This Or You Will Make The Clipboard Corrupted
+      // Handle bracketed paste arriving as a single chunk: \x1b[200~content\x1b[201~
+      if (ch.includes('\x1b[200~')) {
+        const startIdx = ch.indexOf('\x1b[200~') + 6;
+        const endIdx = ch.indexOf('\x1b[201~', startIdx);
+        if (endIdx !== -1) {
+          // Full bracketed paste in one chunk
+          buf += ch.slice(startIdx, endIdx);
+          renderLine();
+          return;
+        } else {
+          // Start marker found but no end marker yet — accumulate
+          buf += ch.slice(startIdx);
+          renderLine();
+          // Switch to paste accumulator mode
+          const onPaste = (p: string) => {
+            const pEnd = p.indexOf('\x1b[201~');
+            if (pEnd === -1) {
+              buf += p;
+              renderLine();
+              return;
+            }
+            buf += p.slice(0, pEnd);
+            stdin.removeListener('data', onPaste);
+            stdin.on('data', onData);
+            renderLine();
+          };
+          stdin.removeListener('data', onData);
+          stdin.on('data', onPaste);
+          return;
+        }
+      }
+
       // If we're accumulating an escape sequence, keep appending.
       if (escBuf.length > 0) {
         escBuf += ch;
@@ -125,6 +164,16 @@ export function drawInputScreen(opts: {
       }
 
       const c = ch.charCodeAt(0);
+
+      if (c === 22) {
+        // Ctrl+V — paste from clipboard (raw mode sends 0x16 instead of clipboard content)
+        if (readClipboardFn) {
+          readClipboardFn().then(clip => {
+            if (clip) { buf += clip; renderLine(); }
+          }).catch(() => {});
+        }
+        return;
+      }
 
       if (c === 27) {
         // Start of escape sequence — wait to see if more bytes arrive
@@ -282,12 +331,6 @@ export function drawSelector(opts: {
     };
 
     function onData(ch: string) {
-      // Debug: show raw bytes for troubleshooting
-      if (process.env.AURIX_DEBUG_KEYS) {
-        const codes = Array.from(ch).map(c => c.charCodeAt(0).toString(16).padStart(2, '0'));
-        process.stderr.write(`\n  [DEBUG] keys: ${codes.join(' ')} (${JSON.stringify(ch)})\n`);
-      }
-
       // Windows console arrow keys: 0x00 or 0xE0 followed by scan code
       if (ch.charCodeAt(0) === 0 || ch.charCodeAt(0) === 0xE0) {
         // Next byte will be the scan code — buffer it
@@ -425,9 +468,6 @@ export function drawSelector(opts: {
     // Cross-platform keypress handler (arrow keys work on Windows/Linux/macOS)
     const onKeypress = (_ch: string | undefined, key: readline.Key | undefined) => {
       if (!key) return;
-      if (process.env.AURIX_DEBUG_KEYS) {
-        process.stderr.write(`\n  [DEBUG] key: name=${key.name} ctrl=${key.ctrl} shift=${key.shift}\n`);
-      }
       if (key.name === 'up') { move(-1); return; }
       if (key.name === 'down') { move(1); return; }
       if (key.name === 'pageup') { move(-1); return; }

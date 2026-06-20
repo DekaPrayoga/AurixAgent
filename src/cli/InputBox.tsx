@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { TextAttributes, decodePasteBytes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawn as nodeSpawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
@@ -28,7 +31,6 @@ let cachedDisplay: { display: string; xauth: string } | null | undefined;
 function findDisplay(): { display: string; xauth: string } | null {
   if (cachedDisplay !== undefined) return cachedDisplay;
 
-  const fs = require('fs');
   const home = process.env.HOME || process.env.USERPROFILE || '';
 
   const xauthCandidates = [
@@ -57,7 +59,6 @@ function findDisplay(): { display: string; xauth: string } | null {
   } catch {}
 
   try {
-    const { execFileSync } = require('child_process');
     const out = execFileSync('nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
     const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
     if (match) {
@@ -78,7 +79,7 @@ function xclipEnv(): Record<string, string> | undefined {
   return env;
 }
 
-function readClipboard(): Promise<string | undefined> {
+export function readClipboard(): Promise<string | undefined> {
   return (async () => {
     if (isMac) {
       try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
@@ -120,7 +121,6 @@ export function writeClipboard(text: string): void {
       ['xclip', ['-selection', 'clipboard']],
       ['xsel', ['--clipboard', '--input']],
       ['pbcopy', []],
-      ['clip.exe', []],
     ];
     for (const [cmd, args] of tools) {
       try {
@@ -134,7 +134,7 @@ export function writeClipboard(text: string): void {
 
 function readClipboardImage(): Promise<string | undefined> {
   return (async () => {
-    const { spawn: sp } = require('node:child_process');
+    const sp = nodeSpawn;
     const tmpFile = `/tmp/aurix-paste-${Date.now()}.png`;
     const env = xclipEnv();
     const fullEnv = env ? { ...process.env, ...env } : undefined;
@@ -163,7 +163,7 @@ return "ok"`;
     }
 
     if (isWindows) {
-      const tmpFileWin = require('path').join(require('os').tmpdir(), `aurix-paste-${Date.now()}.png`);
+      const tmpFileWin = path.join(os.tmpdir(), `aurix-paste-${Date.now()}.png`);
       return new Promise<string | undefined>((resolve) => {
         const psScript = `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('${tmpFileWin.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output '' }`;
         const child = sp('powershell', ['-NoProfile', '-Command', psScript], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
@@ -181,7 +181,7 @@ return "ok"`;
         child.stdout?.on('data', (d: Buffer) => chunks.push(d));
         child.on('close', (code: number) => {
           if (code === 0 && chunks.length > 0) {
-            require('fs').writeFileSync(tmpFile, Buffer.concat(chunks));
+            fs.writeFileSync(tmpFile, Buffer.concat(chunks));
             resolve(tmpFile);
           } else resolve(undefined);
         });
@@ -195,7 +195,7 @@ return "ok"`;
       child.stdout?.on('data', (d: Buffer) => chunks.push(d));
       child.on('close', (code: number) => {
         if (code === 0 && chunks.length > 0) {
-          require('fs').writeFileSync(tmpFile, Buffer.concat(chunks));
+          fs.writeFileSync(tmpFile, Buffer.concat(chunks));
           resolve(tmpFile);
         } else resolve(undefined);
       });

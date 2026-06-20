@@ -245,7 +245,6 @@ export function App({ config, registry, resumeId }: AppProps) {
             ['xclip', ['-selection', 'clipboard']],
             ['xsel', ['--clipboard', '--input']],
             ['pbcopy', []],
-            ['clip.exe', []],
           ];
           for (const [cmd, args] of tools) {
             try {
@@ -809,7 +808,6 @@ Supervisor auto-routes tasks to the right specialist(s).`);
             ['xclip', ['-selection', 'clipboard']],
             ['xsel', ['--clipboard', '--input']],
             ['pbcopy', []],
-            ['clip.exe', []],
           ];
           for (const [cmd, args] of tools) {
             try {
