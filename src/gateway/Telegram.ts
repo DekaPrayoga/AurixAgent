@@ -25,12 +25,29 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     await this.registerCommands();
 
+    // Clear any webhook and pending updates from previous instances
+    try {
+      await this.api('deleteWebhook', { drop_pending_updates: true });
+      // Clear pending updates by getting latest offset
+      const updates = await this.api('getUpdates', { offset: -1, timeout: 0 });
+      if (updates.length > 0) {
+        this.offset = updates[updates.length - 1].update_id + 1;
+        console.log(`  Telegram: cleared ${updates.length} pending updates`);
+      }
+    } catch (e: any) {
+      console.error(`  Telegram: failed to clear pending updates: ${e.message}`);
+    }
+
     this.polling = true;
     this.poll();
   }
 
   async disconnect(): Promise<void> {
     this.polling = false;
+    this._polling = false;
+    try {
+      await this.api('deleteWebhook', { drop_pending_updates: false });
+    } catch {}
   }
 
   async send(content: string, channelId: string, replyTo?: string): Promise<void> {
