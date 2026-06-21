@@ -676,6 +676,9 @@ export class Gateway extends EventEmitter {
       let lastStatusUpdate = Date.now();
       let lastToolStatus = '';
 
+      // Send thinking indicator
+      await platform.send('❄️ Thinking...', msg.channelId, msg.replyTo);
+
       for await (const event of agent.run(taggedPrompt, imagePaths.length > 0 ? imagePaths : undefined)) {
         if (event.type === 'tool_start') {
           const toolName = event.toolName || event.data;
@@ -709,8 +712,13 @@ export class Gateway extends EventEmitter {
         for (const chunk of chunks) {
           await platform.send(chunk, msg.channelId, msg.replyTo);
         }
+      } else {
+        console.error('[Gateway] Agent produced no response');
+        await platform.send('❄️ Agent produced no response. Try again or use /reset.', msg.channelId, msg.replyTo);
       }
     } catch (e: any) {
+      console.error(`[Gateway] Error processing message: ${e.message}`);
+      console.error(e.stack);
       await platform.send(`❌ Error: ${e.message}`, msg.channelId, msg.replyTo);
     } finally {
       this.activeProcessing.delete(agentKey);
