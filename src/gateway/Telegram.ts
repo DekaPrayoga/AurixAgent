@@ -144,6 +144,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'history', description: '📝 Message count' },
           { command: 'compress', description: '📦 Compress context' },
           { command: 'agents', description: '🤖 Show active agents' },
+          { command: 'btw', description: '❄️ Check status or inject context' },
         ],
       });
       console.log('  Telegram: commands registered');

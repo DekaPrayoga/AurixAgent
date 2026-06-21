@@ -418,16 +418,26 @@ export class Gateway extends EventEmitter {
     // /btw — inject additional context while agent is working
     if (cmd === 'btw') {
       const btwText = args || '';
+      const agent = this.agents.get(agentKey);
+      const isActive = agent && this.activeProcessing.has(agentKey);
+
       if (!btwText) {
-        await platform.send('Usage: /btw <additional context>\nInjects extra context into the current conversation.', msg.channelId, msg.replyTo);
+        // No args — show current status
+        if (isActive) {
+          const ledger = agent.getLedger();
+          const totalTokens = ledger.total();
+          await platform.send(`❄️ Agent is working...\nTokens used: ${totalTokens}`, msg.channelId, msg.replyTo);
+        } else {
+          await platform.send('❄️ No active task. Use /btw <text> to inject context.', msg.channelId, msg.replyTo);
+        }
         return;
       }
-      const agent = this.agents.get(agentKey);
-      if (agent && this.activeProcessing.has(agentKey)) {
+
+      if (isActive) {
         agent.injectContext(`[User added context while you were working]: ${btwText}`);
-        await platform.send(`✻ Context injected into current task.`, msg.channelId, msg.replyTo);
+        await platform.send(`❄️ Context injected into current task.`, msg.channelId, msg.replyTo);
       } else {
-        await platform.send(`✻ No active task. Sending as new message...`, msg.channelId, msg.replyTo);
+        await platform.send(`❄️ No active task. Sending as new message...`, msg.channelId, msg.replyTo);
         msg.content = btwText;
         setImmediate(() => this.handleMessage(msg));
       }
@@ -663,15 +673,22 @@ export class Gateway extends EventEmitter {
 
     try {
       let fullResponse = '';
-      let statusMsg = formatStatus('thinking');
-      await platform.send(statusMsg, msg.channelId, msg.replyTo);
-
       let lastStatusUpdate = Date.now();
       let lastToolStatus = '';
 
       for await (const event of agent.run(taggedPrompt, imagePaths.length > 0 ? imagePaths : undefined)) {
         if (event.type === 'tool_start') {
-          const newStatus = formatToolStatus(event.toolName || event.data, event.toolArgs);
+          const toolName = event.toolName || event.data;
+          const args = event.toolArgs;
+          let snippet = '';
+          if (args) {
+            if (args.command) snippet = String(args.command).slice(0, 200);
+            else if (args.file_path || args.path) snippet = String(args.file_path || args.path).slice(0, 200);
+            else if (args.query) snippet = String(args.query).slice(0, 200);
+            else if (args.url) snippet = String(args.url).slice(0, 200);
+            else snippet = JSON.stringify(args).slice(0, 200);
+          }
+          const newStatus = `❄️ ${toolName}${snippet ? ': ' + snippet : ''}`;
           if (newStatus !== lastToolStatus) {
             await platform.send(newStatus, msg.channelId, msg.replyTo);
             lastToolStatus = newStatus;
@@ -679,12 +696,6 @@ export class Gateway extends EventEmitter {
           }
         } else if (event.type === 'text') {
           fullResponse += event.data;
-          const now = Date.now();
-          if (now - lastStatusUpdate > 5000 && fullResponse.length > 50) {
-            statusMsg = formatStatus('text');
-            await platform.send(statusMsg, msg.channelId, msg.replyTo);
-            lastStatusUpdate = now;
-          }
         } else if (event.type === 'error') {
           await platform.send(`❌ ${event.data}`, msg.channelId, msg.replyTo);
         } else if (event.type === 'compact') {
