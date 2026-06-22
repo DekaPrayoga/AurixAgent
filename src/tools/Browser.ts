@@ -967,16 +967,57 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
         case 'scroll': {
           const p = await ensureBrowser();
           const direction = value || 'down';
-          const amount = options.amount || 500;
+          const amount = options.amount || (direction === 'up' ? -500 : 500);
+
           if (target) {
             const locator = await resolveLocator(p, target);
             await locator.first().scrollIntoViewIfNeeded({ timeout });
+            // Add a little micro-scroll reading behavior after finding the element
+            await p.mouse.wheel(0, 30 + Math.random() * 50);
+            await p.waitForTimeout(150 + Math.random() * 200);
+            await p.mouse.wheel(0, -(10 + Math.random() * 20)); // tiny correction up
             return `Scrolled to element: ${target}`;
           }
-          const deltaY = direction === 'up' ? -amount : amount;
-          await p.mouse.wheel(0, deltaY);
-          await p.waitForTimeout(300);
-          return `Scrolled ${direction} by ${amount}px`;
+
+          const targetY = direction === 'up' ? -Math.abs(amount) : Math.abs(amount);
+
+          // Human-like scroll (accelerate, then decelerate, sometimes overshoot)
+          const steps = 15 + Math.floor(Math.random() * 10);
+          let currentY = 0;
+
+          // 20% chance to overshoot the scroll (scroll too far then correct)
+          const willOvershoot = Math.random() < 0.2;
+          const overshootAmount = willOvershoot ? (direction === 'up' ? -150 : 150) : 0;
+          const totalY = targetY + overshootAmount;
+
+          for (let i = 1; i <= steps; i++) {
+            const progress = i / steps;
+            // Ease out cubic
+            const ease = 1 - Math.pow(1 - progress, 3);
+            const stepY = (totalY * ease) - currentY;
+            currentY += stepY;
+
+            await p.mouse.wheel(0, stepY);
+            await p.waitForTimeout(10 + Math.random() * 20); // 10-30ms per tick
+          }
+
+          if (willOvershoot) {
+            await p.waitForTimeout(300 + Math.random() * 400); // pause to realize overshoot
+            // Correction scroll
+            const correctionSteps = 5 + Math.floor(Math.random() * 5);
+            let cCurrentY = 0;
+            for (let i = 1; i <= correctionSteps; i++) {
+               const progress = i / correctionSteps;
+               const ease = 1 - Math.pow(1 - progress, 3);
+               const stepY = (-overshootAmount * ease) - cCurrentY;
+               cCurrentY += stepY;
+               await p.mouse.wheel(0, stepY);
+               await p.waitForTimeout(20 + Math.random() * 30);
+            }
+          }
+
+          await p.waitForTimeout(200);
+          return `Scrolled ${direction} by ${Math.abs(amount)}px (Humanized)`;
         }
 
         case 'back': {

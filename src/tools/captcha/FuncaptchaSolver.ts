@@ -211,31 +211,76 @@ interface Fingerprint {
   T: (number | boolean)[]; H: number; SWF: boolean;
 }
 
+const PERSONAS = [
+  // Persona 1: Windows Desktop (Gaming/High-End)
+  {
+    screen: [2560, 1440], PR: 1, TO: -420, H: 16,
+    vendor: 'Google Inc. (NVIDIA)',
+    renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  },
+  // Persona 2: Windows Laptop (Standard/Intel)
+  {
+    screen: [1920, 1080], PR: 1.25, TO: -300, H: 8,
+    vendor: 'Google Inc. (Intel)',
+    renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  },
+  // Persona 3: MacBook Pro (M1/M2)
+  {
+    screen: [1440, 900], PR: 2, TO: -480, H: 8,
+    vendor: 'Apple',
+    renderer: 'Apple M1',
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  },
+  // Persona 4: MacBook Air (Intel)
+  {
+    screen: [1280, 800], PR: 2, TO: -360, H: 4,
+    vendor: 'Google Inc. (Intel Inc.)',
+    renderer: 'ANGLE (Intel Inc., Intel(R) HD Graphics 6000, OpenGL 4.1)',
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+  },
+  // Persona 5: Windows Desktop (Budget/AMD)
+  {
+    screen: [1920, 1080], PR: 1, TO: -420, H: 6,
+    vendor: 'Google Inc. (AMD)',
+    renderer: 'ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+    ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  }
+];
+
+let currentPersona = PERSONAS[Math.floor(Math.random() * PERSONAS.length)];
+
+// To let users set specific persona from outside
+export function setActivePersona(index: number) {
+  currentPersona = PERSONAS[index % PERSONAS.length];
+}
+
 function getFingerprint(): Fingerprint {
-  const screen = SCREEN_RESOLUTIONS[Math.floor(Math.random() * SCREEN_RESOLUTIONS.length)];
+  const p = currentPersona;
   return {
     DNT: 'unknown',
-    L: LANGUAGES[Math.floor(Math.random() * LANGUAGES.length)],
-    D: [8, 24][Math.floor(Math.random() * 2)],
-    PR: Math.round(Math.random() * 100) / 100 * 2 + 0.5,
-    S: screen,
-    AS: screen,
-    TO: (Math.floor(Math.random() * 24) - 12) * 60,
-    SS: Math.random() > 0.5,
-    LS: Math.random() > 0.5,
-    IDB: Math.random() > 0.5,
-    B: Math.random() > 0.5,
-    ODB: Math.random() > 0.5,
+    L: 'en-US',
+    D: 24,
+    PR: p.PR,
+    S: p.screen,
+    AS: [p.screen[0], p.screen[1] - 40],
+    TO: p.TO,
+    SS: true,
+    LS: true,
+    IDB: true,
+    B: false,
+    ODB: true,
     CPUC: 'unknown',
-    PK: 'Win32',
+    PK: p.ua.includes('Mac OS') ? 'MacIntel' : 'Win32',
     CFP: 'canvas winding:yes~canvas fp:data:image/png;base64,' + randomBytes(128).toString('base64'),
     FR: false,
     FOS: false,
     FB: false,
-    JSF: BASE_FONTS.filter(() => Math.random() > 0.5),
-    P: BASE_PLUGINS.filter(() => Math.random() > 0.5),
-    T: [Math.floor(Math.random() * 8), Math.random() > 0.5, Math.random() > 0.5],
-    H: 2 ** Math.floor(Math.random() * 6),
+    JSF: BASE_FONTS.filter(() => Math.random() > 0.3), // 70% chance to keep font, less erratic
+    P: BASE_PLUGINS.filter(() => Math.random() > 0.1), // 90% chance, typical browsers have these
+    T: [0, false, false], // no touch
+    H: p.H,
     SWF: false,
   };
 }
@@ -261,6 +306,7 @@ function prepareFe(fp: Fingerprint): string[] {
 }
 
 function getEnhancedFingerprint(fp: Fingerprint, ua: string, opts: any): Array<{key: string; value: any}> {
+  const p = currentPersona;
   const base: Record<string, any> = {
     webgl_extensions: 'ANGLE_instanced_arrays;EXT_blend_minmax;EXT_color_buffer_half_float;EXT_disjoint_timer_query;EXT_float_blend;EXT_frag_depth;EXT_shader_texture_lod;EXT_texture_compression_bptc;EXT_texture_compression_rgtc;EXT_texture_filter_anisotropic;EXT_sRGB;KHR_parallel_shader_compile;OES_element_index_uint;OES_fbo_render_mipmap;OES_standard_derivatives;OES_texture_float;OES_texture_float_linear;OES_texture_half_float;OES_texture_half_float_linear;OES_vertex_array_object;WEBGL_color_buffer_float;WEBGL_compressed_texture_s3tc;WEBGL_compressed_texture_s3tc_srgb;WEBGL_debug_renderer_info;WEBGL_debug_shaders;WEBGL_depth_texture;WEBGL_draw_buffers;WEBGL_lose_context;WEBGL_multi_draw',
     webgl_extensions_hash: '',
@@ -274,27 +320,27 @@ function getEnhancedFingerprint(fp: Fingerprint, ua: string, opts: any): Array<{
     webgl_bits: '8,8,24,8,8,0',
     webgl_max_params: '16,64,16384,4096,8192,32,8192,31,16,32,4096',
     webgl_max_viewport_dims: '[8192, 8192]',
-    webgl_unmasked_vendor: 'Google Inc. (Google)',
-    webgl_unmasked_renderer: 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)',
+    webgl_unmasked_vendor: p.vendor,
+    webgl_unmasked_renderer: p.renderer,
     webgl_vsf_params: '23,127,127,23,127,127,23,127,127',
     webgl_vsi_params: '0,31,30,0,31,30,0,31,30',
     webgl_fsf_params: '23,127,127,23,127,127,23,127,127',
     webgl_fsi_params: '0,31,30,0,31,30,0,31,30',
     webgl_hash_webgl: null as string | null,
     user_agent_data_brands: 'Chromium,Google Chrome,Not=A?Brand',
-    user_agent_data_mobile: null,
-    navigator_connection_downlink: null,
-    navigator_connection_downlink_max: null,
-    network_info_rtt: null,
+    user_agent_data_mobile: false,
+    navigator_connection_downlink: 10,
+    navigator_connection_downlink_max: 10,
+    network_info_rtt: 50,
     network_info_save_data: false,
-    network_info_rtt_type: null,
+    network_info_rtt_type: '4g',
     screen_pixel_depth: 24,
-    navigator_device_memory: 0.5,
-    navigator_languages: 'en-US,fr-BE,fr,en-BE,en',
-    window_inner_width: 0,
-    window_inner_height: 0,
-    window_outer_width: 2195,
-    window_outer_height: 1195,
+    navigator_device_memory: p.H >= 8 ? 8 : 4,
+    navigator_languages: 'en-US,en',
+    window_inner_width: p.screen[0],
+    window_inner_height: p.screen[1] - 100,
+    window_outer_width: p.screen[0],
+    window_outer_height: p.screen[1],
     browser_detection_firefox: false,
     browser_detection_brave: false,
     audio_codecs: '{"ogg":"probably","mp3":"probably","wav":"probably","m4a":"maybe","aac":"probably"}',
@@ -315,18 +361,7 @@ function getEnhancedFingerprint(fp: Fingerprint, ua: string, opts: any): Array<{
     audio_fingerprint: '124.04347527516074',
   };
 
-  // Randomise WebGL extensions
-  base.webgl_extensions = base.webgl_extensions.split(';').filter(() => Math.random() > 0.5).join(';');
   base.webgl_extensions_hash = x64hash128(base.webgl_extensions, 0);
-  base.screen_pixel_depth = fp.D;
-  base.navigator_languages = fp.L;
-  base.window_outer_height = fp.S[0];
-  base.window_outer_width = fp.S[1];
-  base.window_inner_height = fp.S[0];
-  base.window_inner_width = fp.S[1];
-  base.browser_detection_firefox = !!ua.match(/Firefox\/\d+/);
-  base.browser_detection_brave = !!ua.match(/Brave\/\d+/);
-  base.media_query_dark_mode = Math.random() > 0.9;
   base.webgl_hash_webgl = x64hash128(
     Object.entries(base).filter(([k]) => k.startsWith('webgl_') && k !== 'webgl_hash_webgl').map(([, v]) => v).join(','), 0
   );
