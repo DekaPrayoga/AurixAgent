@@ -12,6 +12,7 @@ import {
   humanClick, humanMove, humanHold, warmupBehavior,
   solveCaptchaGrid, autoSolveCaptcha, analyzeImageChallenge,
   _lastGridAnalyzeTime, bezierPoint, easeInOut,
+  FuncaptchaSolver, extractPublicKey, extractServiceUrl,
 } from './captcha/index.js';
 
 function ok(msg: string, details?: Record<string, string>): string {
@@ -502,7 +503,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
     properties: {
       action: {
         type: 'string',
-        description: 'Browser action to perform',
+        description: 'Browser action to perform. Can be: navigate, click, fill, type, screenshot, snapshot, evaluate, signup-assist, signin-assist, close, export-state, import-state, etc.',
       },
       target: {
         type: 'string',
@@ -606,6 +607,48 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             tabs: tabs.join('\n'),
             hint: 'Use switch-tab to navigate between tabs, or run signup-assist/signin-assist on the current tab',
           });
+        }
+
+        case 'export-state': {
+          const p = await ensureBrowser();
+          const session = getSession();
+          if (!session) return err('No active browser session');
+          try {
+            const fs = await import('fs');
+            const path = await import('path');
+            const stateFile = value || target || path.join(process.cwd(), 'browser-state.json');
+            const cookies = await session.context.cookies();
+            const origins = await session.context.storageState(); // Includes local storage
+            fs.writeFileSync(stateFile, JSON.stringify(origins, null, 2));
+            return ok(`Browser state (cookies & storage) exported successfully to: ${stateFile}`);
+          } catch (e: any) {
+            return err(`Failed to export state: ${e.message}`);
+          }
+        }
+
+        case 'import-state': {
+          const session = getSession();
+          if (!session) return err('No active browser session');
+          try {
+            const fs = await import('fs');
+            const stateFile = value || target || '';
+            if (!fs.existsSync(stateFile)) return err(`State file not found: ${stateFile}`);
+            
+            const raw = fs.readFileSync(stateFile, 'utf8');
+            const stateObj = JSON.parse(raw);
+            
+            // Apply storage state to the context
+            // Note: In Playwright, adding storage state on the fly requires creating a new context,
+            // but we can at least add cookies directly.
+            if (stateObj.cookies && Array.isArray(stateObj.cookies)) {
+               await session.context.addCookies(stateObj.cookies);
+            }
+            // For a full context import, user needs to specify state in launch options.
+            // Here we provide the cookies injection which usually bypasses login walls.
+            return ok(`Successfully imported ${stateObj.cookies ? stateObj.cookies.length : 0} cookies from ${stateFile}. Refresh the page to see effects.`);
+          } catch (e: any) {
+            return err(`Failed to import state: ${e.message}`);
+          }
         }
 
         case 'status': {
@@ -1372,145 +1415,149 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           }
 
           if (captchaType === 'funcaptcha') {
-            results.push('FunCaptcha (Arkose Labs) detected. Auto-solving...');
+            results.push('FunCaptcha (Arkose Labs) detected. Solving via API-level solver (BDA fingerprint + audio/vision)...');
             try {
-              const fcFrame = funcaptchaFrame;
-              if (fcFrame) {
-                await p.waitForTimeout(2000);
+              // Extract public key and service URL from the FunCaptcha iframe
+              const fcFrameUrl = funcaptchaFrame ? await (async () => {
+                try { return funcaptchaFrame.url(); } catch { return ''; }
+              })() : '';
 
-                const instruction = await fcFrame.evaluate(() => {
-                  const h2 = document.querySelector('h2, h3, .challenge-title, #challenge-stage .title, [class*="instruction"], [class*="prompt"]');
-                  return h2?.textContent?.trim() || '';
-                }).catch(() => '');
-
-                if (instruction) results.push(`Instruction: "${instruction}"`);
-
-                const maxAttempts = 3;
-                for (let attempt = 0; attempt < maxAttempts; attempt++) {
-                  if (attempt > 0) results.push(`\nRetry ${attempt}/${maxAttempts - 1}...`);
-
-                  const screenshotPath = join(homedir(), '.aurix-funcaptcha-puzzle.png');
-                  try {
-                    await fcFrame.locator('#challenge-stage, .challenge-content, .game-content, body').first().screenshot({ path: screenshotPath });
-                  } catch {
-                    await p.screenshot({ path: screenshotPath });
+              let resolvedPkey: string | null = extractPublicKey(fcFrameUrl);
+              if (!resolvedPkey) {
+                // Fallback: try to find public key from page content
+                resolvedPkey = await p.evaluate(() => {
+                  const scripts = document.querySelectorAll('script');
+                  for (const s of scripts) {
+                    const m = s.textContent?.match(/public_key['":\s]+([A-F0-9-]{36})/i);
+                    if (m) return m[1];
                   }
-
-                  try {
-                    const ssBase64 = readFileBase64(screenshotPath);
-                    const prompt = instruction
-                      ? `This is a FunCaptcha puzzle. The instruction is: "${instruction}". Analyze the image and tell me EXACTLY what to do. Reply in this format:\n- For clicking: "CLICK x,y" (pixel coordinates relative to the puzzle image)\n- For dragging: "DRAG fromX,fromY toX,toY"\n- For rotating: "ROTATE degrees" (estimated rotation angle in degrees)\n- For selecting an option: "CLICK x,y" on the correct answer\nBe precise with coordinates.`
-                      : `This is a FunCaptcha puzzle. Analyze the image and determine what action is needed to solve it. Reply in this format:\n- For clicking: "CLICK x,y"\n- For dragging: "DRAG fromX,fromY toX,toY"\n- For rotating: "ROTATE degrees"\nBe precise with coordinates.`;
-
-                    const visionResp = await visionClassify(ssBase64, prompt);
-                    results.push(`Vision model: "${visionResp}"`);
-
-                    const clickMatch = visionResp.match(/CLICK\s+([\d.]+)\s*,\s*([\d.]+)/i);
-                    const dragMatch = visionResp.match(/DRAG\s+([\d.]+)\s*,\s*([\d.]+)\s+([\d.]+)\s*,\s*([\d.]+)/i);
-                    const rotateMatch = visionResp.match(/ROTATE\s+(-?[\d.]+)/i);
-
-                    const puzzleBox = await fcFrame.locator('#challenge-stage, .challenge-content, .game-content, body').first().boundingBox().catch(() => null);
-                    const offsetX = puzzleBox?.x || 0;
-                    const offsetY = puzzleBox?.y || 0;
-
-                    if (clickMatch) {
-                      const cx = offsetX + parseFloat(clickMatch[1]);
-                      const cy = offsetY + parseFloat(clickMatch[2]);
-                      await humanMove(cx, cy, p);
-                      await p.waitForTimeout(100 + Math.random() * 150);
-                      await p.mouse.down();
-                      await p.waitForTimeout(60 + Math.random() * 80);
-                      await p.mouse.up();
-                      results.push(`Clicked at (${Math.round(cx)}, ${Math.round(cy)})`);
-                      await p.waitForTimeout(2000);
-                    } else if (dragMatch) {
-                      const fromX = offsetX + parseFloat(dragMatch[1]);
-                      const fromY = offsetY + parseFloat(dragMatch[2]);
-                      const toX = offsetX + parseFloat(dragMatch[3]);
-                      const toY = offsetY + parseFloat(dragMatch[4]);
-                      await humanMove(fromX, fromY, p);
-                      await p.waitForTimeout(150 + Math.random() * 200);
-                      await p.mouse.down();
-                      await p.waitForTimeout(200 + Math.random() * 300);
-                      const steps = 20 + Math.floor(Math.random() * 15);
-                      for (let i = 1; i <= steps; i++) {
-                        const progress = i / steps;
-                        const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-                        await p.mouse.move(fromX + (toX - fromX) * eased, fromY + (toY - fromY) * eased + (Math.random() - 0.5) * 2);
-                        await p.waitForTimeout(10 + Math.random() * 15);
-                      }
-                      await p.mouse.move(toX, toY);
-                      await p.waitForTimeout(150);
-                      await p.mouse.up();
-                      results.push(`Dragged from (${Math.round(fromX)},${Math.round(fromY)}) to (${Math.round(toX)},${Math.round(toY)})`);
-                      await p.waitForTimeout(2000);
-                    } else if (rotateMatch) {
-                      const degrees = parseFloat(rotateMatch[1]);
-                      const rotator = fcFrame.locator('.rotator, [class*="rotate"], [class*="spinner"], canvas, .game-item').first();
-                      if (await rotator.count() > 0) {
-                        const rBox = await rotator.boundingBox();
-                        if (rBox) {
-                          const cx = rBox.x + rBox.width / 2;
-                          const cy = rBox.y + rBox.height / 2;
-                          const radius = rBox.width / 2;
-                          const startX = cx + radius;
-                          const startY = cy;
-                          const endAngle = (degrees * Math.PI) / 180;
-                          const endX = cx + radius * Math.cos(endAngle);
-                          const endY = cy + radius * Math.sin(endAngle);
-                          await humanMove(startX, startY, p);
-                          await p.waitForTimeout(150);
-                          await p.mouse.down();
-                          await p.waitForTimeout(200);
-                          const steps = 30;
-                          for (let i = 1; i <= steps; i++) {
-                            const angle = (endAngle * i) / steps;
-                            await p.mouse.move(cx + radius * Math.cos(angle), cy + radius * Math.sin(angle));
-                            await p.waitForTimeout(15 + Math.random() * 10);
-                          }
-                          await p.mouse.move(endX, endY);
-                          await p.waitForTimeout(150);
-                          await p.mouse.up();
-                          results.push(`Rotated ${degrees}°`);
-                          await p.waitForTimeout(2000);
-                        }
-                      } else {
-                        results.push('[WARN] No rotatable element found');
-                      }
-                    } else {
-                      results.push(`Could not parse vision model response: "${visionResp}"`);
-                      results.push('Falling back to manual mode. Read the puzzle screenshot and use click/drag-to/evaluate to solve.');
-                      break;
-                    }
-
-                    const stillChallenge = await fcFrame.locator('#challenge-stage, .challenge-content').count();
-                    const successIndicators = await fcFrame.locator('[class*="success"], [class*="correct"], [class*="verified"], .game-success').count();
-
-                    if (successIndicators > 0) {
-                      results.push('[OK] FunCaptcha solved!');
-                      break;
-                    }
-
-                    if (stillChallenge === 0) {
-                      results.push('[OK] FunCaptcha challenge dismissed — likely solved.');
-                      break;
-                    }
-
-                    if (attempt === maxAttempts - 1) {
-                      results.push(`Auto-solve exhausted after ${maxAttempts} attempts. Use click/drag-to/evaluate for manual solving.`);
-                    } else {
-                      results.push('Attempt did not solve, retrying...');
-                      await p.waitForTimeout(1500);
-                    }
-                  } catch (e: any) {
-                    results.push(`Vision model failed: ${e.message}`);
-                    results.push('Auto-solve requires a vision-capable model. Read the puzzle screenshot at .aurix-funcaptcha-puzzle.png and use click/drag-to/evaluate to solve manually.');
-                    break;
+                  const iframes = document.querySelectorAll('iframe');
+                  for (const f of iframes) {
+                    const m = (f as HTMLIFrameElement).src.match(/public_key\/([A-F0-9-]{36})/i)
+                      || (f as HTMLIFrameElement).src.match(/#([A-F0-9-]{36})/i);
+                    if (m) return m[1];
                   }
+                  return null;
+                }).catch(() => null);
+              }
+
+              if (!resolvedPkey) {
+                results.push(err('Could not extract FunCaptcha public key from page'));
+              } else {
+                results.push(`Public key: ${resolvedPkey}`);
+
+              const serviceUrl = extractServiceUrl(fcFrameUrl);
+              const siteUrl = await p.url();
+              const proxyUrl = sessionProxies.get(currentSessionKey) || browserProxy || '';
+
+              // Build vision callback using existing visionClassify
+              const visionFn = async (imgBase64: string, prompt: string): Promise<string> => {
+                return visionClassify(imgBase64, prompt);
+              };
+
+              const solver = new FuncaptchaSolver({
+                publicKey: resolvedPkey,
+                serviceUrl,
+                site: siteUrl,
+                proxy: proxyUrl || undefined,
+                visionFn,
+              });
+
+              // Try up to 2 full solve cycles
+              let solveResult: any = null;
+              for (let attempt = 0; attempt < 2; attempt++) {
+                if (attempt > 0) results.push(`Retry ${attempt + 1}/2...`);
+                solveResult = await solver.solve();
+                if (solveResult.success) break;
+                results.push(`Attempt ${attempt + 1} failed: ${solveResult.error}`);
+              }
+
+              if (solveResult?.success) {
+                results.push(`[OK] FunCaptcha solved via ${solveResult.method}! (${solveResult.solveTime}ms)`);
+
+                // Inject the solved token into the page
+                if (solveResult.token) {
+                  await p.evaluate((token: string) => {
+                    // Standard Arkose callback injection
+                    const callbackNames = ['funcaptchaCallback', 'arkoseCallback', 'onFunCaptchaSuccess', 'enforcementCallback'];
+                    for (const name of callbackNames) {
+                      if (typeof (window as any)[name] === 'function') {
+                        (window as any)[name]({ token });
+                        return;
+                      }
+                    }
+                    // Fallback: set hidden input
+                    const inputs = document.querySelectorAll('input[name*="captcha"], input[name*="token"], input[name*="fc-token"], input[name*="arkose"]');
+                    for (const input of inputs) {
+                      (input as HTMLInputElement).value = token;
+                    }
+                    // Also try global enforcement object
+                    if ((window as any).ArkoseEnforcement) {
+                      try { (window as any).ArkoseEnforcement.setConfig({ data: { token } }); } catch {}
+                    }
+                  }, solveResult.token).catch(() => {});
+                  results.push('Token injected into page.');
                 }
               } else {
-                results.push(err('FunCaptcha frame not found', 'Use "detect-captcha" to scan the page first'));
+                results.push(err(`FunCaptcha API solver failed: ${solveResult?.error || 'unknown'}`));
+                results.push('Falling back to visual solving via browser...');
+
+                // Fallback: Check for Microsoft "Press and hold" variant
+                if (funcaptchaFrame) {
+                  const hasHoldButton = await funcaptchaFrame.locator('button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]').count();
+                  const accessibilityBtn = await funcaptchaFrame.locator('button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn').count();
+
+                  if (hasHoldButton > 0 || accessibilityBtn > 0) {
+                    results.push('[INFO] Detected Microsoft "Press and hold" / Accessibility variant.');
+
+                    if (accessibilityBtn > 0 && hasHoldButton === 0) {
+                       results.push('Clicking accessibility mode button to reveal hold button...');
+                       await funcaptchaFrame.locator('button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn').first().click();
+                       await p.waitForTimeout(1000);
+                    }
+
+                    const holdBtn = funcaptchaFrame.locator('button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]').first();
+                    if (await holdBtn.count() > 0) {
+                      results.push('Executing automated HOLD action...');
+                      const box = await holdBtn.boundingBox();
+                      if (box) {
+                        const cx = box.x + box.width / 2;
+                        const cy = box.y + box.height / 2;
+
+                        await p.mouse.move(cx, cy, { steps: 10 });
+                        await p.waitForTimeout(200);
+                        await p.mouse.down();
+
+                        // Hold for up to 10 seconds, waiting for success indicator
+                        let solved = false;
+                        for (let i = 0; i < 20; i++) { // 20 * 500ms = 10s
+                          await p.waitForTimeout(500);
+                          const success = await funcaptchaFrame.locator('[class*="success"], [class*="correct"], [class*="verified"], .game-success').count();
+                          if (success > 0) {
+                            solved = true;
+                            break;
+                          }
+                        }
+
+                        await p.mouse.up();
+
+                        if (solved) {
+                           results.push('[OK] Microsoft Press and Hold captcha solved successfully!');
+                        } else {
+                           results.push('[WARN] Hold action completed but success indicator not detected. It might have succeeded anyway.');
+                        }
+                      } else {
+                        results.push(err('Could not find bounding box for hold button.'));
+                      }
+                    } else {
+                      results.push('Hold button still not visible after accessibility toggle. Use screenshot + click/drag to solve manually.');
+                    }
+                  } else {
+                    results.push('Use screenshot + click/drag to solve manually.');
+                  }
+                }
               }
+              } // end resolvedPkey else
             } catch (e: any) {
               results.push(err(`FunCaptcha auto-solve failed: ${e.message}`));
             }
