@@ -40,6 +40,51 @@ async function autoScreenshot(p: Page, label: string): Promise<string> {
   return path;
 }
 
+async function humanType(locator: any, page: Page, text: string, isSecret = false): Promise<void> {
+  await locator.first().click({ timeout: 5000 });
+  await page.waitForTimeout(100 + Math.random() * 200);
+
+  await page.keyboard.press('Control+A');
+  await page.waitForTimeout(50 + Math.random() * 100);
+  await page.keyboard.press('Backspace');
+  await page.waitForTimeout(100 + Math.random() * 200);
+
+  const keyboardProximity: Record<string, string[]> = {
+    'q': ['w', 'a'], 'w': ['q', 'e', 's'], 'e': ['w', 'r', 'd'], 'r': ['e', 't', 'f'],
+    't': ['r', 'y', 'g'], 'y': ['t', 'u', 'h'], 'u': ['y', 'i', 'j'], 'i': ['u', 'o', 'k'],
+    'o': ['i', 'p', 'l'], 'p': ['o', 'l'], 'a': ['q', 's', 'z'], 's': ['w', 'a', 'd', 'x'],
+    'd': ['e', 's', 'f', 'c'], 'f': ['r', 'd', 'g', 'v'], 'g': ['t', 'f', 'h', 'b'],
+    'h': ['y', 'g', 'j', 'n'], 'j': ['u', 'h', 'k', 'm'], 'k': ['i', 'j', 'l'],
+    'l': ['o', 'k'], 'z': ['a', 'x'], 'x': ['s', 'z', 'c'], 'c': ['d', 'x', 'v'],
+    'v': ['f', 'c', 'b'], 'b': ['g', 'v', 'n'], 'n': ['h', 'b', 'm'], 'm': ['j', 'n'],
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const isLowerChar = /^[a-z]$/.test(char);
+
+    if (!isSecret && isLowerChar && Math.random() < 0.05) {
+      const nearKeys = keyboardProximity[char] || [];
+      if (nearKeys.length > 0) {
+        const typoChar = nearKeys[Math.floor(Math.random() * nearKeys.length)];
+        await page.keyboard.type(typoChar);
+        await page.waitForTimeout(150 + Math.random() * 200);
+        await page.keyboard.press('Backspace');
+        await page.waitForTimeout(80 + Math.random() * 150);
+      }
+    }
+
+    await page.keyboard.type(char);
+
+    let delay = 40 + Math.random() * 80;
+    if (char === ' ') delay += 50 + Math.random() * 100;
+    if (/[A-Z]/.test(char)) delay += 40 + Math.random() * 60;
+    if (i > 0 && i % 8 === 0) delay += 100 + Math.random() * 200;
+
+    await page.waitForTimeout(delay);
+  }
+}
+
 interface BrowserSession {
   context: BrowserContext;
   page: Page;
@@ -803,10 +848,11 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           if (value === undefined) return err('fill requires a value', 'Provide the text to fill via the value parameter');
           try {
             const locator = await resolveLocator(p, target);
-            await locator.first().fill(value, { timeout });
+            const isSecret = target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
+            await humanType(locator, p, value, isSecret);
             const ss = await autoScreenshot(p, 'fill');
-            return ok(`Filled "${target}"`, {
-              value: value.length > 50 ? value.slice(0, 50) + '...' : value,
+            return ok(`Filled "${target}" (Humanized typing)`, {
+              value: value.length > 50 ? value.slice(0, 50) + '...' : (isSecret ? '***' : value),
               screenshot: ss,
             });
           } catch (e: any) {
@@ -833,10 +879,11 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           if (value === undefined) return err('type requires a value', 'Provide the text to type via the value parameter');
           try {
             const locator = await resolveLocator(p, target);
-            await locator.first().pressSequentially(value, { delay: 50 });
+            const isSecret = target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
+            await humanType(locator, p, value, isSecret);
             const ss = await autoScreenshot(p, 'type');
-            return ok(`Typed into "${target}"`, {
-              value: value.length > 50 ? value.slice(0, 50) + '...' : value,
+            return ok(`Typed into "${target}" (Humanized typing)`, {
+              value: value.length > 50 ? value.slice(0, 50) + '...' : (isSecret ? '***' : value),
               screenshot: ss,
             });
           } catch (e: any) {
