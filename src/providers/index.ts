@@ -94,7 +94,7 @@ export class OpenAIProvider implements Provider {
     const clean = sanitizeMessages(messages);
 
     try {
-      const params: OpenAI.ChatCompletionCreateParamsNonStreaming = {
+      const params: any = {
         model: this.model,
         messages: clean.map(m => {
           if (m.role === 'tool') {
@@ -127,6 +127,7 @@ export class OpenAIProvider implements Provider {
         }),
         max_tokens: this.maxTokens,
         temperature: this.temperature,
+        stream: true, // Force stream to play nice with 9Router
       };
 
       if (tools?.length) {
@@ -134,7 +135,83 @@ export class OpenAIProvider implements Provider {
         params.tool_choice = 'auto';
       }
 
-      const res = await this.client.chat.completions.create(params);
+      // Bypass OpenAI SDK completely to avoid proxy-connection issues with local routers
+      const url = this.baseUrl.endsWith('/chat/completions') 
+        ? this.baseUrl 
+        : `${this.baseUrl}/chat/completions`;
+        
+      const fetchRes = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify(params)
+      });
+
+      if (!fetchRes.ok) {
+        const errorText = await fetchRes.text();
+        let parsedErr;
+        try { parsedErr = JSON.parse(errorText); } catch {}
+        const errorMsg = parsedErr?.error?.message || parsedErr?.errorMsg || errorText || fetchRes.statusText;
+        
+        if (fetchRes.status === 404 || fetchRes.status === 405) {
+          if (!this.endpointMode) {
+            this.endpointMode = 'completion';
+            return this.completionFallback(messages);
+          }
+        }
+        
+        if (errorMsg.includes('connect proxy error') || errorMsg.includes('9router')) {
+          throw new Error(`9Router Proxy Error: ${errorMsg}\n\nRaw Response:\n${errorText}`);
+        }
+
+        throw new Error(`HTTP ${fetchRes.status}: ${errorMsg}\n\nRaw Response:\n${errorText}`);
+      }
+
+      const isStream = fetchRes.headers.get('content-type')?.includes('text/event-stream');
+      let res;
+      
+      if (!isStream) {
+        let text = await fetchRes.text();
+        try { res = JSON.parse(text); } catch { throw new Error('Invalid JSON response: ' + text.slice(0, 100)); }
+      } else {
+        // Handle Stream manually! We collect chunks and simulate a full JSON response.
+        const reader = fetchRes.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullContent = '';
+        let lastChunk = null;
+        let usage = null;
+        
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunkStr = decoder.decode(value, { stream: true });
+            const lines = chunkStr.split('\n');
+            for (const line of lines) {
+              if (line.trim().startsWith('data: ') && !line.includes('[DONE]')) {
+                try {
+                  const chunk = JSON.parse(line.replace('data: ', '').trim());
+                  lastChunk = chunk;
+                  if (chunk.choices?.[0]?.delta?.content) {
+                    fullContent += chunk.choices[0].delta.content;
+                  }
+                  if (chunk.usage) usage = chunk.usage;
+                } catch {}
+              }
+            }
+          }
+        }
+        
+        res = {
+          choices: [{
+            message: { content: fullContent, tool_calls: null },
+            finish_reason: lastChunk?.choices?.[0]?.finish_reason || 'stop'
+          }],
+          usage: usage
+        };
+      }
       this.endpointMode = 'chat';
       return this.parseChatResponse(res);
     } catch (e: any) {
@@ -145,23 +222,28 @@ export class OpenAIProvider implements Provider {
       
       // If it's a 403 or API error, try to extract the real response body from 9router/OpenAI SDK
       let errorMsg = e.message || String(e);
+      let rawBody = '';
       if (e.response && e.response.data) {
         try {
+          rawBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data, null, 2);
           const parsed = typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
           errorMsg = parsed.error?.message || parsed.errorMsg || JSON.stringify(parsed);
         } catch (_) {}
-      } else if (e.error?.message) {
-        errorMsg = e.error.message;
+      } else if (e.error) {
+        rawBody = typeof e.error === 'string' ? e.error : JSON.stringify(e.error, null, 2);
+        if (e.error.message) {
+          errorMsg = e.error.message;
+        }
       } else if (e.errorMsg) {
         errorMsg = e.errorMsg;
       }
-      
+
       // Fallback extraction for custom OpenAI wrapper errors
       if (errorMsg.includes('errorMsg: connect proxy error')) {
-        throw new Error(`9Router Error: ${errorMsg}. Please check your 9router upstream proxy settings.`);
+        throw new Error(`9Router Error: ${errorMsg}. Please check your 9router upstream proxy settings.\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`);
       }
-      
-      throw new Error(errorMsg);
+
+      throw new Error(`${errorMsg}\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`);
     }
   }
 
@@ -216,7 +298,7 @@ export class OpenAIProvider implements Provider {
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`Completion endpoint failed (${res.status}): ${err}`);
+      throw new Error(`Completion endpoint failed (${res.status}): ${err}\n\nRaw Response:\n${err}`);
     }
 
     const data = await res.json() as any;
@@ -331,7 +413,7 @@ export class AnthropicProvider implements Provider {
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+      throw new Error(`Anthropic API error (${res.status}): ${errText}\n\nRaw Response:\n${errText}`);
     }
 
     let data: any;
@@ -380,7 +462,7 @@ export class AnthropicProvider implements Provider {
       try {
         data = JSON.parse(trimmed);
       } catch {
-        throw new Error(`Proxy returned non-JSON response: ${trimmed.slice(0, 200)}. Check your proxy URL and model ID.`);
+        throw new Error(`Proxy returned non-JSON response:\n\n${trimmed}\n\nCheck your proxy URL and model ID.`);
       }
     }
     this.endpointMode = 'anthropic';
@@ -454,7 +536,29 @@ export class AnthropicProvider implements Provider {
       params.tool_choice = 'auto';
     }
 
-    const res = await client.chat.completions.create(params);
+    let res;
+    try {
+      res = await client.chat.completions.create(params);
+    } catch (e: any) {
+      let errorMsg = e.message || String(e);
+      let rawBody = '';
+      if (e.response && e.response.data) {
+        try {
+          rawBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data, null, 2);
+          const parsed = typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
+          errorMsg = parsed.error?.message || parsed.errorMsg || JSON.stringify(parsed);
+        } catch (_) {}
+      } else if (e.error) {
+        rawBody = typeof e.error === 'string' ? e.error : JSON.stringify(e.error, null, 2);
+        if (e.error.message) {
+          errorMsg = e.error.message;
+        }
+      } else if (e.errorMsg) {
+        errorMsg = e.errorMsg;
+      }
+      throw new Error(`${errorMsg}\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`);
+    }
+
     if (!res.choices || res.choices.length === 0) {
       return { text: '', toolCalls: [], usage: undefined, finishReason: 'no_choices', rawSnippet: JSON.stringify(res).slice(0, 300) };
     }
