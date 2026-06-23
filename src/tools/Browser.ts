@@ -1,3 +1,4 @@
+import { TempMail } from './tempmail/TempMail.js';
 import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
@@ -84,6 +85,9 @@ async function humanType(locator: any, page: Page, text: string, isSecret = fals
     await page.waitForTimeout(delay);
   }
 }
+
+
+const tempMails = new Map<string, TempMail>();
 
 interface BrowserSession {
   context: BrowserContext;
@@ -538,7 +542,7 @@ Forms: signup-assist, signin-assist, fill, type, click, select, press-key, uploa
 Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, open-tabs
 Read: screenshot, snapshot, text, html, url, title, cookies
 Advanced: evaluate (READ ONLY), drag-to, hold-click, wait
-Captcha: detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze
+Captcha: detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
 Config: set-proxy, set-ui, status, close
 
 Target: CSS (#id, .class, [attr]), text="...", role=button, placeholder="...", label="...", or plain text.
@@ -693,6 +697,41 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             return ok(`Successfully imported ${stateObj.cookies ? stateObj.cookies.length : 0} cookies from ${stateFile}. Refresh the page to see effects.`);
           } catch (e: any) {
             return err(`Failed to import state: ${e.message}`);
+          }
+        }
+
+        case 'get-temp-email': {
+          if (!tempMails.has(sessionKey)) {
+            tempMails.set(sessionKey, new TempMail());
+          }
+          const tempMail = tempMails.get(sessionKey)!;
+          try {
+            const address = await tempMail.initialize();
+            return ok(`Temporary email generated: ${address}`, { 
+              email: address, 
+              note: 'Use this email to sign up, then use action "wait-email" to check the inbox for verification code/links.'
+            });
+          } catch (e: any) {
+            return err(`Failed to get temp email: ${e.message}`);
+          }
+        }
+
+        case 'wait-email': {
+          if (!tempMails.has(sessionKey)) {
+            return err('No temporary email generated for this session. Use "get-temp-email" first.');
+          }
+          const tempMail = tempMails.get(sessionKey)!;
+          const { timeout = 60, regex } = (typeof options === 'object' ? options : {});
+          
+          try {
+            const result = await tempMail.waitForEmail(Number(timeout), regex ? String(regex) : undefined);
+            
+            return ok(`Email received: "${result.subject}"`, {
+              extracted: result.extracted || 'Regex/Auto-extract did not find anything',
+              body_preview: result.text
+            });
+          } catch (e: any) {
+            return err(`Wait email failed: ${e.message}`);
           }
         }
 
@@ -3017,7 +3056,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
         }
 
         default:
-          return err(`Unknown action: "${action}"`, `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, set-proxy, set-ui, detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status`);
+          return err(`Unknown action: "${action}"`, `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status`);
       }
     } catch (e: any) {
       const msg = e.message || String(e);
