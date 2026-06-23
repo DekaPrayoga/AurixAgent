@@ -63,6 +63,9 @@ function classifyError(e: any): ErrorType {
   if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('quota exceeded') || msg.includes('monthly_request_count')) {
     return 'rate_limit';
   }
+  if (msg.includes('connect proxy') || msg.includes('9router') || msg.includes('upstream') || msg.includes('tunnel')) {
+    return 'network';
+  }
   if (status === 401 || status === 403 || msg.includes('invalid api key') || msg.includes('unauthorized') || msg.includes('forbidden') || msg.includes('authentication')) {
     return 'auth';
   }

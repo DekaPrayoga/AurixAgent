@@ -142,7 +142,26 @@ export class OpenAIProvider implements Provider {
         this.endpointMode = 'completion';
         return this.completionFallback(messages);
       }
-      throw e;
+      
+      // If it's a 403 or API error, try to extract the real response body from 9router/OpenAI SDK
+      let errorMsg = e.message || String(e);
+      if (e.response && e.response.data) {
+        try {
+          const parsed = typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
+          errorMsg = parsed.error?.message || parsed.errorMsg || JSON.stringify(parsed);
+        } catch (_) {}
+      } else if (e.error?.message) {
+        errorMsg = e.error.message;
+      } else if (e.errorMsg) {
+        errorMsg = e.errorMsg;
+      }
+      
+      // Fallback extraction for custom OpenAI wrapper errors
+      if (errorMsg.includes('errorMsg: connect proxy error')) {
+        throw new Error(`9Router Error: ${errorMsg}. Please check your 9router upstream proxy settings.`);
+      }
+      
+      throw new Error(errorMsg);
     }
   }
 
