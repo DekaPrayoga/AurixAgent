@@ -266,9 +266,12 @@ async function ensureBrowser(): Promise<Page> {
     contextOptions: {
       geolocation: { latitude: geo.latitude, longitude: geo.longitude },
       permissions: ['geolocation'],
+      ignoreHTTPSErrors: true,
     },
     args: (() => {
       const base = [
+        '--ignore-certificate-errors',
+        '--ignore-urlfetcher-cert-requests',
         '--disable-webrtc',
         '--disable-rtc-sdp-logs',
         '--disable-background-networking',
