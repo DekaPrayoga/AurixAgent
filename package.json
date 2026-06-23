@@ -1,6 +1,6 @@
 {
   "name": "aurix-ai",
-  "version": "2.12.3",
+  "version": "2.12.4",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
