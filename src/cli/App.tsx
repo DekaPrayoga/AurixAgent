@@ -1,3 +1,4 @@
+import { AskUserManager, setGlobalAskCallback } from '../tools/AskUser.js';
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, useRenderer } from '@opentui/react';
@@ -9,6 +10,7 @@ import { InputBox, writeClipboard } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
+import { VisionModal } from './VisionModal.js';
 import { ConnectModal } from './ConnectModal.js';
 import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { CommandPalette } from './CommandPalette.js';
@@ -16,6 +18,7 @@ import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
 import { OutputPanel } from './OutputPanel.js';
 import { theme, switchTheme, ALL_THEME_NAMES, type ThemeName, setBorderStyle, type BorderStyle } from './theme.js';
+import { orchestratorEvents } from '../tools/SpawnAgent.js';
 import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { AurixConfig } from '../agent/Config.js';
@@ -68,6 +71,8 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [toast, setToast] = useState<string | null>(null);
   const [showRewind, setShowRewind] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  const [subagents, setSubagents] = useState<{status: string}[] | null>(null);
+  const [showVisionConfig, setShowVisionConfig] = useState(false);
   const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingImagesRef = React.useRef<string[]>([]);
@@ -79,6 +84,16 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [showOutputPanel, setShowOutputPanel] = useState(false);
 
   useEffect(() => {
+    setGlobalAskCallback((sessionKey, question) => {
+      if (sessionKey === 'default') {
+        setMessages(prev => [...prev, {
+          role: 'system',
+          content: `[Human-in-the-Loop Required] ${question}`,
+          timestamp: new Date()
+        }]);
+      }
+    });
+
     const refreshTodos = () => {
       const fileTodos = loadTodosFromFile();
       setTodos(fileTodos.map(t => ({ text: t.text, done: t.done })));
@@ -159,6 +174,33 @@ export function App({ config, registry, resumeId }: AppProps) {
   }
 
   const agent = agentRef.current;
+  useEffect(() => {
+    const onStart = (data: any) => {
+      setSubagents(new Array(data.total).fill({ status: 'queued' }));
+    };
+    const onStatus = (data: any) => {
+      setSubagents(prev => {
+        if (!prev) return null;
+        const next = [...prev];
+        next[data.index] = { status: data.status };
+        return next;
+      });
+    };
+    const onEnd = () => {
+      setSubagents(null);
+    };
+
+    orchestratorEvents.on('start', onStart);
+    orchestratorEvents.on('status', onStatus);
+    orchestratorEvents.on('end', onEnd);
+
+    return () => {
+      orchestratorEvents.off('start', onStart);
+      orchestratorEvents.off('status', onStatus);
+      orchestratorEvents.off('end', onEnd);
+    };
+  }, []);
+
   const toolCount = registry.list().length;
   const skills = useMemo(() => {
     const root = process.env.AURIX_HOME || process.cwd();
@@ -318,6 +360,12 @@ export function App({ config, registry, resumeId }: AppProps) {
   }, [agent]);
 
   const handleSubmit = useCallback(async (text: string) => {
+    if (AskUserManager.isWaiting('default')) {
+      setMessages(prev => [...prev, { role: 'user', content: text, timestamp: new Date() }]);
+      AskUserManager.submitAnswer('default', text);
+      return;
+    }
+
     if (isProcessing) return;
 
     let outboundText = text;
@@ -1688,6 +1736,27 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                       setPermissionPrompt(null);
                       resolve(reply);
                     }}
+                  />
+                )}
+                {showVisionConfig && (
+                  <VisionModal
+                    currentBaseUrl={config.visionBaseUrl}
+                    currentModel={config.visionModel}
+                    currentApiStyle={config.visionApiStyle}
+                    onSubmit={(newBaseUrl, newApiKey, newModel, newApiStyle) => {
+                      if (newBaseUrl) config.visionBaseUrl = newBaseUrl;
+                      if (newApiKey) config.visionApiKey = newApiKey;
+                      if (newModel) config.visionModel = newModel;
+                      if (newApiStyle && ['openai', 'anthropic'].includes(newApiStyle)) config.visionApiStyle = newApiStyle as any;
+                      saveConfig(config);
+                      setShowVisionConfig(false);
+                      setMessages(prev => [...prev, {
+                        role: 'system',
+                        content: `Vision Fallback updated.\n  Base URL: ${newBaseUrl || '(main agent URL)'}\n  API Style: ${newApiStyle || '(main agent style)'}\n  Model: ${newModel}`,
+                        timestamp: new Date(),
+                      }]);
+                    }}
+                    onCancel={() => setShowVisionConfig(false)}
                   />
                 )}
                 {showLogin && (

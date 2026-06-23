@@ -272,7 +272,50 @@ export class AgentLoop {
 
       let response;
       try {
-        response = await this.provider.chat(optimizedMessages, this.registry.getToolDefs());
+        
+        // VISION FALLBACK LOGIC
+        // Check if there are any images in the conversation that haven't been analyzed yet
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+          const m = this.messages[i];
+          if (m.images && m.images.length > 0 && !m.content.includes('[Vision Analysis:')) {
+             yield { type: 'text', data: `[Vision] Analysing image...` };
+             try {
+                // Determine vision provider config
+                const { createProvider } = await import('../providers/index.js');
+                const vConfig = {
+                  provider: this.config.provider,
+                  baseUrl: this.config.visionBaseUrl || this.config.baseUrl,
+                  apiKey: this.config.visionApiKey || this.config.apiKey,
+                  model: this.config.visionModel || 'gpt-4o', // Default fallback
+                  apiStyle: this.config.visionApiStyle || this.config.apiStyle,
+                  maxTokens: 1024,
+                  temperature: 0.1
+                };
+                const vProvider = createProvider(vConfig as any);
+                
+                // Ask the vision model to explain the image
+                const visionMsg = {
+                   role: 'user' as const,
+                   content: 'Describe this image in detail. If it is a web page or application, list all visible buttons, input fields, and important text so a blind automation agent can understand the state.',
+                   images: m.images
+                };
+                
+                const vRes = await vProvider.chat([visionMsg]);
+                
+                // Replace the image in the main conversation with the text description
+                m.content += `\n\n[Vision Analysis: ${vRes.text}]`;
+                m.images = []; // Remove the image so the main agent doesn't see it
+                
+             } catch (e: any) {
+                m.content += `\n\n[Vision Analysis Failed: ${e.message}]`;
+                m.images = [];
+             }
+          }
+        }
+        
+        // Resume normal operation
+        const finalOptimizedMessages = this.contextManager.pruneToolResults(this.messages);
+        response = await this.provider.chat(finalOptimizedMessages, this.registry.getToolDefs());
         retryCount = 0;
         totalFailures = 0;
       } catch (e: any) {
@@ -644,23 +687,50 @@ export class AgentLoop {
             const call = readOnlyCalls[0];
             yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
             try {
-              const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
+              if (call.name === 'ask_user') {
+                call.arguments._sessionKey = 'default';
+              }
+              if(call.name==="ask_user"){call.arguments._sessionKey="default";}const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
               const processed = processResult(result, call.name);
               this.ledger.add('toolResults', processed);
               yield { type: 'tool_end', data: processed, toolName: call.name };
               this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
+
+              const errorKw = ['Traceback (most recent call last):', 'SyntaxError:', 'ReferenceError:', 'TypeError:', 'npm ERR!', 'fatal error:'];
+              const isError = errorKw.some(kw => processed.includes(kw)) || processed.toLowerCase().startsWith('error:');
+              if (isError && ['terminal', 'code_exec', 'file_edit', 'write_file'].includes(call.name)) {
+                let retryCount = 0;
+                for (let i = this.messages.length - 1; i >= Math.max(0, this.messages.length - 8); i--) {
+                  if (this.messages[i].content.includes('[Auto-Fix]')) retryCount++;
+                }
+                if (retryCount < 3) {
+                  this.messages.push({ role: 'system', content: `[Auto-Fix] The tool execution returned an error. Please analyze the error message above, find the root cause, and execute a corrected command or code snippet. You have ${3 - retryCount} automatic retries left.` });
+                  yield { type: 'text', data: `\n🔧 Auto-correcting execution error (${retryCount + 1}/3)...` };
+                }
+              }
             } catch (e: any) {
               const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
               this.ledger.add('toolResults', errMsg);
               yield { type: 'tool_end', data: errMsg, toolName: call.name };
               this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
+
+              if (['terminal', 'code_exec', 'file_edit', 'write_file'].includes(call.name)) {
+                let retryCount = 0;
+                for (let i = this.messages.length - 1; i >= Math.max(0, this.messages.length - 8); i--) {
+                  if (this.messages[i].content.includes('[Auto-Fix]')) retryCount++;
+                }
+                if (retryCount < 3) {
+                  this.messages.push({ role: 'system', content: `[Auto-Fix] The tool crashed. Please review the exception details above, fix your command or arguments, and try again. You have ${3 - retryCount} automatic retries left.` });
+                  yield { type: 'text', data: `\n🔧 Auto-correcting tool crash (${retryCount + 1}/3)...` };
+                }
+              }
             }
           } else {
             yield { type: 'tool_start', data: `Executing ${readOnlyCalls.length} reads concurrently`, toolName: 'batch' };
 
             const results = await Promise.all(readOnlyCalls.map(async (call) => {
               try {
-                const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
+                if(call.name==="ask_user"){call.arguments._sessionKey="default";}const result = await withTimeout(this.registry.execute(call.name, call.arguments), getToolTimeout(call.name, call.arguments), call.name);
                 return { call, result, error: null as any };
               } catch (e: any) {
                 return { call, result: '', error: e };

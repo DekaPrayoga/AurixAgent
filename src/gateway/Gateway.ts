@@ -1,3 +1,4 @@
+import { AskUserManager } from '../tools/AskUser.js';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
@@ -357,6 +358,11 @@ export class Gateway extends EventEmitter {
 
     if (!platform) return;
 
+    if (AskUserManager.isWaiting(agentKey)) {
+      AskUserManager.submitAnswer(agentKey, msg.content.trim());
+      return;
+    }
+
     this.lastContext.set(agentKey, {
       platform: msg.platform,
       channelId: msg.channelId,
@@ -484,6 +490,10 @@ export class Gateway extends EventEmitter {
     if (cmd === 'model' && args) {
       const agent = this.getAgent(agentKey);
       agent.setProvider({ model: args });
+      // Persist to config file
+      this.config.model = args;
+      saveConfig(this.config);
+      console.log(`[Gateway] Model changed to: ${args}`);
       await platform.send(`✅ Model switched to: ${args}`, msg.channelId, msg.replyTo);
       return;
     }
@@ -491,6 +501,9 @@ export class Gateway extends EventEmitter {
     if (cmd === 'baseurl' && args) {
       const agent = this.getAgent(agentKey);
       agent.setProvider({ baseUrl: args });
+      this.config.baseUrl = args;
+      saveConfig(this.config);
+      console.log(`[Gateway] Base URL changed to: ${args}`);
       await platform.send(`✅ Base URL switched to: ${args}`, msg.channelId, msg.replyTo);
       return;
     }
@@ -498,7 +511,10 @@ export class Gateway extends EventEmitter {
     if (cmd === 'apikey' && args) {
       const agent = this.getAgent(agentKey);
       agent.setProvider({ apiKey: args });
+      this.config.apiKey = args;
+      saveConfig(this.config);
       const masked = args.slice(0, 8) + '...' + args.slice(-4);
+      console.log(`[Gateway] API key updated`);
       await platform.send(`✅ API key updated (${masked})`, msg.channelId, msg.replyTo);
       return;
     }
@@ -708,7 +724,8 @@ export class Gateway extends EventEmitter {
 
       if (fullResponse) {
         const cleaned = stripMarkdown(cleanResponse(fullResponse));
-        const chunks = splitMessage(cleaned, 1900);
+        const maxLen = platform.name === 'discord' ? 1900 : 4000;
+        const chunks = splitMessage(cleaned, maxLen);
         for (const chunk of chunks) {
           await platform.send(chunk, msg.channelId, msg.replyTo);
         }
@@ -811,6 +828,19 @@ function splitMessage(text: string, maxLen: number): string[] {
   let current = '';
 
   for (const line of lines) {
+    // If single line is longer than maxLen, split it
+    if (line.length > maxLen) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      // Split long line into chunks
+      for (let i = 0; i < line.length; i += maxLen) {
+        chunks.push(line.slice(i, i + maxLen));
+      }
+      continue;
+    }
+
     if (current.length + line.length + 1 > maxLen) {
       if (current) chunks.push(current);
       current = line;

@@ -20,8 +20,14 @@ export interface ToolPermissionRequest {
 
 export type PermissionHandler = (request: ToolPermissionRequest) => Promise<PermissionReply>;
 
+import { askUserTool } from './AskUser.js';
+
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
+
+  constructor() {
+    this.register(askUserTool);
+  }
   private allowedTools = new Set<string>();
   private permissionMode: PermissionMode = 'bypass';
   private permissionHandler?: PermissionHandler;
