@@ -78,12 +78,23 @@ export class TokenLedger {
   }
 
   setApiUsage(input: number, output: number): void {
-    this._apiInput = input;
+    // Both input and output must be accumulated across the session
+    // because every request resends the history (LLMs are stateless)
+    this._apiInput += input;
     this._apiOutput += output;
   }
 
   getApiInput(): number { return this._apiInput; }
   getApiOutput(): number { return this._apiOutput; }
+
+  // Returns current API input for the *last* turn only
+  // Used for context window percentage checks
+  setLastTurnInput(input: number): void {
+    this.counts.set('lastTurnInput', input);
+  }
+  getLastTurnInput(): number {
+    return this.counts.get('lastTurnInput') || 0;
+  }
 
   total(): number {
     let sum = 0;
@@ -116,11 +127,17 @@ export class TokenLedger {
     const totalTracked = this.total();
     lines.push(`  ${'─'.repeat(maxLabel + valWidth + 2)}`);
     lines.push(`  ${'Total tracked'.padEnd(maxLabel)}: ${totalTracked.toLocaleString()}`);
-    lines.push(`  ${'API input'.padEnd(maxLabel)}: ${this._apiInput.toLocaleString()}`);
-    lines.push(`  ${'API output'.padEnd(maxLabel)}: ${this._apiOutput.toLocaleString()}`);
+    lines.push(`  ${'Total API Input'.padEnd(maxLabel)}: ${this._apiInput.toLocaleString()}`);
+    lines.push(`  ${'Total API Output'.padEnd(maxLabel)}: ${this._apiOutput.toLocaleString()}`);
+
+    // Very rough cost estimate based on Claude 3.5 Sonnet (3/M in, 15/M out)
+    const cost = (this._apiInput / 1000000 * 3.0) + (this._apiOutput / 1000000 * 15.0);
+    lines.push(`  ${'Est. Cost'.padEnd(maxLabel)}: $${cost.toFixed(4)}`);
 
     if (contextTotal !== undefined) {
-      lines.push(`  ${'Context window'.padEnd(maxLabel)}: ${contextTotal.toLocaleString()}${contextPct !== undefined ? ` (~${contextPct}%)` : ''}`);
+      const lastInput = this.getLastTurnInput();
+      const pct = contextTotal > 0 ? Math.round((lastInput / contextTotal) * 100) : 0;
+      lines.push(`  ${'Context window'.padEnd(maxLabel)}: ${lastInput.toLocaleString()} / ${contextTotal.toLocaleString()} (~${pct}%)`);
     }
 
     return lines.join('\n');

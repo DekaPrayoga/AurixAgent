@@ -59,3 +59,4 @@ native/token-counter/target/
 # Training data
 training/*.json
 scripts/debug-funcaptcha.ts
+test-*.ts
