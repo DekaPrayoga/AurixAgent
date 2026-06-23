@@ -12,6 +12,7 @@ export interface AurixConfig {
   visionModel?: string;
   visionBaseUrl?: string;
   visionApiKey?: string;
+  visionApiStyle?: 'openai' | 'anthropic' | 'auto';
   maxTokens?: number;
   temperature?: number;
   systemPrompt?: string;
@@ -35,6 +36,7 @@ export interface AurixConfig {
     sources?: string[];
     allowClaudeStore?: boolean;
   };
+  enableDashboard?: boolean;
   gateway?: {
     discord?: { enabled: boolean; token: string; allowedUsers?: string[] };
     telegram?: { enabled: boolean; token: string; allowedUsers?: string[] };
@@ -86,6 +88,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     visionModel: process.env.AURIX_VISION_MODEL || file.visionModel,
     visionBaseUrl: process.env.AURIX_VISION_BASE_URL || file.visionBaseUrl,
     visionApiKey: process.env.AURIX_VISION_API_KEY || file.visionApiKey,
+    visionApiStyle: process.env.AURIX_VISION_API_STYLE as any || file.visionApiStyle,
     maxTokens: file.maxTokens || 4096,
     temperature: file.temperature ?? 0.7,
     systemPrompt: file.systemPrompt,
@@ -100,6 +103,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,
+    enableDashboard: file.enableDashboard,
     browser: file.browser,
     tools: file.tools,
     features: file.features,

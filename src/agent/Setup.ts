@@ -87,6 +87,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
 
   // Step 10: Captcha solving method
   const captchaAudio = await stepCaptcha();
+  const enableDashboard = await stepDashboard();
 
   const resolvedProvider = provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto'
     ? 'custom'
@@ -118,6 +119,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     plugins,
     features: (Array.isArray(features) ? features : []) as string[],
     captchaAudio: captchaAudio.mode,
+    enableDashboard: enableDashboard,
     groqApiKey: captchaAudio.groqApiKey,
   };
 
@@ -638,4 +640,19 @@ async function loadConfigOrDefault(): Promise<AurixConfig> {
     apiKey: '',
     model: 'gpt-4o',
   };
+}
+
+async function stepDashboard(): Promise<boolean> {
+  const ans = await drawSelector({
+    title: 'Dashboard Mode: (*You Can Change This Setting By aurix dashboard or aurix dashboard --shutdown or click on shutdown on the website)',
+    items: [
+      { id: 'cli_only', label: 'CLI + Gateway Only', desc: 'Lightweight, runs only the terminal and gateway features' },
+      { id: 'cli_dashboard', label: 'CLI + Gateway + Web Dashboard', desc: 'Spins up the Next.js Web UI on http://localhost:3000' }
+    ],
+
+    allowSkip: true
+  });
+
+  if (ans === '__skip__' || ans === 'cli_only') return false;
+  return true;
 }

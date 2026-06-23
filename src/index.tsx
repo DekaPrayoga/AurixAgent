@@ -52,6 +52,9 @@ import { archiveReaderTool } from './tools/ArchiveReader.js';
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
 
+
+
+
   // Core tools (always registered)
   registry.register(terminalTool);
   registry.register(readFileTool);
@@ -215,6 +218,15 @@ async function main() {
   applyTheme(config);
 
   const registry = createRegistry(config.features);
+
+  if (config.enableDashboard) {
+    import('./api/Server.js').then(({ AurixServer }) => {
+      const server = new AurixServer(registry);
+      server.start(3000);
+    }).catch(e => {
+      console.error('Failed to auto-start dashboard server:', e);
+    });
+  }
   registry.register(createSpawnAgentTool(config, registry));
 
   await mcpManager.startAll();
