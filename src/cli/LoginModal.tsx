@@ -7,7 +7,7 @@ async function readClipboard(): Promise<string> {
   const { execSync } = await import('child_process');
   try {
     if (process.platform === 'win32') {
-      return execSync('powershell -NoProfile -Command "Get-Clipboard"', { encoding: 'utf8', timeout: 2000, windowsHide: true }).replace(/\r\n/g, '\n').trimEnd();
+      return execSync('powershell -NoProfile -Command "Get-Clipboard"', { encoding: 'utf8', windowsHide: true }).replace(/\r\n/g, '\n').trimEnd();
     }
     if (process.platform === 'darwin') {
       return execSync('pbpaste', { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
@@ -25,15 +25,17 @@ async function readClipboard(): Promise<string> {
 interface LoginModalProps {
   currentBaseUrl?: string;
   currentModel?: string;
-  onSubmit: (baseUrl: string, apiKey: string, model?: string) => void;
+  currentApiStyle?: string;
+  onSubmit: (baseUrl: string, apiKey: string, model?: string, apiStyle?: string) => void;
   onCancel: () => void;
 }
 
-export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }: LoginModalProps) {
+export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSubmit, onCancel }: LoginModalProps) {
   const [step, setStep] = useState(0);
   const [baseUrl, setBaseUrl] = useState(currentBaseUrl || '');
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(currentModel || '');
+  const [apiStyle, setApiStyle] = useState(currentApiStyle || '');
   const [cursor, setCursor] = useState(0);
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
 
@@ -41,6 +43,7 @@ export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }:
     { label: 'Base URL', hint: 'https://api.openai.com/v1', value: baseUrl, setter: setBaseUrl },
     { label: 'API Key (optional)', hint: 'sk-... or leave blank', value: apiKey, setter: setApiKey, masked: true },
     { label: 'Model (optional)', hint: 'gpt-4o', value: model, setter: setModel },
+    { label: 'API Style (optional)', hint: '1 for openai, 2 for anthropic', value: apiStyle, setter: setApiStyle },
   ];
 
   const current = fields[step];
@@ -83,6 +86,17 @@ export function LoginModal({ currentBaseUrl, currentModel, onSubmit, onCancel }:
       } else {
         onSubmit(baseUrl, apiKey, model || undefined);
       }
+      return;
+    }
+
+    if (name === 'v' && evt.ctrl) {
+      evt.preventDefault();
+      readClipboard().then(text => {
+        if (!text) return;
+        const insertAt = cursor;
+        current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+        setCursor(insertAt + text.length);
+      }).catch(() => {});
       return;
     }
 

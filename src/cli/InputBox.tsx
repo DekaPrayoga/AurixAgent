@@ -88,8 +88,8 @@ export function readClipboard(): Promise<string | undefined> {
     if (isWindows) {
       try {
         const t = await runCmd('powershell.exe', [
-          '-NoProfile', '-command',
-          '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard',
+          '-NoProfile', '-Sta', '-command',
+          '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $clip = Get-Clipboard -Raw; if ($clip -ne $null) { Write-Output $clip }',
         ]);
         if (t) return t.replace(/\r\n/g, '\n');
       } catch {}
@@ -121,6 +121,8 @@ export function writeClipboard(text: string): void {
       ['xclip', ['-selection', 'clipboard']],
       ['xsel', ['--clipboard', '--input']],
       ['pbcopy', []],
+      ['clip', []],
+      ['clip.exe', []]
     ];
     for (const [cmd, args] of tools) {
       try {

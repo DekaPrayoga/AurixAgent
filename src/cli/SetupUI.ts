@@ -252,15 +252,14 @@ export function drawInputScreen(opts: {
         return;
       }
 
-      // Ctrl+C — copy input to clipboard
+      // Ctrl+C — copy if there is text, otherwise exit.
+      // But standard CLI UX expects Ctrl+C to exit.
       if (c === 3) {
-        if (buf.length > 0 && readClipboardFn) {
-          // Use writeClipboard from InputBox to copy to system clipboard
-          import('./InputBox.js').then(({ writeClipboard }) => {
-            writeClipboard(buf);
-          }).catch(() => {});
-        }
-        return;
+        stdin.removeListener('data', onData);
+        if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+        if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');
+        process.stdout.write('\n^C\n');
+        process.exit(130);
       }
 
       // Ctrl+X — exit input
