@@ -7,6 +7,7 @@ import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdir
 import sharp from 'sharp';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
+import { Metrics } from '../agent/Metrics.js';
 import {
   visionClassify, readFileBase64, analyzeTileCrops,
   loadCaptchaTraining, saveCaptchaTraining, findGridTiles,
@@ -744,7 +745,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             return `Browser: not running. Use action "navigate" to start it.\nProfile: ${BASE_PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
           }
           const title = await session.page.title();
-          return `Browser: running\nEngine: Chromium\nProfile: ${session.profileDir}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${session.page.url()}\nTitle: ${title}\nOpen tabs: ${session.context.pages().length}`;
+          return `Browser: running\nEngine: Chromium\nProfile: ${session.profileDir}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${session.page.url()}\nTitle: ${title}\nOpen tabs: ${session.context.pages().length}\nAurix Uptime: ${Metrics.getUptimeFormatted()}`;
         }
 
         case 'close': {

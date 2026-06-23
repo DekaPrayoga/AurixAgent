@@ -223,6 +223,12 @@ const baseCommands: SlashCommand[] = [
     source: 'claude-code',
   },
   {
+    name: 'vision',
+    description: 'Configure Vision Fallback model for handling images',
+    group: 'config',
+    source: 'aurix',
+  },
+  {
     name: 'login',
     aliases: ['baseurl', 'url', 'provider', 'apikey', 'key'],
     description: 'Open login dialog to set API key, base URL, and model',
