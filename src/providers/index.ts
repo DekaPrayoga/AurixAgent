@@ -48,6 +48,28 @@ const IMAGE_MIME: Record<string, string> = {
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
 };
 
+// Modifies the global NO_PROXY environment variables to bypass global proxy
+// settings for local endpoints. This is required because Bun's native fetch
+// reads NO_PROXY at the time of the request and ignores fetchOpts.dispatcher.
+function bypassProxyIfLocal(url: string) {
+  if (url.includes('localhost') || url.includes('127.0.0.1')) {
+    const currentNoProxy = process.env.NO_PROXY || process.env.no_proxy || '';
+    const locals = ['127.0.0.1', 'localhost'];
+    const parts = currentNoProxy.split(',').map(p => p.trim()).filter(Boolean);
+    let updated = false;
+    for (const local of locals) {
+      if (!parts.includes(local)) {
+        parts.push(local);
+        updated = true;
+      }
+    }
+    if (updated) {
+      process.env.NO_PROXY = parts.join(',');
+      process.env.no_proxy = process.env.NO_PROXY;
+    }
+  }
+}
+
 function imageToBase64(filePath: string): { data: string; mediaType: string } | null {
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -140,14 +162,26 @@ export class OpenAIProvider implements Provider {
         ? this.baseUrl 
         : `${this.baseUrl}/chat/completions`;
         
-      const fetchRes = await fetch(url, {
+      let fetchOpts: any = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`
         },
         body: JSON.stringify(params)
-      });
+      };
+
+      // Force direct connection (bypass global/system proxies)
+      // This is crucial for local endpoints like 127.0.0.1 which get banned by external residential proxies.
+      bypassProxyIfLocal(url);
+      if (url.includes('localhost') || url.includes('127.0.0.1')) {
+        try {
+          const { Agent } = await import('undici');
+          fetchOpts.dispatcher = new Agent({ connect: { rejectUnauthorized: false } }); // Raw socket agent, no proxy
+        } catch (e) {}
+      }
+
+      const fetchRes = await fetch(url, fetchOpts);
 
       if (!fetchRes.ok) {
         const errorText = await fetchRes.text();
@@ -182,7 +216,8 @@ export class OpenAIProvider implements Provider {
         let fullContent = '';
         let lastChunk = null;
         let usage = null;
-        
+        let toolCallsMap: Record<number, any> = {};
+
         if (reader) {
           while (true) {
             const { done, value } = await reader.read();
@@ -197,16 +232,32 @@ export class OpenAIProvider implements Provider {
                   if (chunk.choices?.[0]?.delta?.content) {
                     fullContent += chunk.choices[0].delta.content;
                   }
+                  const tcs = chunk.choices?.[0]?.delta?.tool_calls;
+                  if (tcs && Array.isArray(tcs)) {
+                    for (const tc of tcs) {
+                      if (!toolCallsMap[tc.index]) {
+                        toolCallsMap[tc.index] = { ...tc, function: { ...tc.function } };
+                      } else {
+                        if (tc.function?.arguments) {
+                          toolCallsMap[tc.index].function.arguments += tc.function.arguments;
+                        }
+                      }
+                    }
+                  }
                   if (chunk.usage) usage = chunk.usage;
                 } catch {}
               }
             }
           }
         }
-        
+
+        const finalToolCalls = Object.keys(toolCallsMap).length > 0
+          ? Object.values(toolCallsMap).sort((a: any, b: any) => a.index - b.index)
+          : null;
+
         res = {
           choices: [{
-            message: { content: fullContent, tool_calls: null },
+            message: { content: fullContent, tool_calls: finalToolCalls },
             finish_reason: lastChunk?.choices?.[0]?.finish_reason || 'stop'
           }],
           usage: usage
@@ -282,7 +333,9 @@ export class OpenAIProvider implements Provider {
     const prompt = messagesToPrompt(messages);
 
     const url = openAIEndpoint(this.baseUrl, 'completions');
-    const res = await fetch(url, {
+    bypassProxyIfLocal(url);
+
+    let fetchOpts: any = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -294,7 +347,16 @@ export class OpenAIProvider implements Provider {
         max_tokens: this.maxTokens,
         temperature: this.temperature,
       }),
-    });
+    };
+
+    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+      try {
+        const { Agent } = await import('undici');
+        fetchOpts.dispatcher = new Agent({ connect: { rejectUnauthorized: false } }); // Raw socket agent, no proxy
+      } catch (e) {}
+    }
+
+    const res = await fetch(url, fetchOpts);
 
     if (!res.ok) {
       const err = await res.text();
@@ -401,7 +463,10 @@ export class AnthropicProvider implements Provider {
       }));
     }
 
-    const res = await fetch(anthropicMessagesEndpoint(this.baseUrl), {
+    const url = anthropicMessagesEndpoint(this.baseUrl);
+    bypassProxyIfLocal(url);
+
+    let fetchOpts: any = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -409,7 +474,16 @@ export class AnthropicProvider implements Provider {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(body),
-    });
+    };
+
+    if (url.includes('localhost') || url.includes('127.0.0.1')) {
+      try {
+        const { Agent } = await import('undici');
+        fetchOpts.dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+      } catch (e) {}
+    }
+
+    const res = await fetch(url, fetchOpts);
 
     if (!res.ok) {
       const errText = await res.text();
@@ -492,9 +566,12 @@ export class AnthropicProvider implements Provider {
   }
 
   private async openAICompatFallback(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+    const baseUrl = openAIBaseUrl(this.baseUrl);
+    bypassProxyIfLocal(baseUrl);
+
     const client = new OpenAI({
       apiKey: this.apiKey,
-      baseURL: openAIBaseUrl(this.baseUrl),
+      baseURL: baseUrl,
     });
 
     const params: OpenAI.ChatCompletionCreateParamsNonStreaming = {

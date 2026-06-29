@@ -4,6 +4,18 @@ import chalk from 'chalk';
 import { createRoot } from '@opentui/react';
 import { createCliRenderer } from '@opentui/core';
 import { App } from './cli/App.js';
+
+// --- CRITICAL FIX FOR 9ROUTER / LOCALHOST PROXY ISSUES ---
+// Node.js/Bun fetch aggressively uses these env vars, causing local requests (127.0.0.1:20128)
+// to be routed through residential proxies and returning 403 Connect BanAddress.
+// We must delete them from the process environment so internal LLM requests are direct.
+delete process.env.HTTP_PROXY;
+delete process.env.http_proxy;
+delete process.env.HTTPS_PROXY;
+delete process.env.https_proxy;
+delete process.env.ALL_PROXY;
+delete process.env.all_proxy;
+
 import { applyTheme } from './cli/theme.js';
 import { loadConfig } from './agent/Config.js';
 import { runSetup } from './agent/Setup.js';

@@ -4,8 +4,8 @@ import path from 'path';
 import os from 'os';
 import type { Tool } from './Registry.js';
 
-const SKILL_DIR = path.resolve(import.meta.dirname, '../../skills/research/last30days');
-const ENGINE = path.join(SKILL_DIR, 'scripts', 'last30days.py');
+const SKILL_DIR = path.resolve(import.meta.dirname, '../../skills/research/social-researching');
+const ENGINE = path.join(SKILL_DIR, 'scripts', 'social-researching.py');
 
 export const researchForumsTool: Tool = {
   name: 'research_forums',

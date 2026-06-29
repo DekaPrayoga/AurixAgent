@@ -240,6 +240,13 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
+  const cursorRef = React.useRef(0);
+  const valueRef = React.useRef('');
+
+  React.useEffect(() => {
+    cursorRef.current = cursor;
+    valueRef.current = value;
+  }, [cursor, value]);
   const [selStart, setSelStart] = useState(-1);
   const [selEnd, setSelEnd] = useState(-1);
   const [history, setHistory] = useState<string[]>([]);

@@ -360,7 +360,7 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'research-forums',
-    aliases: ['last30days', 'forums', 'social-search'],
+    aliases: ['social-researching', 'forums', 'social-search'],
     argumentHint: '<topic>',
     description: 'Research any topic across Reddit, X, YouTube, HN, Polymarket + 10 more sources',
     group: 'workflows',
