@@ -28,6 +28,7 @@ import { mcpManageTool } from './tools/McpManage.js';
 import { mcpManager } from './mcp/McpRegistry.js';
 import { registerMcpTools } from './mcp/McpToolAdapter.js';
 import { githubTools } from './tools/GithubConnect.js';
+import { gitAdvancedTool } from './tools/GitAdvanced.js';
 import { systemMonitorTool } from './tools/SystemMonitor.js';
 import { browserTool } from './tools/Browser.js';
 import { createSpawnAgentTool } from './tools/SpawnAgent.js';
@@ -76,6 +77,7 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(fileEditTool);
   registry.register(mcpManageTool);
   for (const t of githubTools) registry.register(t);
+  registry.register(gitAdvancedTool);
   registry.register(systemMonitorTool);
   registry.register(browserTool);
   registry.register(codeExecTool);

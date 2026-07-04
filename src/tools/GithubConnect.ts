@@ -11,7 +11,7 @@ function ensureDirs(): void {
   if (!fs.existsSync(GITHUB_CONFIG_DIR)) fs.mkdirSync(GITHUB_CONFIG_DIR, { recursive: true });
 }
 
-function getToken(): string | undefined {
+export function getToken(): string | undefined {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   if (fs.existsSync(GITHUB_TOKEN_FILE)) {
     return fs.readFileSync(GITHUB_TOKEN_FILE, 'utf-8').trim();
@@ -24,7 +24,7 @@ function saveToken(token: string): void {
   fs.writeFileSync(GITHUB_TOKEN_FILE, token, { mode: 0o600 });
 }
 
-function getConnectedRepos(): { owner: string; repo: string; connectedAt: string }[] {
+export function getConnectedRepos(): { owner: string; repo: string; connectedAt: string }[] {
   try {
     if (fs.existsSync(GITHUB_REPOS_FILE)) {
       return JSON.parse(fs.readFileSync(GITHUB_REPOS_FILE, 'utf-8'));
@@ -38,7 +38,7 @@ function saveConnectedRepos(repos: { owner: string; repo: string; connectedAt: s
   fs.writeFileSync(GITHUB_REPOS_FILE, JSON.stringify(repos, null, 2));
 }
 
-async function ghApi(endpoint: string, method = 'GET', body?: any): Promise<any> {
+export async function ghApi(endpoint: string, method = 'GET', body?: any): Promise<any> {
   const token = getToken();
   if (!token) throw new Error('No GitHub token. Use /github connect first.');
 
