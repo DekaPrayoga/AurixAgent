@@ -100,6 +100,49 @@ Bundled with comprehensive offensive security skills covering every CTF category
 | **OSINT** | 3 | Social media, geolocation, DNS, public records |
 | **AI/ML** | 3 | Adversarial examples, prompt injection, model extraction |
 
+## What's New in v3.0.0
+
+### Advanced Git Workflow Tool
+Full Git and GitHub workflow management directly from the terminal or chat gateway:
+
+| Action | Capabilities |
+|---|---|
+| **Branch** | create, switch, list, delete, merge — local git operations |
+| **PR Review** | approve, request changes, comment — GitHub PR reviews via API |
+| **Release** | create (tag + GitHub release), list releases |
+| **Merge Conflict** | detect conflicts, show diffs, abort merge/rebase |
+| **CI Actions** | list workflow runs, check CI status per branch |
+| **Stats** | top contributors, repo activity & health dashboard |
+
+```text
+/git_advanced action=branch sub_action=create name=feature/new-thing
+/git_advanced action=pr-review sub_action=approve pr_number=42
+/git_advanced action=release sub_action=create tag=v1.0.0
+/git_advanced action=merge-conflict sub_action=detect
+/git_advanced action=actions sub_action=status branch_filter=main
+/git_advanced action=stats sub_action=contributors
+```
+
+### Full-Color ANSI Phoenix Logo
+The iconic AURIX phoenix now renders in full RGB color gradient — teal wings dissolving into warm orange flame. True original artwork embedded directly in the terminal.
+
+### Gateway Stability & Bug Fixes
+- **Race condition guard**: concurrent message handling per user prevented
+- **Proper cleanup**: `/reset` now interrupts running agent before creating new context
+- **Graceful exit**: agent, gateway, and MCP all properly torn down on exit
+- **stdin drain**: fixed residual data corruption between readline sessions
+- **Provider fixes**: error swallowing eliminated, abort signals propagated to all API paths
+- **Slim dependency arrays**: TUI input box no longer re-renders on every state change
+
+### Clipboard Everywhere
+Windows, macOS, and Linux clipboard fully supported:
+- `clip.exe` for Windows, `pbcopy`/`pbpaste` for macOS, `wl-copy`/`xclip` for Linux
+- OSC 52 terminal protocol fallback for remote sessions
+- `Ctrl+V` paste handler in all input fields
+
+### Lite Mode
+Minimal interactive mode with `@inquirer/prompts` — launch with `aurix --lite` for a clean prompt-only interface with full ANSI phoenix branding.
+
 ## What's New in v2.12.0
 
 .0
@@ -385,7 +428,7 @@ skills/
 | **Security** | Bug Hunt skills (100+ CTF techniques), OSINT, vulnerability scanning |
 | **Creative** | GIF search, text humanizer, architecture diagrams |
 | **Utility** | Maps, notifier, music player, todo, memory |
-| **GitHub** | PR creation, issue management, repo info |
+| **Git** | PR/issue creation & management, Advanced Git workflow (branch, merge conflict, release, CI, stats) |
 | **MCP** | Full MCP server manager with interactive TUI, subprocess transport, auto-tool registration, online catalog |
 | **Planning** | Project planning, Kanban, story decomposition |
 

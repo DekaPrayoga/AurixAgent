@@ -66,9 +66,6 @@ import { archiveReaderTool } from './tools/ArchiveReader.js';
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
 
-
-
-
   // Core tools (always registered)
   registry.register(terminalTool);
   registry.register(readFileTool);
@@ -173,13 +170,20 @@ async function main() {
     } catch {}
   };
   process.on('exit', cleanupTerminal);
-  process.on('uncaughtException', (err) => { cleanupTerminal(); console.error(err); process.exit(1); });
+  process.on('uncaughtException', (err) => {
+    cleanupTerminal();
+    console.error(err);
+    process.exit(1);
+  });
 
   if (process.platform === 'linux' && !process.env.DISPLAY) {
     try {
       const fs = await import('fs');
       for (const s of fs.readdirSync('/tmp/.X11-unix/')) {
-        if (s.startsWith('X')) { process.env.DISPLAY = `:${s.slice(1)}`; break; }
+        if (s.startsWith('X')) {
+          process.env.DISPLAY = `:${s.slice(1)}`;
+          break;
+        }
       }
     } catch {}
     if (!process.env.DISPLAY) {
@@ -209,7 +213,7 @@ async function main() {
   // Non-blocking update check — fetches latest version from npm registry,
   // caches the result for 24h. Prints a banner if newer version exists.
   const updateCheckPromise = import('./utils/UpdateCheck.js')
-    .then(m => m.checkForUpdate())
+    .then((m) => m.checkForUpdate())
     .catch(() => {});
 
   // Mouse handling is done by OpenTUI internally
@@ -239,7 +243,9 @@ async function main() {
   await mcpManager.startAll();
   const mcpToolCount = await registerMcpTools((tool) => registry.register(tool));
   if (mcpToolCount > 0) {
-    process.stderr.write(`  MCP: ${mcpToolCount} tools registered from ${mcpManager.getAllClients().size} server(s)\n`);
+    process.stderr.write(
+      `  MCP: ${mcpToolCount} tools registered from ${mcpManager.getAllClients().size} server(s)\n`
+    );
   }
 
   // Let the update check finish before we enter the alt-screen renderer.
@@ -249,14 +255,21 @@ async function main() {
   // Background memory consolidation every 10 minutes
   const { MemoryEngine } = await import('./agent/MemoryEngine.js');
   const bgMemory = new MemoryEngine();
-  const consolidateTimer = setInterval(() => {
-    bgMemory.consolidate().catch(() => {});
-  }, 10 * 60 * 1000);
+  const consolidateTimer = setInterval(
+    () => {
+      bgMemory.consolidate().catch(() => {});
+    },
+    10 * 60 * 1000
+  );
 
   process.on('exit', () => {
     clearInterval(consolidateTimer);
-    try { bgMemory.consolidate(); } catch {}
-    try { mcpManager.stopAll(); } catch {}
+    try {
+      bgMemory.consolidate();
+    } catch {}
+    try {
+      mcpManager.stopAll();
+    } catch {}
   });
 
   if (process.argv.includes('--lite')) {
@@ -273,11 +286,18 @@ async function main() {
   } catch (err: any) {
     clearInterval(consolidateTimer);
     const { drawBox, drawWarning, drawInfo } = await import('./cli/SetupUI.js');
-    const platformPkg = process.platform === 'win32'
-      ? (process.arch === 'arm64' ? '@opentui/core-win32-arm64' : '@opentui/core-win32-x64')
-      : process.platform === 'darwin'
-        ? (process.arch === 'arm64' ? '@opentui/core-darwin-arm64' : '@opentui/core-darwin-x64')
-        : (process.arch === 'arm64' ? '@opentui/core-linux-arm64' : '@opentui/core-linux-x64');
+    const platformPkg =
+      process.platform === 'win32'
+        ? process.arch === 'arm64'
+          ? '@opentui/core-win32-arm64'
+          : '@opentui/core-win32-x64'
+        : process.platform === 'darwin'
+          ? process.arch === 'arm64'
+            ? '@opentui/core-darwin-arm64'
+            : '@opentui/core-darwin-x64'
+          : process.arch === 'arm64'
+            ? '@opentui/core-linux-arm64'
+            : '@opentui/core-linux-x64';
     let hasNativePkg = false;
     try {
       const resolved = import.meta.resolve(platformPkg);
@@ -290,9 +310,7 @@ async function main() {
     drawInfo(`Native pkg (${platformPkg}): ${hasNativePkg ? 'installed' : 'MISSING'}`);
     console.log();
     if (err?.message) {
-      drawBox([
-        chalk.hex('#808080')('Error: ' + err.message),
-      ], 72);
+      drawBox([chalk.hex('#808080')('Error: ' + err.message)], 72);
       console.log();
     }
     const lines: string[] = [
@@ -336,7 +354,7 @@ async function main() {
   );
 }
 
-main().catch(e => {
+main().catch((e) => {
   console.error('Fatal:', e.message);
   process.exit(1);
 });

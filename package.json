@@ -1,6 +1,6 @@
 {
   "name": "aurix-ai",
-  "version": "2.12.5",
+  "version": "3.0.0",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,11 @@
     "developer-tools",
     "discord-bot",
     "telegram-bot",
-    "whatsapp-bot"
+    "whatsapp-bot",
+    "git-automation",
+    "github-api",
+    "captcha-solver",
+    "langgraph"
   ],
   "homepage": "https://github.com/DekaPrayoga/AurixAgent",
   "repository": {

@@ -45,8 +45,8 @@ export async function ghApi(endpoint: string, method = 'GET', body?: any): Promi
   const res = await fetch(`https://api.github.com${endpoint}`, {
     method,
     headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
       ...(body ? { 'Content-Type': 'application/json' } : {}),
     },
@@ -91,7 +91,7 @@ export const githubTools: Tool[] = [
           const [owner, repo] = (args.repo as string).split('/');
           if (!owner || !repo) return 'Repo format: owner/repo';
 
-          if (!repos.find(r => r.owner === owner && r.repo === repo)) {
+          if (!repos.find((r) => r.owner === owner && r.repo === repo)) {
             repos.push({ owner, repo, connectedAt: new Date().toISOString() });
             saveConnectedRepos(repos);
           }
@@ -133,9 +133,12 @@ export const githubTools: Tool[] = [
           case 'list': {
             const prs = await ghApi(`/repos/${repo}/pulls?state=open&per_page=10`);
             if (!prs.length) return 'No open PRs.';
-            return prs.map((pr: any) =>
-              `#${pr.number} ${pr.title}\n  by ${pr.user.login} | ${pr.head.ref} -> ${pr.base.ref} | ${pr.comments} comments`
-            ).join('\n\n');
+            return prs
+              .map(
+                (pr: any) =>
+                  `#${pr.number} ${pr.title}\n  by ${pr.user.login} | ${pr.head.ref} -> ${pr.base.ref} | ${pr.comments} comments`
+              )
+              .join('\n\n');
           }
 
           case 'view': {
@@ -163,8 +166,8 @@ export const githubTools: Tool[] = [
             if (!num) return 'Provide PR number.';
             const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${num}`, {
               headers: {
-                'Authorization': `Bearer ${getToken()}`,
-                'Accept': 'application/vnd.github.v3.diff',
+                Authorization: `Bearer ${getToken()}`,
+                Accept: 'application/vnd.github.v3.diff',
               },
             });
             const diff = await res.text();
@@ -174,7 +177,9 @@ export const githubTools: Tool[] = [
           case 'merge': {
             const num = args.number as number;
             if (!num) return 'Provide PR number.';
-            const result = await ghApi(`/repos/${repo}/pulls/${num}/merge`, 'PUT', { merge_method: 'squash' });
+            const result = await ghApi(`/repos/${repo}/pulls/${num}/merge`, 'PUT', {
+              merge_method: 'squash',
+            });
             return result.merged ? `PR #${num} merged!` : `Merge failed: ${result.message}`;
           }
 
@@ -211,9 +216,15 @@ export const githubTools: Tool[] = [
         switch (action) {
           case 'list': {
             const issues = await ghApi(`/repos/${repo}/issues?state=open&per_page=10`);
-            return issues.filter((i: any) => !i.pull_request).map((i: any) =>
-              `#${i.number} ${i.title}\n  by ${i.user.login} | labels: ${(i.labels || []).map((l: any) => l.name).join(', ') || 'none'}`
-            ).join('\n\n') || 'No open issues.';
+            return (
+              issues
+                .filter((i: any) => !i.pull_request)
+                .map(
+                  (i: any) =>
+                    `#${i.number} ${i.title}\n  by ${i.user.login} | labels: ${(i.labels || []).map((l: any) => l.name).join(', ') || 'none'}`
+                )
+                .join('\n\n') || 'No open issues.'
+            );
           }
 
           case 'create': {
@@ -221,7 +232,7 @@ export const githubTools: Tool[] = [
             if (!title) return 'Provide issue title.';
             const body: any = { title, body: args.body || '' };
             if (args.labels) {
-              body.labels = (args.labels as string).split(',').map(l => l.trim());
+              body.labels = (args.labels as string).split(',').map((l) => l.trim());
             }
             const issue = await ghApi(`/repos/${repo}/issues`, 'POST', body);
             return `Issue created: #${issue.number} ${issue.title}\n${issue.html_url}`;
@@ -279,23 +290,41 @@ export const githubTools: Tool[] = [
         if (language) searchQuery += `+language:${language}`;
 
         if (type === 'code') {
-          const results = await ghApi(`/search/code?q=${encodeURIComponent(searchQuery)}&per_page=5`);
-          return results.items?.map((r: any) =>
-            `${r.repository.full_name} — ${r.path}\n  ${r.html_url}`
-          ).join('\n\n') || 'No results.';
+          const results = await ghApi(
+            `/search/code?q=${encodeURIComponent(searchQuery)}&per_page=5`
+          );
+          return (
+            results.items
+              ?.map((r: any) => `${r.repository.full_name} — ${r.path}\n  ${r.html_url}`)
+              .join('\n\n') || 'No results.'
+          );
         }
 
         if (type === 'issues') {
-          const results = await ghApi(`/search/issues?q=${encodeURIComponent(searchQuery + ' is:issue')}&per_page=5`);
-          return results.items?.map((r: any) =>
-            `#${r.number} ${r.title}\n  ${r.repository_url.split('/').slice(-2).join('/')} | ${r.state} | ${r.html_url}`
-          ).join('\n\n') || 'No results.';
+          const results = await ghApi(
+            `/search/issues?q=${encodeURIComponent(searchQuery + ' is:issue')}&per_page=5`
+          );
+          return (
+            results.items
+              ?.map(
+                (r: any) =>
+                  `#${r.number} ${r.title}\n  ${r.repository_url.split('/').slice(-2).join('/')} | ${r.state} | ${r.html_url}`
+              )
+              .join('\n\n') || 'No results.'
+          );
         }
 
-        const results = await ghApi(`/search/repositories?q=${encodeURIComponent(searchQuery)}&per_page=5`);
-        return results.items?.map((r: any) =>
-          `${r.full_name} (${r.stargazers_count} stars)\n  ${r.description || 'No description'}\n  Language: ${r.language} | ${r.html_url}`
-        ).join('\n\n') || 'No results.';
+        const results = await ghApi(
+          `/search/repositories?q=${encodeURIComponent(searchQuery)}&per_page=5`
+        );
+        return (
+          results.items
+            ?.map(
+              (r: any) =>
+                `${r.full_name} (${r.stargazers_count} stars)\n  ${r.description || 'No description'}\n  Language: ${r.language} | ${r.html_url}`
+            )
+            .join('\n\n') || 'No results.'
+        );
       } catch (e: any) {
         return `GitHub search error: ${e.message}`;
       }
