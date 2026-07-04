@@ -104,6 +104,7 @@ export class AgentLoop {
   private researchPipeline?: ResearchPipeline;
   private interrupted = false;
   private ledger = new TokenLedger();
+  private abortController = new AbortController();
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     this.config = config;
@@ -136,6 +137,7 @@ export class AgentLoop {
 
   interrupt(): void {
     this.interrupted = true;
+    this.abortController.abort();
   }
 
   private autoLoadSkills(userMessage: string): string[] {
@@ -318,7 +320,7 @@ export class AgentLoop {
         
         // Resume normal operation
         const finalOptimizedMessages = this.contextManager.pruneToolResults(this.messages);
-        response = await this.provider.chat(finalOptimizedMessages, this.registry.getToolDefs());
+        response = await this.provider.chat(finalOptimizedMessages, this.registry.getToolDefs(), this.abortController.signal);
         retryCount = 0;
         totalFailures = 0;
       } catch (e: any) {

@@ -36,7 +36,6 @@ export interface AurixConfig {
     sources?: string[];
     allowClaudeStore?: boolean;
   };
-  enableDashboard?: boolean;
   gateway?: {
     discord?: { enabled: boolean; token: string; allowedUsers?: string[] };
     telegram?: { enabled: boolean; token: string; allowedUsers?: string[] };
@@ -103,7 +102,6 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,
-    enableDashboard: file.enableDashboard,
     browser: file.browser,
     tools: file.tools,
     features: file.features,

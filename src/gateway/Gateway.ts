@@ -1,4 +1,4 @@
-import { AskUserManager } from '../tools/AskUser.js';
+import { AskUserManager, setGlobalAskCallback } from '../tools/AskUser.js';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
@@ -57,7 +57,7 @@ export interface Platform {
   name: string;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
-  send(content: string, channelId: string, replyTo?: string): Promise<void>;
+  send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void>;
   sendFile?(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void>;
   edit?(content: string, channelId: string, messageId: string): Promise<void>;
   on(event: 'message', handler: (msg: IncomingMessage) => void): this;
@@ -289,6 +289,56 @@ export class Gateway extends EventEmitter {
     this.config = config;
     this.registry = registry;
     this.startTime = Date.now();
+
+    setGlobalAskCallback((sessionKey, question, toolOptions) => {
+      if (sessionKey === 'default') {
+        let msg = `[AskUser] ${question}`;
+        if (toolOptions && toolOptions.length > 0) {
+          msg += `\nOptions: ${toolOptions.join(', ')}`;
+        }
+        console.log(msg);
+        return;
+      }
+
+      const ctx = this.lastContext.get(sessionKey);
+      if (ctx) {
+        const platform = this.platforms.get(ctx.platform);
+        if (platform) {
+          const isYesNo = question.toLowerCase().includes('yes/no') || question.toLowerCase().includes('yes or no') || question.toLowerCase().includes('proceed?');
+
+          let sendOptions: any = undefined;
+
+          if (platform.name === 'telegram') {
+            if (toolOptions && toolOptions.length > 0) {
+              // Convert toolOptions array into inline keyboard layout (1 button per row to handle long text safely)
+              const keyboard = toolOptions.map(opt => ([{ text: opt, callback_data: opt }]));
+              sendOptions = {
+                reply_markup: {
+                  inline_keyboard: keyboard
+                }
+              };
+            } else if (isYesNo) {
+              sendOptions = {
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: '✅ Yes', callback_data: 'yes' },
+                    { text: '❌ No', callback_data: 'no' }
+                  ]]
+                }
+              };
+            }
+          }
+
+          let promptText = `❓ **Question from agent:**\n${question}\n\n*(Please reply to answer)*`;
+          if (toolOptions && toolOptions.length > 0 && platform.name !== 'telegram') {
+             // For platforms that don't support inline keyboards (like discord or whatsapp currently), append options to text
+             promptText += `\n\nOptions:\n` + toolOptions.map((opt, i) => `${i+1}. ${opt}`).join('\n');
+          }
+
+          platform.send(promptText, ctx.channelId, ctx.replyTo, sendOptions).catch(e => console.error(e));
+        }
+      }
+    });
   }
 
   register(platform: Platform): void {

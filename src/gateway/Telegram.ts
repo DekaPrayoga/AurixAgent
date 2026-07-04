@@ -50,7 +50,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     } catch {}
   }
 
-  async send(content: string, channelId: string, replyTo?: string): Promise<void> {
+  async send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void> {
     const params: Record<string, any> = {
       chat_id: channelId,
       text: content,
@@ -58,6 +58,10 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     if (replyTo) {
       params.reply_to_message_id = replyTo;
+    }
+
+    if (options && options.reply_markup) {
+      params.reply_markup = options.reply_markup;
     }
 
     try {
@@ -162,11 +166,29 @@ export class TelegramPlatform extends EventEmitter implements Platform {
         const updates = await this.api('getUpdates', {
           offset: this.offset,
           timeout: 30,
-          allowed_updates: ['message'],
+          allowed_updates: ['message', 'callback_query'],
         });
 
         for (const update of updates) {
           this.offset = update.update_id + 1;
+
+          if (update.callback_query) {
+            const cb = update.callback_query;
+            try {
+              await this.api('answerCallbackQuery', { callback_query_id: cb.id });
+            } catch(e) {}
+
+            this.emit('message', {
+              platform: 'telegram',
+              authorId: String(cb.from?.id),
+              authorName: cb.from?.first_name || cb.from?.username || 'Unknown',
+              channelId: String(cb.message?.chat.id || cb.from?.id),
+              content: cb.data || '',
+              replyTo: cb.message ? String(cb.message.message_id) : undefined,
+            } as IncomingMessage);
+            continue;
+          }
+
           const msg = update.message;
           if (!msg) continue;
 

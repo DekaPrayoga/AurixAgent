@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Platform, IncomingMessage } from './Gateway.js';
 import { useSQLiteAuthState } from './WASessionStore.js';
+
+import type { Platform, IncomingMessage } from './Gateway.js';
 import * as os from 'os';
 
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp']);
@@ -116,7 +117,7 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
         }
       });
     } catch (e: any) {
-      console.error(`  WhatsApp: Baileys not installed. Run: npm install @whiskeysockets/baileys pino better-sqlite3`);
+      console.error(`  WhatsApp: Baileys not installed. Run: npm install @whiskeysockets/baileys pino`);
       throw e;
     }
   }
@@ -127,7 +128,7 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async send(content: string, channelId: string, replyTo?: string): Promise<void> {
+  async send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void> {
     if (!this.socket) return;
 
     try {

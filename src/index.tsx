@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { createRoot } from '@opentui/react';
 import { createCliRenderer } from '@opentui/core';
 import { App } from './cli/App.js';
+import { runLiteApp } from './cli/LiteApp.js';
 
 // --- CRITICAL FIX FOR 9ROUTER / LOCALHOST PROXY ISSUES ---
 // Node.js/Bun fetch aggressively uses these env vars, causing local requests (127.0.0.1:20128)
@@ -231,14 +232,6 @@ async function main() {
 
   const registry = createRegistry(config.features);
 
-  if (config.enableDashboard) {
-    import('./api/Server.js').then(({ AurixServer }) => {
-      const server = new AurixServer(registry);
-      server.start(3000);
-    }).catch(e => {
-      console.error('Failed to auto-start dashboard server:', e);
-    });
-  }
   registry.register(createSpawnAgentTool(config, registry));
 
   await mcpManager.startAll();
@@ -263,6 +256,11 @@ async function main() {
     try { bgMemory.consolidate(); } catch {}
     try { mcpManager.stopAll(); } catch {}
   });
+
+  if (process.argv.includes('--lite')) {
+    await runLiteApp(config, registry);
+    return;
+  }
 
   let renderer;
   try {

@@ -95,8 +95,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   // Auto-switch to audio if model doesn't support vision
   if (!isVisionModel && (captchaAudio === 'hybrid' || captchaAudio === 'image' || !captchaAudio)) {
     _dbg(`WARNING: Model "${visionModel}" is not a vision model. Auto-switching to audio captcha mode.`);
-    _dbg(`Please set up Groq API key (get free key at https://console.groq.com/docs/speech-to-text) or install local Whisper.`);
-    _dbg(`Set groqApiKey in config.yaml or run: pip install openai-whisper`);
+    _dbg(`[DO NOT ASK THE USER FOR API KEYS - THE SYSTEM WILL HANDLE IT INTERNALLY VIA CONFIG.YAML OR WHISPER]`);
     audioFirst = true;
     audioFallback = true;
   }

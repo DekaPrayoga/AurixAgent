@@ -37,7 +37,7 @@ export interface ToolDef {
 
 export interface Provider {
   name: string;
-  chat(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse>;
+  chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse>;
   streamChat?(messages: Message[], tools?: ToolDef[]): AsyncIterable<string>;
 }
 
@@ -108,7 +108,7 @@ export class OpenAIProvider implements Provider {
     this.apiKey = config.apiKey;
   }
 
-  async chat(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+  async chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
     if (this.endpointMode === 'completion') {
       return this.completionFallback(messages);
     }
@@ -181,6 +181,7 @@ export class OpenAIProvider implements Provider {
         } catch (e) {}
       }
 
+      if (signal) fetchOpts.signal = signal;
       const fetchRes = await fetch(url, fetchOpts);
 
       if (!fetchRes.ok) {

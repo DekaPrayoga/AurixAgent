@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import initSqlJs, { Database } from 'sql.js';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -11,6 +11,9 @@ interface SQLiteAuthState {
   };
 }
 
+// Global cache to prevent multiple initSqlJs calls
+let SQL: initSqlJs.SqlJsStatic | null = null;
+
 export async function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLiteAuthState; saveCreds: (creds: any) => void }> {
   const resolvedPath = dbPath || path.join(os.homedir(), '.aurix', 'wa-session.db');
   const dir = path.dirname(resolvedPath);
@@ -18,8 +21,17 @@ export async function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLi
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const db = new Database(resolvedPath);
-  db.pragma('journal_mode = WAL');
+  if (!SQL) {
+    SQL = await initSqlJs();
+  }
+
+  let db: Database;
+  if (fs.existsSync(resolvedPath)) {
+    const fileBuffer = fs.readFileSync(resolvedPath);
+    db = new SQL.Database(fileBuffer);
+  } else {
+    db = new SQL.Database();
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS wa_credentials (
@@ -34,87 +46,105 @@ export async function useSQLiteAuthState(dbPath?: string): Promise<{ state: SQLi
     );
   `);
 
+  // Debounced save to disk
+  let saveTimeout: NodeJS.Timeout | null = null;
+  const saveToDisk = () => {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => {
+      const data = db.export();
+      const buffer = Buffer.from(data);
+      // Atomic write using a temporary file
+      const tempPath = `${resolvedPath}.tmp`;
+      fs.writeFileSync(tempPath, buffer);
+      fs.renameSync(tempPath, resolvedPath);
+      saveTimeout = null;
+    }, 1000); // Save after 1 second of inactivity
+  };
+
   const getCredsStmt = db.prepare('SELECT data FROM wa_credentials WHERE id = ?');
   const setCredsStmt = db.prepare('INSERT OR REPLACE INTO wa_credentials (id, data) VALUES (?, ?)');
   const setKeyStmt = db.prepare('INSERT OR REPLACE INTO wa_keys (type, id, data) VALUES (?, ?, ?)');
   const deleteKeyStmt = db.prepare('DELETE FROM wa_keys WHERE type = ? AND id = ?');
 
   let creds: any = null;
-  const row = getCredsStmt.get('main') as { data: string } | undefined;
-  if (row) {
+
+  // Read main creds
+  getCredsStmt.bind(['main']);
+  if (getCredsStmt.step()) {
+    const row = getCredsStmt.getAsObject();
     try {
-      creds = JSON.parse(row.data, bufferReviver);
-    } catch {
-      creds = null;
-    }
+      if (row && typeof row.data === 'string') {
+        creds = JSON.parse(row.data);
+      }
+    } catch {}
   }
+  getCredsStmt.reset();
 
   if (!creds) {
-    try {
-      const { initAuthCreds } = await import('@whiskeysockets/baileys');
-      creds = initAuthCreds();
-    } catch {
-      creds = { noiseKey: { private: null, public: null }, signedIdentityKey: { private: null, public: null }, signedPreKey: { keyPair: { private: null, public: null }, keyId: 0, signature: null }, registrationId: Math.floor(Math.random() * 16384), advSecretKey: null };
-    }
+    const { initAuthCreds } = await import('@whiskeysockets/baileys');
+    creds = initAuthCreds();
   }
 
-  function saveCreds(newCreds: any): void {
-    creds = newCreds;
-    setCredsStmt.run('main', JSON.stringify(newCreds, bufferReplacer));
-  }
-
-  const keys = {
-    async get(type: string, ids: string[]): Promise<Record<string, any>> {
-      const result: Record<string, any> = {};
-      if (ids.length === 0) return result;
-
-      const placeholders = ids.map(() => '?').join(',');
-      const stmt = db.prepare(`SELECT id, data FROM wa_keys WHERE type = ? AND id IN (${placeholders})`);
-      const rows = stmt.all(type, ...ids) as { id: string; data: string }[];
-
-      for (const row of rows) {
-        try {
-          result[row.id] = JSON.parse(row.data, bufferReviver);
-        } catch {
-          result[row.id] = null;
-        }
-      }
-
-      return result;
-    },
-
-    async set(data: Record<string, Record<string, any>>): Promise<void> {
-      const transaction = db.transaction(() => {
-        for (const [type, entries] of Object.entries(data)) {
-          for (const [id, value] of Object.entries(entries)) {
-            if (value === undefined || value === null) {
-              deleteKeyStmt.run(type, id);
-            } else {
-              setKeyStmt.run(type, id, JSON.stringify(value, bufferReplacer));
-            }
-          }
-        }
-      });
-      transaction();
-    },
+  const saveCreds = (newCreds: any) => {
+    const data = JSON.stringify(newCreds);
+    setCredsStmt.run(['main', data]);
+    saveToDisk();
   };
 
   return {
-    state: { creds, keys },
-    saveCreds,
+    state: {
+      creds,
+      keys: {
+        get: async (type: string, ids: string[]) => {
+          const data: Record<string, any> = {};
+          const stmt = db.prepare('SELECT id, data FROM wa_keys WHERE type = ? AND id IN (' + ids.map(() => '?').join(',') + ')');
+          stmt.bind([type, ...ids]);
+          while (stmt.step()) {
+            const row = stmt.getAsObject();
+            if (row && typeof row.id === 'string' && typeof row.data === 'string') {
+              try {
+                data[row.id] = JSON.parse(row.data);
+              } catch {}
+            }
+          }
+          stmt.free();
+
+          return ids.reduce((dict, id) => {
+            let value = data[id];
+            if (type === 'app-state-sync-key' && value) {
+              const { proto } = require('@whiskeysockets/baileys');
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            dict[id] = value;
+            return dict;
+          }, {} as Record<string, any>);
+        },
+        set: async (data: Record<string, Record<string, any>>) => {
+          db.exec('BEGIN TRANSACTION;');
+          for (const category in data) {
+            for (const id in data[category]) {
+              const value = data[category][id];
+              if (value) {
+                const valStr = JSON.stringify(value, (key, val) => {
+                  if (val && val.type === 'Buffer' && Array.isArray(val.data)) {
+                    return Buffer.from(val.data).toString('base64');
+                  }
+                  return val;
+                });
+                setKeyStmt.run([category, id, valStr]);
+              } else {
+                deleteKeyStmt.run([category, id]);
+              }
+            }
+          }
+          db.exec('COMMIT;');
+          saveToDisk();
+        }
+      }
+    },
+    saveCreds: (newCreds: any) => {
+      creds = newCreds;
+      saveCreds(newCreds);
+    }
   };
-}
-
-function bufferReviver(_key: string, value: any): any {
-  if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
-    return Buffer.from(value.data);
-  }
-  return value;
-}
-
-function bufferReplacer(_key: string, value: any): any {
-  if (Buffer.isBuffer(value)) {
-    return { type: 'Buffer', data: Array.from(value) };
-  }
-  return value;
 }

@@ -25,7 +25,7 @@ export const backendTools: Tool[] = [
       };
 
       const dbDeps: Record<string, string[]> = {
-        sqlite: ['better-sqlite3'],
+        sqlite: ['sqlite3'],
         postgres: ['pg', 'pg-pool'],
         mongodb: ['mongodb'],
         none: [],

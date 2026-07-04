@@ -1,5 +1,8 @@
 import type { Tool, ToolRegistry } from './Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
+import { EventEmitter } from 'events';
+
+export const orchestratorEvents = new EventEmitter();
 
 // Orchestrator: lets the main agent fan out work to parallel sub-agents.
 // Each sub-agent is a fresh AgentLoop with the same tools MINUS spawn_agent
@@ -36,21 +39,28 @@ async function runBounded<T, R>(items: T[], limit: number, fn: (item: T, index: 
 }
 
 // Drain a sub-agent's run() generator and collect its final text output.
-async function collectAgentResult(agent: any, prompt: string): Promise<string> {
+async function collectAgentResult(agent: any, prompt: string, agentIndex: number): Promise<string> {
   let lastText = '';
   const chunks: string[] = [];
+  orchestratorEvents.emit('status', { index: agentIndex, status: 'thinking' });
   try {
     for await (const evt of agent.run(prompt)) {
-      if (evt.type === 'text' && evt.data) {
+      if (evt.type === 'tool_start') {
+         orchestratorEvents.emit('status', { index: agentIndex, status: `running tool: ${evt.data}` });
+      } else if (evt.type === 'tool_end') {
+         orchestratorEvents.emit('status', { index: agentIndex, status: 'thinking' });
+      } else if (evt.type === 'text' && evt.data) {
         lastText = evt.data;
         chunks.push(evt.data);
       } else if (evt.type === 'error') {
         return `[sub-agent error] ${evt.data}`;
       } else if (evt.type === 'done') {
+        orchestratorEvents.emit('status', { index: agentIndex, status: 'done' });
         break;
       }
     }
   } catch (e: any) {
+    orchestratorEvents.emit('status', { index: agentIndex, status: 'crashed' });
     return `[sub-agent crashed] ${e?.message || String(e)}`;
   }
   // prefer the final assistant message; fall back to the joined stream
@@ -86,11 +96,14 @@ export function createSpawnAgentTool(config: AurixConfig, registry: ToolRegistry
 
       const subRegistry = buildSubRegistry(registry, ToolRegistry);
 
-      const results = await runBounded(tasks, MAX_CONCURRENCY, async (prompt) => {
+      orchestratorEvents.emit('start', { total: tasks.length, maxConcurrency: MAX_CONCURRENCY });
+      const results = await runBounded(tasks, MAX_CONCURRENCY, async (prompt, index) => {
         const sub = new AgentLoop(config, subRegistry);
         if (typeof sub.setMaxIterations === 'function') sub.setMaxIterations(SUBAGENT_MAX_ITERATIONS);
-        return collectAgentResult(sub, prompt);
+        orchestratorEvents.emit('status', { index, status: 'queued' });
+        return collectAgentResult(sub, prompt, index);
       });
+      orchestratorEvents.emit('end');
 
       const out = results
         .map((r, i) => `## Sub-agent ${i + 1}\nTask: ${tasks[i].slice(0, 120)}\n\n${r}`)

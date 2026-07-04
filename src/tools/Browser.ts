@@ -297,16 +297,14 @@ async function ensureBrowser(): Promise<Page> {
         '--fingerprint-webrtc-ip=auto',
       ];
       if (process.platform === 'win32') {
-        // cloakbrowser's custom Chromium on Windows only supports
-        // --fingerprint-*, --window-size, --no-first-run, --no-default-browser-check.
-        // All --disable-* and --no-sandbox flags cause "unsupported command-line flag"
-        // warnings and silent navigation failures (about:blank).
-        return base.filter(a =>
-          a.startsWith('--fingerprint') ||
-          a.startsWith('--window-size') ||
-          a === '--no-first-run' ||
-          a === '--no-default-browser-check'
-        );
+        // Absolute minimal args for Windows to prevent about:blank navigation silent failures
+        // We drop ALL custom cloakbrowser flags and use only the bare minimum for Playwright
+        return [
+          '--ignore-certificate-errors',
+          '--no-first-run',
+          '--no-default-browser-check',
+          `--window-size=${vp.width},${vp.height}`
+        ];
       }
       return base;
     })(),

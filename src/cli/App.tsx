@@ -44,6 +44,7 @@ export function App({ config, registry, resumeId }: AppProps) {
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isAskingUser, setIsAskingUser] = useState(false);
   const [activeTool, setActiveTool] = useState<{ name: string; args?: Record<string, unknown> } | undefined>();
   const [showBanner, setShowBanner] = useState(true);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -84,13 +85,18 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [showOutputPanel, setShowOutputPanel] = useState(false);
 
   useEffect(() => {
-    setGlobalAskCallback((sessionKey, question) => {
+    setGlobalAskCallback((sessionKey, question, toolOptions) => {
       if (sessionKey === 'default') {
+        let content = `[Human-in-the-Loop Required] ${question}`;
+        if (toolOptions && toolOptions.length > 0) {
+          content += `\nOptions:\n` + toolOptions.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
+        }
         setMessages(prev => [...prev, {
           role: 'system',
-          content: `[Human-in-the-Loop Required] ${question}`,
+          content,
           timestamp: new Date()
         }]);
+        setIsAskingUser(true);
       }
     });
 
@@ -363,6 +369,7 @@ export function App({ config, registry, resumeId }: AppProps) {
     if (AskUserManager.isWaiting('default')) {
       setMessages(prev => [...prev, { role: 'user', content: text, timestamp: new Date() }]);
       AskUserManager.submitAnswer('default', text);
+      setIsAskingUser(false);
       return;
     }
 
@@ -1312,6 +1319,9 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
         }
       } else if (commandName === 'diff') {
         outboundText = 'Inspect the current git diff and summarize what changed, risks, and recommended next checks.';
+      } else if (commandName === 'vision') {
+        setShowVisionConfig(true);
+        return;
       } else if (commandName === 'mcp') {
         const subcmd = (slash.args || '').trim().split(/\s+/);
         const action = subcmd[0]?.toLowerCase() || '';
@@ -1914,7 +1924,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 )}
                 <InputBox
                   onSubmit={handleSubmit}
-                  disabled={isProcessing || !!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
+                  disabled={(isProcessing && !isAskingUser) || !!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
                   commands={commands}
                   model={agent.getModel()}
                   contextPct={ctxStats.estimatedPct}

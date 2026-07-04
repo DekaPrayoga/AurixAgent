@@ -8,17 +8,13 @@ export class AskUserManager {
    * Prompts the user and waits for their response.
    * This suspends the execution until the user replies.
    */
-  static async ask(sessionKey: string, question: string, askCallback: (q: string) => void): Promise<string> {
+  static async ask(sessionKey: string, question: string, options: string[] | undefined, askCallback: (q: string, o?: string[]) => void): Promise<string> {
     return new Promise((resolve) => {
-      // If there's already a pending question, resolve it to abort it
       if (this.pendings.has(sessionKey)) {
         this.pendings.get(sessionKey)!('Aborted: New question asked');
       }
-
       this.pendings.set(sessionKey, resolve);
-      
-      // Notify the frontend/gateway to display the question to the user
-      askCallback(question);
+      askCallback(question, options);
     });
   }
 
@@ -44,11 +40,11 @@ export class AskUserManager {
 }
 
 // Global callback set by App.tsx (CLI) or Gateway.ts to physically show the message to the user
-export let globalAskCallback: (sessionKey: string, question: string) => void = (s, q) => {
+export let globalAskCallback: (sessionKey: string, question: string, options?: string[]) => void = (s, q, o) => {
   console.log(`[AskUser: ${s}] ${q}`);
 };
 
-export function setGlobalAskCallback(cb: (sessionKey: string, question: string) => void) {
+export function setGlobalAskCallback(cb: (sessionKey: string, question: string, options?: string[]) => void) {
   globalAskCallback = cb;
 }
 
@@ -61,6 +57,11 @@ export const askUserTool: Tool = {
       question: {
         type: 'string',
         description: 'The question, prompt, or instruction to show the user (e.g. "Please provide the OTP sent to your email").'
+      },
+      options: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional array of choices to display as interactive buttons. E.g. ["Yes", "No"] or ["English", "Spanish"]'
       }
     },
     required: ['question']
@@ -72,8 +73,9 @@ export const askUserTool: Tool = {
     const sessionKey = (args._sessionKey as string) || 'default';
     
     try {
-      const answer = await AskUserManager.ask(sessionKey, question, (q) => {
-        globalAskCallback(sessionKey, q);
+      const options = args.options as string[] | undefined;
+      const answer = await AskUserManager.ask(sessionKey, question, options, (q, o) => {
+        globalAskCallback(sessionKey, q, o);
       });
       return `User answered: ${answer}`;
     } catch (e: any) {

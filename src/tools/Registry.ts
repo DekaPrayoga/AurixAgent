@@ -98,8 +98,8 @@ export class ToolRegistry {
       this.readFiles.add(filePath);
     }
 
-    if ((name === 'file_edit' || name === 'write_file') && filePath) {
-      const isNewFile = name === 'file_edit' && args.old_string === '';
+    if (name === 'file_edit' && filePath) {
+      const isNewFile = args.old_string === '';
       if (!isNewFile && !this.readFiles.has(filePath)) {
         return `Error: File "${filePath}" has not been read yet. You MUST use read_file to read it first before editing. No exceptions.`;
       }

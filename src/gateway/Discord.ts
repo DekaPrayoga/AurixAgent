@@ -118,7 +118,7 @@ export class DiscordPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async send(content: string, channelId: string, replyTo?: string): Promise<void> {
+  async send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void> {
     if (!this.client) return;
 
     try {
