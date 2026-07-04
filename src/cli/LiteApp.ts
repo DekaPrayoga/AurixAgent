@@ -8,9 +8,7 @@ import { ToolRegistry } from '../tools/Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { asciiLogo } from '../utils/ascii-logo.js';
 
-// @ts-ignore
-const TerminalRenderer = markedTerminal;
-// @ts-ignore
+const TerminalRenderer = markedTerminal as any;
 marked.setOptions({
   renderer: new TerminalRenderer({
     heading: chalk.cyan.bold,
@@ -18,7 +16,7 @@ marked.setOptions({
     blockquote: chalk.gray.italic,
     html: chalk.gray,
   }),
-});
+} as any);
 
 export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
   const agent = new AgentLoop(config, registry);
