@@ -88,6 +88,9 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   // Step 10: Captcha solving method
   const captchaAudio = await stepCaptcha();
 
+  // Step 11: Web search engine
+  const searchEngine = await stepSearchEngine();
+
   const resolvedProvider = provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto'
     ? 'custom'
     : provider;
@@ -119,6 +122,8 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     features: (Array.isArray(features) ? features : []) as string[],
     captchaAudio: captchaAudio.mode,
     groqApiKey: captchaAudio.groqApiKey,
+    searchEngine: searchEngine.engine,
+    searchApiKey: searchEngine.apiKey || '',
   };
 
   ensureConfigDir();
@@ -606,6 +611,47 @@ async function stepCaptcha(): Promise<{ mode: AurixConfig['captchaAudio']; groqA
   }
 
   return { mode };
+}
+
+// ─── Search Engine Step ─────────────────────────────────────────────────────
+
+async function stepSearchEngine(): Promise<{ engine: AurixConfig['searchEngine']; apiKey?: string }> {
+  const selected = await drawSelector({
+    title: 'Web Search Engine',
+    items: [
+      { id: 'ddg', label: 'DuckDuckGo (Default)', desc: 'Free, no API key — instant answers + web results' },
+      { id: 'serper', label: 'Serper.dev (Google)', desc: 'Real Google results, 2500 free/month\nGet key: https://serper.dev' },
+      { id: 'tavily', label: 'Tavily (AI-Optimized)', desc: 'Built for AI agents, clean results, 1000 free/month\nGet key: https://tavily.com' },
+    ],
+    allowSkip: true,
+  });
+
+  if (!selected || selected === '__skip__' || selected === '__back__') {
+    drawInfo('Defaulting to DuckDuckGo (free, no API key).\n');
+    return { engine: 'ddg' };
+  }
+
+  if (selected === 'ddg') {
+    drawInfo('DuckDuckGo is free and needs no API key.\n');
+    return { engine: 'ddg' };
+  }
+
+  const name = selected === 'serper' ? 'Serper.dev' : 'Tavily';
+  const url = selected === 'serper' ? 'https://serper.dev' : 'https://tavily.com';
+  drawInfo('Get your free API key at: ' + url);
+  const apiKey = await drawInputScreen({
+    title: name + ' API Key',
+    hint: 'Paste your ' + name + ' API key.\nGet it free at: ' + url + '\nLeave blank to use DDG instead.',
+    label: 'API Key:',
+    masked: true,
+  });
+
+  if (apiKey && apiKey !== '__back__') {
+    return { engine: selected as AurixConfig['searchEngine'], apiKey };
+  }
+
+  drawInfo('No key provided. Defaulting to DDG.\n');
+  return { engine: 'ddg' };
 }
 
 function loadSetupState(): Record<string, any> {

@@ -3,18 +3,39 @@ import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { join } from 'path';
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, appendFileSync } from 'fs';
+import {
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  unlinkSync,
+  existsSync,
+  mkdirSync,
+  appendFileSync,
+} from 'fs';
 import sharp from 'sharp';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
 import { Metrics } from '../agent/Metrics.js';
 import {
-  visionClassify, readFileBase64, analyzeTileCrops,
-  loadCaptchaTraining, saveCaptchaTraining, findGridTiles,
-  humanClick, humanMove, humanHold, warmupBehavior,
-  solveCaptchaGrid, autoSolveCaptcha, analyzeImageChallenge,
-  _lastGridAnalyzeTime, bezierPoint, easeInOut,
-  FuncaptchaSolver, extractPublicKey, extractServiceUrl,
+  visionClassify,
+  readFileBase64,
+  analyzeTileCrops,
+  loadCaptchaTraining,
+  saveCaptchaTraining,
+  findGridTiles,
+  humanClick,
+  humanMove,
+  humanHold,
+  warmupBehavior,
+  solveCaptchaGrid,
+  autoSolveCaptcha,
+  analyzeImageChallenge,
+  _lastGridAnalyzeTime,
+  bezierPoint,
+  easeInOut,
+  FuncaptchaSolver,
+  extractPublicKey,
+  extractServiceUrl,
 } from './captcha/index.js';
 
 function ok(msg: string, details?: Record<string, string>): string {
@@ -38,7 +59,10 @@ function warn(msg: string, details?: Record<string, string>): string {
 let _lastActionScreenshot = '';
 async function autoScreenshot(p: Page, label: string): Promise<string> {
   const path = join(homedir(), '.aurix-last-action.png');
-  try { await p.screenshot({ path }); _lastActionScreenshot = path; } catch {}
+  try {
+    await p.screenshot({ path });
+    _lastActionScreenshot = path;
+  } catch {}
   return path;
 }
 
@@ -52,13 +76,32 @@ async function humanType(locator: any, page: Page, text: string, isSecret = fals
   await page.waitForTimeout(100 + Math.random() * 200);
 
   const keyboardProximity: Record<string, string[]> = {
-    'q': ['w', 'a'], 'w': ['q', 'e', 's'], 'e': ['w', 'r', 'd'], 'r': ['e', 't', 'f'],
-    't': ['r', 'y', 'g'], 'y': ['t', 'u', 'h'], 'u': ['y', 'i', 'j'], 'i': ['u', 'o', 'k'],
-    'o': ['i', 'p', 'l'], 'p': ['o', 'l'], 'a': ['q', 's', 'z'], 's': ['w', 'a', 'd', 'x'],
-    'd': ['e', 's', 'f', 'c'], 'f': ['r', 'd', 'g', 'v'], 'g': ['t', 'f', 'h', 'b'],
-    'h': ['y', 'g', 'j', 'n'], 'j': ['u', 'h', 'k', 'm'], 'k': ['i', 'j', 'l'],
-    'l': ['o', 'k'], 'z': ['a', 'x'], 'x': ['s', 'z', 'c'], 'c': ['d', 'x', 'v'],
-    'v': ['f', 'c', 'b'], 'b': ['g', 'v', 'n'], 'n': ['h', 'b', 'm'], 'm': ['j', 'n'],
+    q: ['w', 'a'],
+    w: ['q', 'e', 's'],
+    e: ['w', 'r', 'd'],
+    r: ['e', 't', 'f'],
+    t: ['r', 'y', 'g'],
+    y: ['t', 'u', 'h'],
+    u: ['y', 'i', 'j'],
+    i: ['u', 'o', 'k'],
+    o: ['i', 'p', 'l'],
+    p: ['o', 'l'],
+    a: ['q', 's', 'z'],
+    s: ['w', 'a', 'd', 'x'],
+    d: ['e', 's', 'f', 'c'],
+    f: ['r', 'd', 'g', 'v'],
+    g: ['t', 'f', 'h', 'b'],
+    h: ['y', 'g', 'j', 'n'],
+    j: ['u', 'h', 'k', 'm'],
+    k: ['i', 'j', 'l'],
+    l: ['o', 'k'],
+    z: ['a', 'x'],
+    x: ['s', 'z', 'c'],
+    c: ['d', 'x', 'v'],
+    v: ['f', 'c', 'b'],
+    b: ['g', 'v', 'n'],
+    n: ['h', 'b', 'm'],
+    m: ['j', 'n'],
   };
 
   for (let i = 0; i < text.length; i++) {
@@ -86,7 +129,6 @@ async function humanType(locator: any, page: Page, text: string, isSecret = fals
     await page.waitForTimeout(delay);
   }
 }
-
 
 const tempMails = new Map<string, TempMail>();
 
@@ -161,8 +203,10 @@ const FALLBACK_GEO: GeoInfo = {
 async function lookupGeo(ip: string): Promise<GeoInfo> {
   if (geoCache.has(ip)) return geoCache.get(ip)!;
   try {
-    const res = await fetch(`http://ip-api.com/json/${ip}?fields=status,lat,lon,country,city,timezone`);
-    const data = await res.json() as any;
+    const res = await fetch(
+      `http://ip-api.com/json/${ip}?fields=status,lat,lon,country,city,timezone`
+    );
+    const data = (await res.json()) as any;
     if (data.status === 'success') {
       const info: GeoInfo = {
         latitude: data.lat,
@@ -219,12 +263,30 @@ const USER_AGENTS = [
 ];
 
 const WEBGL_RENDERERS = [
-  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)' },
-  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
-  { vendor: 'Google Inc. (NVIDIA)', renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
-  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
-  { vendor: 'Google Inc. (Intel)', renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)' },
-  { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
+  {
+    vendor: 'Google Inc. (NVIDIA)',
+    renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
+  {
+    vendor: 'Google Inc. (NVIDIA)',
+    renderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
+  {
+    vendor: 'Google Inc. (NVIDIA)',
+    renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
+  {
+    vendor: 'Google Inc. (Intel)',
+    renderer: 'ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
+  {
+    vendor: 'Google Inc. (Intel)',
+    renderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
+  {
+    vendor: 'Google Inc. (AMD)',
+    renderer: 'ANGLE (AMD, AMD Radeon RX 580 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+  },
 ];
 
 function randomPick<T>(arr: T[]): T {
@@ -308,7 +370,7 @@ async function ensureBrowser(): Promise<Page> {
           '--ignore-certificate-errors',
           '--no-first-run',
           '--no-default-browser-check',
-          `--window-size=${vp.width},${vp.height}`
+          `--window-size=${vp.width},${vp.height}`,
         ];
       }
       return base;
@@ -319,11 +381,19 @@ async function ensureBrowser(): Promise<Page> {
     //   context (coreBundle.js:41657). On Windows + cloakbrowser, the auto-created
     //   about:blank page CANNOT navigate via goto(). Stripping it lets us create
     //   our own page that navigates correctly.
-    ...(process.platform === 'win32' ? {
-      launchOptions: {
-        ignoreDefaultArgs: ['--enable-automation', '--enable-unsafe-swiftshader', '--no-sandbox', '--disable-setuid-sandbox', 'about:blank'],
-      },
-    } : {}),
+    ...(process.platform === 'win32'
+      ? {
+          launchOptions: {
+            ignoreDefaultArgs: [
+              '--enable-automation',
+              '--enable-unsafe-swiftshader',
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              'about:blank',
+            ],
+          },
+        }
+      : {}),
   };
 
   const parts = activeProxy.split(':');
@@ -471,27 +541,40 @@ async function closeBrowser(): Promise<void> {
 // Auto-handle Cloudflare Turnstile — click the checkbox to trigger managed challenge.
 // With good fingerprinting (CloakBrowser), managed challenges auto-pass without visual puzzles.
 // Returns true if Turnstile was handled, false if no Turnstile detected.
-async function autoBypassTurnstile(page: Page, timeoutMs = 15000): Promise<{ handled: boolean; blocked: boolean }> {
+async function autoBypassTurnstile(
+  page: Page,
+  timeoutMs = 15000
+): Promise<{ handled: boolean; blocked: boolean }> {
   try {
     const pageContent = await page.content();
-    const hasTurnstile = pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare');
+    const hasTurnstile =
+      pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare');
     if (!hasTurnstile) return { handled: false, blocked: false };
 
-    const turnstileFrame = page.frames().find(f => f.url().includes('challenges.cloudflare'));
+    const turnstileFrame = page.frames().find((f) => f.url().includes('challenges.cloudflare'));
     if (turnstileFrame) {
       try {
         // Click the checkbox to trigger managed challenge
         const cb = turnstileFrame.locator('input[type="checkbox"], .cb-lb, #challenge-stage label');
-        if (await cb.count() > 0) {
-          await cb.first().click({ timeout: 5000 }).catch(() => {});
+        if ((await cb.count()) > 0) {
+          await cb
+            .first()
+            .click({ timeout: 5000 })
+            .catch(() => {});
         } else {
-          await turnstileFrame.locator('body').click({ timeout: 5000 }).catch(() => {});
+          await turnstileFrame
+            .locator('body')
+            .click({ timeout: 5000 })
+            .catch(() => {});
         }
         await page.waitForTimeout(4000 + Math.random() * 2000);
 
         // Check if Turnstile resolved
         const afterContent = await page.content();
-        if (!afterContent.includes('cf-turnstile') && !afterContent.includes('challenges.cloudflare')) {
+        if (
+          !afterContent.includes('cf-turnstile') &&
+          !afterContent.includes('challenges.cloudflare')
+        ) {
           return { handled: true, blocked: false };
         }
       } catch {}
@@ -502,7 +585,10 @@ async function autoBypassTurnstile(page: Page, timeoutMs = 15000): Promise<{ han
       await page.reload({ waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
       await page.waitForTimeout(3000);
       const reloadContent = await page.content();
-      if (!reloadContent.includes('cf-turnstile') && !reloadContent.includes('challenges.cloudflare')) {
+      if (
+        !reloadContent.includes('cf-turnstile') &&
+        !reloadContent.includes('challenges.cloudflare')
+      ) {
         return { handled: true, blocked: false };
       }
     } catch {}
@@ -522,7 +608,12 @@ function describePage(page: Page): string {
 
 async function resolveLocator(p: Page, target: string) {
   let locator: any;
-  if (target.startsWith('#') || target.startsWith('.') || target.startsWith('[') || target.includes('>')) {
+  if (
+    target.startsWith('#') ||
+    target.startsWith('.') ||
+    target.startsWith('[') ||
+    target.includes('>')
+  ) {
     locator = p.locator(target);
   } else if (target.startsWith('text=')) {
     locator = p.locator(target);
@@ -543,7 +634,13 @@ async function resolveLocator(p: Page, target: string) {
   for (const frame of p.frames()) {
     if (frame === p.mainFrame()) continue;
     let frameLocator: any;
-    if (target.startsWith('#') || target.startsWith('.') || target.startsWith('[') || target.includes('>') || target.startsWith('text=')) {
+    if (
+      target.startsWith('#') ||
+      target.startsWith('.') ||
+      target.startsWith('[') ||
+      target.includes('>') ||
+      target.startsWith('text=')
+    ) {
       frameLocator = frame.locator(target);
     } else if (target.startsWith('role=')) {
       frameLocator = frame.getByRole(target.slice(5).trim() as any);
@@ -554,7 +651,7 @@ async function resolveLocator(p: Page, target: string) {
     } else {
       frameLocator = frame.getByText(target, { exact: false });
     }
-    if (await frameLocator.count() > 0) return frameLocator;
+    if ((await frameLocator.count()) > 0) return frameLocator;
   }
 
   return locator;
@@ -609,27 +706,33 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
     properties: {
       action: {
         type: 'string',
-        description: 'Browser action to perform. Can be: navigate, click, fill, type, screenshot, snapshot, evaluate, signup-assist, signin-assist, close, export-state, import-state, etc.',
+        description:
+          'Browser action to perform. Can be: navigate, click, fill, type, screenshot, snapshot, evaluate, signup-assist, signin-assist, close, export-state, import-state, etc.',
       },
       target: {
         type: 'string',
-        description: 'Target element: CSS selector, text="...", role=..., placeholder="...", label="...", or plain text',
+        description:
+          'Target element: CSS selector, text="...", role=..., placeholder="...", label="...", or plain text',
       },
       value: {
         type: 'string',
-        description: 'Value for fill/type actions, URL for navigate, key for press-key, expression for evaluate, or tab index for switch-tab',
+        description:
+          'Value for fill/type actions, URL for navigate, key for press-key, expression for evaluate, or tab index for switch-tab',
       },
       options: {
         type: 'string',
-        description: 'Additional options as JSON string, e.g. \'{"timeout": 5000}\' or \'{"selector": ".class"}\'',
+        description:
+          'Additional options as JSON string, e.g. \'{"timeout": 5000}\' or \'{"selector": ".class"}\'',
       },
       session: {
         type: 'string',
-        description: 'Browser session key (default: "default"). Use distinct keys (e.g. "a", "b", "c") to drive up to 3 independent browsers in parallel — each has its own profile, cookies, and proxy.',
+        description:
+          'Browser session key (default: "default"). Use distinct keys (e.g. "a", "b", "c") to drive up to 3 independent browsers in parallel — each has its own profile, cookies, and proxy.',
       },
       proxy: {
         type: 'string',
-        description: 'Optional proxy for THIS session, e.g. "host:port" or "host:port:user:pass". If omitted, a proxy is auto-picked from config. Each session may use a different proxy.',
+        description:
+          'Optional proxy for THIS session, e.g. "host:port" or "host:port:user:pass". If omitted, a proxy is auto-picked from config. Each session may use a different proxy.',
       },
     },
     required: ['action'],
@@ -644,8 +747,15 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
     // Multi-session: route this call to the requested browser (default "default").
     const sessionKey = (args.session as string)?.trim() || 'default';
-    if (!sessions.has(sessionKey) && sessions.size >= MAX_BROWSER_SESSIONS && !['close', 'close-all', 'status'].includes(action)) {
-      return err(`Max ${MAX_BROWSER_SESSIONS} concurrent browser sessions reached`, `Active: ${[...sessions.keys()].join(', ')}. Reuse one or close it with action="close" session="<key>".`);
+    if (
+      !sessions.has(sessionKey) &&
+      sessions.size >= MAX_BROWSER_SESSIONS &&
+      !['close', 'close-all', 'status'].includes(action)
+    ) {
+      return err(
+        `Max ${MAX_BROWSER_SESSIONS} concurrent browser sessions reached`,
+        `Active: ${[...sessions.keys()].join(', ')}. Reuse one or close it with action="close" session="<key>".`
+      );
     }
     setBrowserSession(sessionKey);
     // Per-session proxy: explicit arg wins; otherwise pick one for a fresh session.
@@ -657,7 +767,11 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
     try {
       switch (action) {
         case 'set-proxy': {
-          if (!value && !target) return err('set-proxy requires a proxy address', 'Examples: "host:port", "user:pass@host:port", or "off" to disable');
+          if (!value && !target)
+            return err(
+              'set-proxy requires a proxy address',
+              'Examples: "host:port", "user:pass@host:port", or "off" to disable'
+            );
           const proxy = value || target || '';
           if (proxy === 'off' || proxy === 'none' || proxy === '') {
             browserProxy = '';
@@ -674,7 +788,13 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
         case 'set-ui': {
           const mode = (value || target || '').toLowerCase();
-          if (mode === 'on' || mode === 'show' || mode === 'headed' || mode === 'visible' || mode === 'true') {
+          if (
+            mode === 'on' ||
+            mode === 'show' ||
+            mode === 'headed' ||
+            mode === 'visible' ||
+            mode === 'true'
+          ) {
             browserHeadless = false;
             await closeBrowser();
             return ok('Browser UI enabled (headed mode). Browser will restart on next action.', {
@@ -694,7 +814,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const p = await ensureBrowser();
           const session = getSession()!;
           const count = parseInt(value) || 3;
-          const urls = target ? target.split(',').map(s => s.trim()) : [];
+          const urls = target ? target.split(',').map((s) => s.trim()) : [];
           const tabs: string[] = [];
 
           for (let i = 0; i < count; i++) {
@@ -702,7 +822,9 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             if (urls[i]) {
               const url = urls[i].startsWith('http') ? urls[i] : `https://${urls[i]}`;
               await newPage.goto(url, { waitUntil: 'domcontentloaded', timeout }).catch(() => {});
-              tabs.push(`Tab ${i + 1}: ${newPage.url()} — ${await newPage.title().catch(() => '')}`);
+              tabs.push(
+                `Tab ${i + 1}: ${newPage.url()} — ${await newPage.title().catch(() => '')}`
+              );
             } else {
               tabs.push(`Tab ${i + 1}: blank`);
             }
@@ -739,19 +861,21 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             const fs = await import('fs');
             const stateFile = value || target || '';
             if (!fs.existsSync(stateFile)) return err(`State file not found: ${stateFile}`);
-            
+
             const raw = fs.readFileSync(stateFile, 'utf8');
             const stateObj = JSON.parse(raw);
-            
+
             // Apply storage state to the context
             // Note: In Playwright, adding storage state on the fly requires creating a new context,
             // but we can at least add cookies directly.
             if (stateObj.cookies && Array.isArray(stateObj.cookies)) {
-               await session.context.addCookies(stateObj.cookies);
+              await session.context.addCookies(stateObj.cookies);
             }
             // For a full context import, user needs to specify state in launch options.
             // Here we provide the cookies injection which usually bypasses login walls.
-            return ok(`Successfully imported ${stateObj.cookies ? stateObj.cookies.length : 0} cookies from ${stateFile}. Refresh the page to see effects.`);
+            return ok(
+              `Successfully imported ${stateObj.cookies ? stateObj.cookies.length : 0} cookies from ${stateFile}. Refresh the page to see effects.`
+            );
           } catch (e: any) {
             return err(`Failed to import state: ${e.message}`);
           }
@@ -764,9 +888,9 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
           const tempMail = tempMails.get(sessionKey)!;
           try {
             const address = await tempMail.initialize();
-            return ok(`Temporary email generated: ${address}`, { 
-              email: address, 
-              note: 'Use this email to sign up, then use action "wait-email" to check the inbox for verification code/links.'
+            return ok(`Temporary email generated: ${address}`, {
+              email: address,
+              note: 'Use this email to sign up, then use action "wait-email" to check the inbox for verification code/links.',
             });
           } catch (e: any) {
             return err(`Failed to get temp email: ${e.message}`);
@@ -775,17 +899,22 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
         case 'wait-email': {
           if (!tempMails.has(sessionKey)) {
-            return err('No temporary email generated for this session. Use "get-temp-email" first.');
+            return err(
+              'No temporary email generated for this session. Use "get-temp-email" first.'
+            );
           }
           const tempMail = tempMails.get(sessionKey)!;
-          const { timeout = 60, regex } = (typeof options === 'object' ? options : {});
-          
+          const { timeout = 60, regex } = typeof options === 'object' ? options : {};
+
           try {
-            const result = await tempMail.waitForEmail(Number(timeout), regex ? String(regex) : undefined);
-            
+            const result = await tempMail.waitForEmail(
+              Number(timeout),
+              regex ? String(regex) : undefined
+            );
+
             return ok(`Email received: "${result.subject}"`, {
               extracted: result.extracted || 'Regex/Auto-extract did not find anything',
-              body_preview: result.text
+              body_preview: result.text,
             });
           } catch (e: any) {
             return err(`Wait email failed: ${e.message}`);
@@ -797,7 +926,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
             const { exec } = await import('child_process');
             const { promisify } = await import('util');
             const execAsync = promisify(exec);
-            
+
             // We use Python to run the extraction logic. We assume the system has python3 installed.
             // Using a simple inline script that calls the existing cookie_extract.py logic
             const pythonScript = `
@@ -816,23 +945,26 @@ try:
 except Exception as e:
     print(json.dumps({"error": str(e)}))
 `;
-            
+
             const { stdout } = await execAsync(`python3 -c "${pythonScript.replace(/\n/g, '\n')}"`);
             const parsed = JSON.parse(stdout.trim());
-            
+
             if (parsed.error) {
               return err(`Cookie extraction failed: ${parsed.error}`);
             }
-            
+
             if (parsed.auth_token && parsed.ct0) {
               const envContent = `AUTH_TOKEN="${parsed.auth_token}"\nCT0="${parsed.ct0}"\n`;
               const fsNode = await import('fs');
               const envPath = 'skills/research/social-researching/.env';
               fsNode.writeFileSync(envPath, envContent);
-              return ok('Successfully extracted Twitter cookies from local browser and saved to .env', {
-                auth_token: parsed.auth_token.substring(0, 10) + '...',
-                ct0: parsed.ct0.substring(0, 10) + '...'
-              });
+              return ok(
+                'Successfully extracted Twitter cookies from local browser and saved to .env',
+                {
+                  auth_token: parsed.auth_token.substring(0, 10) + '...',
+                  ct0: parsed.ct0.substring(0, 10) + '...',
+                }
+              );
             } else {
               return err('Cookies extracted but missing auth_token or ct0');
             }
@@ -871,12 +1003,19 @@ except Exception as e:
           const diagnostics: string[] = [];
 
           const targetHost = (() => {
-            try { return new URL(fullUrl).hostname; } catch { return fullUrl; }
+            try {
+              return new URL(fullUrl).hostname;
+            } catch {
+              return fullUrl;
+            }
           })();
 
           const didNavigate = (page: Page): boolean => {
             const u = page.url();
-            return u.includes(targetHost) || (u.startsWith('http') && !u.includes('chrome://') && !u.startsWith('about:'));
+            return (
+              u.includes(targetHost) ||
+              (u.startsWith('http') && !u.includes('chrome://') && !u.startsWith('about:'))
+            );
           };
 
           // Try CDP navigation (goto)
@@ -894,7 +1033,9 @@ except Exception as e:
             // Fallback: JavaScript-based navigation (window.location.href)
             // This uses a different mechanism than CDP Page.navigate
             try {
-              await p.evaluate((u: string) => { window.location.href = u; }, fullUrl);
+              await p.evaluate((u: string) => {
+                window.location.href = u;
+              }, fullUrl);
               await p.waitForTimeout(3000);
             } catch (e: any) {
               diagnostics.push(`JS nav threw: ${(e.message || '').slice(0, 120)}`);
@@ -913,7 +1054,10 @@ except Exception as e:
 
               // Try goto on fresh page
               try {
-                await freshPage.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: timeout * 2 });
+                await freshPage.goto(fullUrl, {
+                  waitUntil: 'domcontentloaded',
+                  timeout: timeout * 2,
+                });
               } catch (e: any) {
                 diagnostics.push(`fresh goto threw: ${(e.message || '').slice(0, 120)}`);
               }
@@ -921,7 +1065,9 @@ except Exception as e:
               if (!didNavigate(freshPage)) {
                 // Try JS navigation on fresh page
                 try {
-                  await freshPage.evaluate((u: string) => { window.location.href = u; }, fullUrl);
+                  await freshPage.evaluate((u: string) => {
+                    window.location.href = u;
+                  }, fullUrl);
                   await freshPage.waitForTimeout(3000);
                 } catch (e: any) {
                   diagnostics.push(`fresh JS nav threw: ${(e.message || '').slice(0, 120)}`);
@@ -930,8 +1076,15 @@ except Exception as e:
 
               if (didNavigate(freshPage)) {
                 const ts = await autoBypassTurnstile(freshPage);
-                const extra = ts.blocked ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.' : ts.handled ? '\n✓ Cloudflare Turnstile auto-bypassed.' : '';
-                return ok(`Navigated to ${freshPage.url()}${extra}`, { title: await freshPage.title(), turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none' });
+                const extra = ts.blocked
+                  ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.'
+                  : ts.handled
+                    ? '\n✓ Cloudflare Turnstile auto-bypassed.'
+                    : '';
+                return ok(`Navigated to ${freshPage.url()}${extra}`, {
+                  title: await freshPage.title(),
+                  turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none',
+                });
               }
               diagnostics.push(`fresh page final url: ${freshPage.url()}`);
             } catch (e: any) {
@@ -942,8 +1095,15 @@ except Exception as e:
           const currentPage = getSession()?.page;
           if (currentPage && didNavigate(currentPage)) {
             const ts = await autoBypassTurnstile(currentPage);
-            const extra = ts.blocked ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.' : ts.handled ? '\n✓ Cloudflare Turnstile auto-bypassed.' : '';
-            return ok(`Navigated to ${currentPage.url()}${extra}`, { title: await currentPage.title(), turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none' });
+            const extra = ts.blocked
+              ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.'
+              : ts.handled
+                ? '\n✓ Cloudflare Turnstile auto-bypassed.'
+                : '';
+            return ok(`Navigated to ${currentPage.url()}${extra}`, {
+              title: await currentPage.title(),
+              turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none',
+            });
           }
 
           // DIAGNOSTIC: test if the browser can execute JS and access the page
@@ -965,19 +1125,23 @@ except Exception as e:
           return err(
             `Navigation FAILED — page stuck at "${currentPage?.url() || p.url()}"`,
             `Target: ${fullUrl}\n` +
-            `Headless: ${browserHeadless} (set BROWSER_HEADLESS=false to see the browser)\n` +
-            `Proxy: ${activeProxy || 'none'}\n` +
-            `Platform: ${process.platform}\n` +
-            `JS diagnostic: ${jsWorks}\n` +
-            `Trace: ${diagnostics.join(' → ')}\n\n` +
-            `If JS diagnostic shows url+hostname correctly → network issue (Windows Defender/firewall blocking Chromium)\n` +
-            `If evaluate failed → browser binary issue (run: npm rebuild cloakbrowser)`
+              `Headless: ${browserHeadless} (set BROWSER_HEADLESS=false to see the browser)\n` +
+              `Proxy: ${activeProxy || 'none'}\n` +
+              `Platform: ${process.platform}\n` +
+              `JS diagnostic: ${jsWorks}\n` +
+              `Trace: ${diagnostics.join(' → ')}\n\n` +
+              `If JS diagnostic shows url+hostname correctly → network issue (Windows Defender/firewall blocking Chromium)\n` +
+              `If evaluate failed → browser binary issue (run: npm rebuild cloakbrowser)`
           );
         }
 
         case 'click': {
           const p = await ensureBrowser();
-          if (!target) return err('click requires a target element', 'Use a CSS selector, text="...", role=, or placeholder=');
+          if (!target)
+            return err(
+              'click requires a target element',
+              'Use a CSS selector, text="...", role=, or placeholder='
+            );
           try {
             const locator = await resolveLocator(p, target);
             await locator.first().click({ timeout });
@@ -990,29 +1154,54 @@ except Exception as e:
             });
           } catch (e: any) {
             const msg = e.message || String(e);
-            if (msg.includes('Timeout')) return err(`Element "${target}" not found within timeout`, 'Use "snapshot" to see available elements, or "wait" to wait for page load');
-            if (msg.includes('not visible') || msg.includes('intercepts pointer')) return err(`Element "${target}" is hidden or covered by another element`, 'Try a different selector, use "evaluate" with JS click, or scroll to the element first');
-            if (msg.includes('strict mode') || msg.includes('more than one')) return err(`Multiple elements matched "${target}"`, 'Use a more specific selector or add .first()/.nth(0)');
-            return err(`Click failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+            if (msg.includes('Timeout'))
+              return err(
+                `Element "${target}" not found within timeout`,
+                'Use "snapshot" to see available elements, or "wait" to wait for page load'
+              );
+            if (msg.includes('not visible') || msg.includes('intercepts pointer'))
+              return err(
+                `Element "${target}" is hidden or covered by another element`,
+                'Try a different selector, use "evaluate" with JS click, or scroll to the element first'
+              );
+            if (msg.includes('strict mode') || msg.includes('more than one'))
+              return err(
+                `Multiple elements matched "${target}"`,
+                'Use a more specific selector or add .first()/.nth(0)'
+              );
+            return err(
+              `Click failed on "${target}": ${msg.slice(0, 150)}`,
+              'Use "snapshot" to check the current page state'
+            );
           }
         }
 
         case 'fill': {
           const p = await ensureBrowser();
-          if (!target) return err('fill requires a target element', 'Use a CSS selector, placeholder="...", or label="..."');
-          if (value === undefined) return err('fill requires a value', 'Provide the text to fill via the value parameter');
+          if (!target)
+            return err(
+              'fill requires a target element',
+              'Use a CSS selector, placeholder="...", or label="..."'
+            );
+          if (value === undefined)
+            return err('fill requires a value', 'Provide the text to fill via the value parameter');
           try {
             const locator = await resolveLocator(p, target);
-            const isSecret = target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
+            const isSecret =
+              target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
             await humanType(locator, p, value, isSecret);
             const ss = await autoScreenshot(p, 'fill');
             return ok(`Filled "${target}" (Humanized typing)`, {
-              value: value.length > 50 ? value.slice(0, 50) + '...' : (isSecret ? '***' : value),
+              value: value.length > 50 ? value.slice(0, 50) + '...' : isSecret ? '***' : value,
               screenshot: ss,
             });
           } catch (e: any) {
             const msg = e.message || String(e);
-            if (msg.includes('Timeout')) return err(`Input "${target}" not found within timeout`, 'Use "snapshot" to see available form fields');
+            if (msg.includes('Timeout'))
+              return err(
+                `Input "${target}" not found within timeout`,
+                'Use "snapshot" to see available form fields'
+              );
             try {
               const locator = await resolveLocator(p, target);
               await locator.first().click({ timeout: 3000 });
@@ -1023,35 +1212,55 @@ except Exception as e:
                 screenshot: ss,
               });
             } catch (e2: any) {
-              return err(`Fill failed on "${target}": ${msg.slice(0, 150)}`, 'Use "type" action directly, or "snapshot" to find a better selector');
+              return err(
+                `Fill failed on "${target}": ${msg.slice(0, 150)}`,
+                'Use "type" action directly, or "snapshot" to find a better selector'
+              );
             }
           }
         }
 
         case 'type': {
           const p = await ensureBrowser();
-          if (!target) return err('type requires a target element', 'Use a CSS selector, placeholder="...", or label="..."');
-          if (value === undefined) return err('type requires a value', 'Provide the text to type via the value parameter');
+          if (!target)
+            return err(
+              'type requires a target element',
+              'Use a CSS selector, placeholder="...", or label="..."'
+            );
+          if (value === undefined)
+            return err('type requires a value', 'Provide the text to type via the value parameter');
           try {
             const locator = await resolveLocator(p, target);
-            const isSecret = target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
+            const isSecret =
+              target.toLowerCase().includes('password') || target.toLowerCase().includes('secret');
             await humanType(locator, p, value, isSecret);
             const ss = await autoScreenshot(p, 'type');
             return ok(`Typed into "${target}" (Humanized typing)`, {
-              value: value.length > 50 ? value.slice(0, 50) + '...' : (isSecret ? '***' : value),
+              value: value.length > 50 ? value.slice(0, 50) + '...' : isSecret ? '***' : value,
               screenshot: ss,
             });
           } catch (e: any) {
             const msg = e.message || String(e);
-            if (msg.includes('Timeout')) return err(`Element "${target}" not found within timeout`, 'Use "snapshot" to see available elements');
-            return err(`Type failed on "${target}": ${msg.slice(0, 150)}`, 'Use "snapshot" to check the current page state');
+            if (msg.includes('Timeout'))
+              return err(
+                `Element "${target}" not found within timeout`,
+                'Use "snapshot" to see available elements'
+              );
+            return err(
+              `Type failed on "${target}": ${msg.slice(0, 150)}`,
+              'Use "snapshot" to check the current page state'
+            );
           }
         }
 
         case 'press-key': {
           const p = await ensureBrowser();
           const key = value || target;
-          if (!key) return err('press-key requires a key', 'Examples: "Enter", "Tab", "Escape", "Control+a"');
+          if (!key)
+            return err(
+              'press-key requires a key',
+              'Examples: "Enter", "Tab", "Escape", "Control+a"'
+            );
           try {
             await p.keyboard.press(key);
             await p.waitForTimeout(300);
@@ -1061,14 +1270,25 @@ except Exception as e:
               screenshot: ss,
             });
           } catch (e: any) {
-            return err(`Key press failed: ${e.message.slice(0, 150)}`, 'Check valid key names at Playwright docs (e.g. "Enter", "Tab", "Control+a")');
+            return err(
+              `Key press failed: ${e.message.slice(0, 150)}`,
+              'Check valid key names at Playwright docs (e.g. "Enter", "Tab", "Control+a")'
+            );
           }
         }
 
         case 'select': {
           const p = await ensureBrowser();
-          if (!target) return err('select requires a target <select> element', 'Use a CSS selector for the <select> element');
-          if (value === undefined) return err('select requires a value (option value)', 'Provide the option value to select');
+          if (!target)
+            return err(
+              'select requires a target <select> element',
+              'Use a CSS selector for the <select> element'
+            );
+          if (value === undefined)
+            return err(
+              'select requires a value (option value)',
+              'Provide the option value to select'
+            );
           try {
             const locator = await resolveLocator(p, target);
             await locator.first().selectOption(value, { timeout });
@@ -1076,9 +1296,20 @@ except Exception as e:
             return ok(`Selected "${value}" in "${target}"`, { screenshot: ss });
           } catch (e: any) {
             const msg = e.message || String(e);
-            if (msg.includes('Timeout')) return err(`Select element "${target}" not found`, 'Use "snapshot" to find the correct selector');
-            if (msg.includes('not a <select>')) return err(`"${target}" is not a <select> element`, 'Find the correct <select> element with "snapshot"');
-            return err(`Select failed: ${msg.slice(0, 150)}`, 'Use "snapshot" to check available options');
+            if (msg.includes('Timeout'))
+              return err(
+                `Select element "${target}" not found`,
+                'Use "snapshot" to find the correct selector'
+              );
+            if (msg.includes('not a <select>'))
+              return err(
+                `"${target}" is not a <select> element`,
+                'Find the correct <select> element with "snapshot"'
+              );
+            return err(
+              `Select failed: ${msg.slice(0, 150)}`,
+              'Use "snapshot" to check available options'
+            );
           }
         }
 
@@ -1103,9 +1334,10 @@ except Exception as e:
               const tag = node.tagName?.toLowerCase() || '';
               const role = node.getAttribute('role') || '';
               const ariaLabel = node.getAttribute('aria-label') || '';
-              const text = node.childNodes.length === 1 && node.childNodes[0].nodeType === 3
-                ? (node.childNodes[0] as Text).textContent?.trim().slice(0, 80) || ''
-                : '';
+              const text =
+                node.childNodes.length === 1 && node.childNodes[0].nodeType === 3
+                  ? (node.childNodes[0] as Text).textContent?.trim().slice(0, 80) || ''
+                  : '';
               const href = node.getAttribute('href') || '';
               const type = node.getAttribute('type') || '';
               const name = node.getAttribute('name') || '';
@@ -1196,7 +1428,7 @@ except Exception as e:
             const progress = i / steps;
             // Ease out cubic
             const ease = 1 - Math.pow(1 - progress, 3);
-            const stepY = (totalY * ease) - currentY;
+            const stepY = totalY * ease - currentY;
             currentY += stepY;
 
             await p.mouse.wheel(0, stepY);
@@ -1209,12 +1441,12 @@ except Exception as e:
             const correctionSteps = 5 + Math.floor(Math.random() * 5);
             let cCurrentY = 0;
             for (let i = 1; i <= correctionSteps; i++) {
-               const progress = i / correctionSteps;
-               const ease = 1 - Math.pow(1 - progress, 3);
-               const stepY = (-overshootAmount * ease) - cCurrentY;
-               cCurrentY += stepY;
-               await p.mouse.wheel(0, stepY);
-               await p.waitForTimeout(20 + Math.random() * 30);
+              const progress = i / correctionSteps;
+              const ease = 1 - Math.pow(1 - progress, 3);
+              const stepY = -overshootAmount * ease - cCurrentY;
+              cCurrentY += stepY;
+              await p.mouse.wheel(0, stepY);
+              await p.waitForTimeout(20 + Math.random() * 30);
             }
           }
 
@@ -1252,13 +1484,15 @@ except Exception as e:
           if (!code) return 'Error: evaluate requires JavaScript code (use value parameter)';
 
           if (consecutiveEvalFailures >= 2 && code === lastEvalCode) {
-            return `STOP. You've tried this exact evaluate code ${consecutiveEvalFailures} times and it failed every time.\n\n` +
+            return (
+              `STOP. You've tried this exact evaluate code ${consecutiveEvalFailures} times and it failed every time.\n\n` +
               `DO NOT use evaluate again. Use these actions instead:\n` +
               `  1. snapshot — see all elements on the page (including inside iframes)\n` +
               `  2. fill target="input[name='email'], #email, input[type='email']" value="..." — fill a field\n` +
               `  3. click target="button[type='submit'], #submit, text=Next" — click a button\n` +
               `  4. type target="<selector>" value="..." — type into a field\n\n` +
-              `These actions automatically search the main page AND all iframes. Start with "snapshot" to find the right selectors.`;
+              `These actions automatically search the main page AND all iframes. Start with "snapshot" to find the right selectors.`
+            );
           }
 
           if (code !== lastEvalCode) {
@@ -1273,7 +1507,11 @@ except Exception as e:
             return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
           } catch (evalErr: any) {
             const errMsg = evalErr.message || String(evalErr);
-            if (errMsg.includes('null') || errMsg.includes('Cannot read propert') || errMsg.includes('Cannot set propert')) {
+            if (
+              errMsg.includes('null') ||
+              errMsg.includes('Cannot read propert') ||
+              errMsg.includes('Cannot set propert')
+            ) {
               lastEvalCode = code;
               consecutiveEvalFailures++;
 
@@ -1288,18 +1526,22 @@ except Exception as e:
               }
 
               if (consecutiveEvalFailures >= 2) {
-                return `STOP — evaluate has failed ${consecutiveEvalFailures} times with the same code. The element does not exist on this page or any iframe.\n\n` +
+                return (
+                  `STOP — evaluate has failed ${consecutiveEvalFailures} times with the same code. The element does not exist on this page or any iframe.\n\n` +
                   `You MUST switch to using click, fill, and type actions NOW. These actions auto-search all frames.\n` +
                   `First, run: action="snapshot" (no target needed) — this shows all elements.\n` +
-                  `Then use the selectors from the snapshot with fill/click/type.`;
+                  `Then use the selectors from the snapshot with fill/click/type.`
+                );
               }
 
-              return `Error: Element not found on main page or iframes (attempt ${consecutiveEvalFailures}).\n\n` +
+              return (
+                `Error: Element not found on main page or iframes (attempt ${consecutiveEvalFailures}).\n\n` +
                 `Use these actions instead — they auto-search all frames including iframes:\n` +
                 `  click target="<selector>"\n` +
                 `  fill target="<selector>" value="<text>"\n` +
                 `  type target="<selector>" value="<text>"\n\n` +
-                `Use "snapshot" first to find the correct selectors.`;
+                `Use "snapshot" first to find the correct selectors.`
+              );
             }
             return `Browser error: ${errMsg.slice(0, 300)}`;
           }
@@ -1323,7 +1565,8 @@ except Exception as e:
           const session = getSession()!;
           const pages = session.context.pages();
           const idx = parseInt(value) || 0;
-          if (idx < 0 || idx >= pages.length) return `Error: tab index ${idx} out of range (0-${pages.length - 1})`;
+          if (idx < 0 || idx >= pages.length)
+            return `Error: tab index ${idx} out of range (0-${pages.length - 1})`;
           session.page = pages[idx];
           sessions.set(currentSessionKey, session);
           await session.page.bringToFront();
@@ -1334,7 +1577,8 @@ except Exception as e:
           const p = await ensureBrowser();
           const session = getSession()!;
           const pages = session.context.pages();
-          if (pages.length <= 1) return 'Cannot close the only tab. Use "close" to shut down the browser.';
+          if (pages.length <= 1)
+            return 'Cannot close the only tab. Use "close" to shut down the browser.';
           const idx = value ? parseInt(value) : pages.indexOf(p);
           const toClose = pages[idx];
           if (!toClose) return `Error: tab index ${idx} not found`;
@@ -1349,7 +1593,12 @@ except Exception as e:
           const session = getSession()!;
           const cookies = await session.context.cookies(value ? [value] : undefined);
           if (cookies.length === 0) return 'No cookies found';
-          return cookies.map(c => `${c.domain} | ${c.name}=${c.value.slice(0, 40)}${c.value.length > 40 ? '...' : ''}`).join('\n');
+          return cookies
+            .map(
+              (c) =>
+                `${c.domain} | ${c.name}=${c.value.slice(0, 40)}${c.value.length > 40 ? '...' : ''}`
+            )
+            .join('\n');
         }
 
         case 'upload': {
@@ -1383,13 +1632,19 @@ except Exception as e:
           }
 
           const pageContent = await p.content();
-          if (pageContent.includes('g-recaptcha') || pageContent.includes('recaptcha')) captchaInfo.push('reCAPTCHA element detected in DOM');
-          if (pageContent.includes('h-captcha') || pageContent.includes('hcaptcha')) captchaInfo.push('hCaptcha element detected in DOM');
-          if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare')) captchaInfo.push('Cloudflare Turnstile detected');
-          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img')) captchaInfo.push('Image verification widget detected — use "solve-captcha" to analyze and complete');
+          if (pageContent.includes('g-recaptcha') || pageContent.includes('recaptcha'))
+            captchaInfo.push('reCAPTCHA element detected in DOM');
+          if (pageContent.includes('h-captcha') || pageContent.includes('hcaptcha'))
+            captchaInfo.push('hCaptcha element detected in DOM');
+          if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare'))
+            captchaInfo.push('Cloudflare Turnstile detected');
+          if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img'))
+            captchaInfo.push(
+              'Image verification widget detected — use "solve-captcha" to analyze and complete'
+            );
 
           if (captchaInfo.length === 0) return 'No verification widgets detected on this page.';
-          return `Verification widgets detected:\n${captchaInfo.map(c => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to complete the verification.`;
+          return `Verification widgets detected:\n${captchaInfo.map((c) => `  - ${c}`).join('\n')}\n\nUse action "solve-captcha" to complete the verification.`;
         }
 
         case 'solve-captcha': {
@@ -1398,641 +1653,896 @@ except Exception as e:
 
           const _solveTimeout = 120_000;
           const _solveLogic = async () => {
+            const frames = p.frames();
+            let captchaType = 'unknown';
 
-          const frames = p.frames();
-          let captchaType = 'unknown';
+            let recaptchaAnchor: any = null;
+            let recaptchaBframe: any = null;
+            let hcaptchaCheckbox: any = null;
+            let hcaptchaChallenge: any = null;
+            let funcaptchaFrame: any = null;
+            let mtcaptchaFrame: any = null;
+            let geetestFrame: any = null;
 
-          let recaptchaAnchor: any = null;
-          let recaptchaBframe: any = null;
-          let hcaptchaCheckbox: any = null;
-          let hcaptchaChallenge: any = null;
-          let funcaptchaFrame: any = null;
-          let mtcaptchaFrame: any = null;
-          let geetestFrame: any = null;
+            for (const frame of frames) {
+              const url = frame.url();
+              if (url.includes('/recaptcha/') && url.includes('/anchor')) recaptchaAnchor = frame;
+              if (url.includes('/recaptcha/') && url.includes('/bframe')) recaptchaBframe = frame;
+              if (url.includes('newassets.hcaptcha.com') && !url.includes('challenge'))
+                hcaptchaCheckbox = frame;
+              if (url.includes('hcaptcha') && url.includes('challenge')) hcaptchaChallenge = frame;
+              if (url.includes('funcaptcha') || url.includes('arkoselabs')) funcaptchaFrame = frame;
+              if (url.includes('service.mtcaptcha')) mtcaptchaFrame = frame;
+              if (
+                (url.includes('geetest.com') || url.includes('captcha.com')) &&
+                !url.includes('recaptcha') &&
+                !url.includes('hcaptcha')
+              )
+                geetestFrame = frame;
+            }
 
-          for (const frame of frames) {
-            const url = frame.url();
-            if (url.includes('/recaptcha/') && url.includes('/anchor')) recaptchaAnchor = frame;
-            if (url.includes('/recaptcha/') && url.includes('/bframe')) recaptchaBframe = frame;
-            if (url.includes('newassets.hcaptcha.com') && !url.includes('challenge')) hcaptchaCheckbox = frame;
-            if (url.includes('hcaptcha') && url.includes('challenge')) hcaptchaChallenge = frame;
-            if (url.includes('funcaptcha') || url.includes('arkoselabs')) funcaptchaFrame = frame;
-            if (url.includes('service.mtcaptcha')) mtcaptchaFrame = frame;
-            if ((url.includes('geetest.com') || url.includes('captcha.com')) && !url.includes('recaptcha') && !url.includes('hcaptcha')) geetestFrame = frame;
-          }
+            if (recaptchaAnchor) captchaType = 'recaptcha';
+            else if (hcaptchaCheckbox) captchaType = 'hcaptcha';
+            else if (funcaptchaFrame) captchaType = 'funcaptcha';
+            else if (mtcaptchaFrame) captchaType = 'mtcaptcha';
+            else if (geetestFrame) captchaType = 'geetest';
 
-          if (recaptchaAnchor) captchaType = 'recaptcha';
-          else if (hcaptchaCheckbox) captchaType = 'hcaptcha';
-          else if (funcaptchaFrame) captchaType = 'funcaptcha';
-          else if (mtcaptchaFrame) captchaType = 'mtcaptcha';
-          else if (geetestFrame) captchaType = 'geetest';
+            const pageContent = await p.content();
+            if (
+              captchaType === 'unknown' &&
+              (pageContent.includes('cf-turnstile') ||
+                pageContent.includes('challenges.cloudflare'))
+            ) {
+              captchaType = 'turnstile';
+            }
+            if (
+              captchaType === 'unknown' &&
+              (pageContent.includes('mtcaptcha') || pageContent.includes('MTCaptcha'))
+            ) {
+              captchaType = 'mtcaptcha';
+            }
+            if (captchaType === 'unknown' && recaptchaBframe) captchaType = 'recaptcha';
 
-          const pageContent = await p.content();
-          if (captchaType === 'unknown' && (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare'))) {
-            captchaType = 'turnstile';
-          }
-          if (captchaType === 'unknown' && (pageContent.includes('mtcaptcha') || pageContent.includes('MTCaptcha'))) {
-            captchaType = 'mtcaptcha';
-          }
-          if (captchaType === 'unknown' && recaptchaBframe) captchaType = 'recaptcha';
-
-          if (captchaType === 'recaptcha') {
-            results.push('Attempting reCAPTCHA...');
-            try {
-              if (recaptchaBframe) {
-                results.push('Image challenge already visible. Auto-solving...');
-                const maxRetries = 5;
-                let solved = false;
-                for (let attempt = 0; attempt < maxRetries; attempt++) {
-                  if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
-                  const solveResult = await solveCaptchaGrid(p, recaptchaBframe, 'recaptcha');
-                  results.push(solveResult);
-                  if (solveResult.includes('CAPTCHA SOLVED')) { solved = true; break; }
-                  if (solveResult.includes('Falling back to manual mode')) break;
-                  await p.waitForTimeout(2000);
-                  const refreshedFrames = p.frames();
-                  const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                  if (!newChallenge) { results.push('Challenge frame disappeared, captcha may be solved'); solved = true; break; }
-                  recaptchaBframe = newChallenge;
-                }
-                if (!solved && !results.some(r => r.includes('Falling back'))) {
-                  results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
-                }
-              } else {
-              let checkboxFrame = recaptchaAnchor;
-              if (!checkboxFrame) {
-                for (const frame of frames) {
-                  const url = frame.url();
-                  if (url.includes('recaptcha') && (url.includes('anchor') || url.includes('api2/'))) {
-                    checkboxFrame = frame;
-                    break;
+            if (captchaType === 'recaptcha') {
+              results.push('Attempting reCAPTCHA...');
+              try {
+                if (recaptchaBframe) {
+                  results.push('Image challenge already visible. Auto-solving...');
+                  const maxRetries = 5;
+                  let solved = false;
+                  for (let attempt = 0; attempt < maxRetries; attempt++) {
+                    if (attempt > 0)
+                      results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                    const solveResult = await solveCaptchaGrid(p, recaptchaBframe, 'recaptcha');
+                    results.push(solveResult);
+                    if (solveResult.includes('CAPTCHA SOLVED')) {
+                      solved = true;
+                      break;
+                    }
+                    if (solveResult.includes('Falling back to manual mode')) break;
+                    await p.waitForTimeout(2000);
+                    const refreshedFrames = p.frames();
+                    const newChallenge = refreshedFrames.find(
+                      (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                    );
+                    if (!newChallenge) {
+                      results.push('Challenge frame disappeared, captcha may be solved');
+                      solved = true;
+                      break;
+                    }
+                    recaptchaBframe = newChallenge;
                   }
-                }
-              }
-
-              if (checkboxFrame) {
-                const checkbox = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox, .recaptcha-checkbox-border, .recaptcha-checkbox-checkmark, [id="recaptcha-anchor"]');
-                if (await checkbox.count() > 0) {
-                  await p.waitForTimeout(1000 + Math.random() * 1500);
-                  await humanClick(checkbox, p);
-                  await p.waitForTimeout(3000);
-
-                  const updatedFrames = p.frames();
-                  let challengeFrame = updatedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                  if (challengeFrame) {
-                    results.push('Image challenge appeared. Auto-solving...');
-                    const maxRetries = 5;
-                    let solved = false;
-                    for (let attempt = 0; attempt < maxRetries; attempt++) {
-                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
-                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
-                      results.push(solveResult);
-
-                      if (solveResult.includes('CAPTCHA SOLVED')) {
-                        solved = true;
-                        break;
-                      }
-
-                      if (solveResult.includes('Falling back to manual mode')) {
-                        break;
-                      }
-
-                      await p.waitForTimeout(2000);
-                      const refreshedFrames = p.frames();
-                      const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                      if (!newChallenge) {
-                        results.push('Challenge frame disappeared, captcha may be solved');
-                        solved = true;
-                        break;
-                      }
-                      challengeFrame = newChallenge;
-                    }
-                    if (!solved && !results.some(r => r.includes('Falling back'))) {
-                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
-                    }
-                  } else {
-                    const checkmark = checkboxFrame.locator('.recaptcha-checkbox-checked, .rc-anchor-checkbox-checked');
-                    if (await checkmark.count() > 0) {
-                      results.push(ok('reCAPTCHA solved — no image challenge needed', { status: 'verified' }));
-                    } else {
-                      results.push(warn('Checkbox clicked but verification unclear', { suggestion: 'Use "captcha-grid" to check for image challenge' }));
-                    }
+                  if (!solved && !results.some((r) => r.includes('Falling back'))) {
+                    results.push(
+                      `\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
+                    );
                   }
                 } else {
-                  results.push(warn('reCAPTCHA anchor frame found but checkbox element missing', { action: 'clicking anchor body to trigger challenge' }));
-                  const anchor = checkboxFrame.locator('#recaptcha-anchor, .recaptcha-checkbox-area, [role="presentation"], .recaptcha-checkbox-border, body').first();
-                  await humanClick(anchor, p).catch(() => {});
-                  await p.waitForTimeout(4000);
-
-                  let retryFrames = p.frames();
-                  let challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                  if (!challengeFrame) {
-                    await anchor.click({ force: true }).catch(() => {});
-                    await p.waitForTimeout(3000);
-                    retryFrames = p.frames();
-                    challengeFrame = retryFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                  }
-                  if (challengeFrame) {
-                    results.push('Image challenge appeared after clicking anchor. Auto-solving...');
-                    const maxRetries = 5;
-                    let solved = false;
-                    for (let attempt = 0; attempt < maxRetries; attempt++) {
-                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
-                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'recaptcha');
-                      results.push(solveResult);
-                      if (solveResult.includes('CAPTCHA SOLVED')) { solved = true; break; }
-                      if (solveResult.includes('Falling back to manual mode')) break;
-                      await p.waitForTimeout(2000);
-                      const refreshedFrames = p.frames();
-                      const newChallenge = refreshedFrames.find(f => f.url().includes('/recaptcha/') && f.url().includes('/bframe'));
-                      if (!newChallenge) { results.push('Challenge frame disappeared, captcha may be solved'); solved = true; break; }
-                      challengeFrame = newChallenge;
-                    }
-                    if (!solved && !results.some(r => r.includes('Falling back'))) {
-                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
-                    }
-                  } else {
-                    results.push('No challenge appeared after clicking anchor. Use "captcha-grid" to check state.');
-                  }
-                }
-              } else {
-                results.push(warn('No reCAPTCHA anchor frame found', { action: 'trying main page widget' }));
-                const mainCheckbox = p.locator('.g-recaptcha, [data-sitekey]');
-                if (await mainCheckbox.count() > 0) {
-                  await humanClick(mainCheckbox, p);
-                  await p.waitForTimeout(3000);
-                  results.push('Clicked reCAPTCHA widget. Use "captcha-grid" if image challenge appeared.');
-                } else {
-                  results.push(err('reCAPTCHA widget not found on page', 'Check if the page has loaded or use "detect-captcha" first'));
-                }
-              }
-              } // close else (no bframe)
-            } catch (e: any) {
-              results.push(err(`reCAPTCHA click failed: ${e.message}`, 'Use "detect-captcha" first, then retry "solve-captcha"'));
-            }
-          }
-
-          if (captchaType === 'hcaptcha') {
-            results.push('Attempting hCaptcha...');
-            try {
-              const checkboxFrame = hcaptchaCheckbox;
-              if (checkboxFrame) {
-                const checkbox = checkboxFrame.locator('#checkbox, .check');
-                if (await checkbox.count() > 0) {
-                  await p.waitForTimeout(800 + Math.random() * 1200);
-                  await humanClick(checkbox, p);
-                  await p.waitForTimeout(3000);
-
-                  const updatedFrames = p.frames();
-                  let challengeFrame = updatedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
-                  if (challengeFrame) {
-                    results.push('Image challenge appeared. Auto-solving...');
-                    const maxRetries = 5;
-                    let solved = false;
-                    for (let attempt = 0; attempt < maxRetries; attempt++) {
-                      if (attempt > 0) results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
-                      const solveResult = await solveCaptchaGrid(p, challengeFrame, 'hcaptcha');
-                      results.push(solveResult);
-
-                      if (solveResult.includes('CAPTCHA SOLVED')) {
-                        solved = true;
+                  let checkboxFrame = recaptchaAnchor;
+                  if (!checkboxFrame) {
+                    for (const frame of frames) {
+                      const url = frame.url();
+                      if (
+                        url.includes('recaptcha') &&
+                        (url.includes('anchor') || url.includes('api2/'))
+                      ) {
+                        checkboxFrame = frame;
                         break;
                       }
-
-                      if (solveResult.includes('Falling back to manual mode')) {
-                        break;
-                      }
-
-                      await p.waitForTimeout(2000);
-                      const refreshedFrames = p.frames();
-                      const newChallenge = refreshedFrames.find((f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge'));
-                      if (!newChallenge) {
-                        results.push('Challenge frame disappeared, captcha may be solved');
-                        solved = true;
-                        break;
-                      }
-                      challengeFrame = newChallenge;
-                    }
-                    if (!solved && !results.some(r => r.includes('Falling back'))) {
-                      results.push(`\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
-                    }
-                  } else {
-                    const checkmark = checkboxFrame.locator('.check.solved, #checkbox[aria-checked="true"]');
-                    if (await checkmark.count() > 0) {
-                      results.push(ok('hCaptcha solved', { status: 'verified' }));
-                    } else {
-                      results.push(warn('hCaptcha checkbox clicked, status unclear', { suggestion: 'Use "captcha-grid" to check for image challenge' }));
                     }
                   }
-                } else {
-                  results.push(err('hCaptcha checkbox element not found in frame'));
-                }
-              } else {
-                results.push(err('hCaptcha checkbox frame not found', 'Use "detect-captcha" to scan for captcha type'));
-              }
-            } catch (e: any) {
-              results.push(err(`hCaptcha click failed: ${e.message}`));
-            }
-          }
 
-          if (captchaType === 'turnstile') {
-            results.push('Attempting Cloudflare Turnstile...');
-            try {
-              // Managed challenge with auto-retry: clicks checkbox → waits → reloads if still blocked
-              // CloakBrowser's good fingerprinting means managed challenges often pass silently
-              const maxRetries = 3;
-              let resolved = false;
-              for (let attempt = 0; attempt < maxRetries; attempt++) {
-                if (attempt > 0) results.push(`Turnstile retry ${attempt}/${maxRetries}...`);
-                const tFrame = p.frames().find(f => f.url().includes('challenges.cloudflare'));
-                if (tFrame) {
-                  await p.waitForTimeout(1000 + Math.random() * 1000);
-                  const cb = tFrame.locator('input[type="checkbox"], .cb-lb, #challenge-stage label');
-                  if (await cb.count() > 0) {
-                    await humanClick(cb, p);
-                  } else {
-                    await tFrame.locator('body').click({ timeout: 3000 }).catch(() => {});
-                  }
-                  await p.waitForTimeout(4000);
-                }
-                // Check if resolved
-                const c = await p.content();
-                if (!c.includes('cf-turnstile') && !c.includes('challenges.cloudflare')) {
-                  resolved = true;
-                  results.push(ok('Cloudflare Turnstile bypassed — page unlocked'));
-                  break;
-                }
-                // Reload to trigger fresh managed challenge
-                if (attempt < maxRetries - 1) {
-                  await p.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-                  await p.waitForTimeout(2000);
-                }
-              }
-              if (!resolved) {
-                results.push(warn('Turnstile still active after retries — try switching proxy or waiting'));
-              }
-            } catch (e: any) {
-              results.push(err(`Turnstile error: ${e.message}`, 'Try reloading the page or switching proxy'));
-            }
-          }
+                  if (checkboxFrame) {
+                    const checkbox = checkboxFrame.locator(
+                      '#recaptcha-anchor, .recaptcha-checkbox, .rc-anchor-checkbox, .recaptcha-checkbox-border, .recaptcha-checkbox-checkmark, [id="recaptcha-anchor"]'
+                    );
+                    if ((await checkbox.count()) > 0) {
+                      await p.waitForTimeout(1000 + Math.random() * 1500);
+                      await humanClick(checkbox, p);
+                      await p.waitForTimeout(3000);
 
-          if (captchaType === 'funcaptcha') {
-            results.push('FunCaptcha (Arkose Labs) detected. Solving via API-level solver (BDA fingerprint + audio/vision)...');
-            try {
-              // Extract public key and service URL from the FunCaptcha iframe
-              const fcFrameUrl = funcaptchaFrame ? await (async () => {
-                try { return funcaptchaFrame.url(); } catch { return ''; }
-              })() : '';
-
-              let resolvedPkey: string | null = extractPublicKey(fcFrameUrl);
-              if (!resolvedPkey) {
-                // Fallback: try to find public key from page content
-                resolvedPkey = await p.evaluate(() => {
-                  const scripts = document.querySelectorAll('script');
-                  for (const s of scripts) {
-                    const m = s.textContent?.match(/public_key['":\s]+([A-F0-9-]{36})/i);
-                    if (m) return m[1];
-                  }
-                  const iframes = document.querySelectorAll('iframe');
-                  for (const f of iframes) {
-                    const m = (f as HTMLIFrameElement).src.match(/public_key\/([A-F0-9-]{36})/i)
-                      || (f as HTMLIFrameElement).src.match(/#([A-F0-9-]{36})/i);
-                    if (m) return m[1];
-                  }
-                  return null;
-                }).catch(() => null);
-              }
-
-              if (!resolvedPkey) {
-                results.push(err('Could not extract FunCaptcha public key from page'));
-              } else {
-                results.push(`Public key: ${resolvedPkey}`);
-
-              const serviceUrl = extractServiceUrl(fcFrameUrl);
-              const siteUrl = await p.url();
-              const proxyUrl = sessionProxies.get(currentSessionKey) || browserProxy || '';
-
-              // Build vision callback using existing visionClassify
-              const visionFn = async (imgBase64: string, prompt: string): Promise<string> => {
-                return visionClassify(imgBase64, prompt);
-              };
-
-              const solver = new FuncaptchaSolver({
-                publicKey: resolvedPkey,
-                serviceUrl,
-                site: siteUrl,
-                proxy: proxyUrl || undefined,
-                visionFn,
-              });
-
-              // Try up to 2 full solve cycles
-              let solveResult: any = null;
-              for (let attempt = 0; attempt < 2; attempt++) {
-                if (attempt > 0) results.push(`Retry ${attempt + 1}/2...`);
-                solveResult = await solver.solve();
-                if (solveResult.success) break;
-                results.push(`Attempt ${attempt + 1} failed: ${solveResult.error}`);
-              }
-
-              if (solveResult?.success) {
-                results.push(`[OK] FunCaptcha solved via ${solveResult.method}! (${solveResult.solveTime}ms)`);
-
-                // Inject the solved token into the page
-                if (solveResult.token) {
-                  await p.evaluate((token: string) => {
-                    // Standard Arkose callback injection
-                    const callbackNames = ['funcaptchaCallback', 'arkoseCallback', 'onFunCaptchaSuccess', 'enforcementCallback'];
-                    for (const name of callbackNames) {
-                      if (typeof (window as any)[name] === 'function') {
-                        (window as any)[name]({ token });
-                        return;
-                      }
-                    }
-                    // Fallback: set hidden input
-                    const inputs = document.querySelectorAll('input[name*="captcha"], input[name*="token"], input[name*="fc-token"], input[name*="arkose"]');
-                    for (const input of inputs) {
-                      (input as HTMLInputElement).value = token;
-                    }
-                    // Also try global enforcement object
-                    if ((window as any).ArkoseEnforcement) {
-                      try { (window as any).ArkoseEnforcement.setConfig({ data: { token } }); } catch {}
-                    }
-                  }, solveResult.token).catch(() => {});
-                  results.push('Token injected into page.');
-                }
-              } else {
-                results.push(err(`FunCaptcha API solver failed: ${solveResult?.error || 'unknown'}`));
-                results.push('Falling back to visual solving via browser...');
-
-                // Fallback: Check for Microsoft "Press and hold" variant
-                if (funcaptchaFrame) {
-                  const hasHoldButton = await funcaptchaFrame.locator('button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]').count();
-                  const accessibilityBtn = await funcaptchaFrame.locator('button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn').count();
-
-                  if (hasHoldButton > 0 || accessibilityBtn > 0) {
-                    results.push('[INFO] Detected Microsoft "Press and hold" / Accessibility variant.');
-
-                    if (accessibilityBtn > 0 && hasHoldButton === 0) {
-                       results.push('Clicking accessibility mode button to reveal hold button...');
-                       await funcaptchaFrame.locator('button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn').first().click();
-                       await p.waitForTimeout(1000);
-                    }
-
-                    const holdBtn = funcaptchaFrame.locator('button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]').first();
-                    if (await holdBtn.count() > 0) {
-                      results.push('Executing automated HOLD action...');
-                      const box = await holdBtn.boundingBox();
-                      if (box) {
-                        const cx = box.x + box.width / 2;
-                        const cy = box.y + box.height / 2;
-
-                        await p.mouse.move(cx, cy, { steps: 10 });
-                        await p.waitForTimeout(200);
-                        await p.mouse.down();
-
-                        // Hold for up to 10 seconds, waiting for success indicator
+                      const updatedFrames = p.frames();
+                      let challengeFrame = updatedFrames.find(
+                        (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                      );
+                      if (challengeFrame) {
+                        results.push('Image challenge appeared. Auto-solving...');
+                        const maxRetries = 5;
                         let solved = false;
-                        for (let i = 0; i < 20; i++) { // 20 * 500ms = 10s
-                          await p.waitForTimeout(500);
-                          const success = await funcaptchaFrame.locator('[class*="success"], [class*="correct"], [class*="verified"], .game-success').count();
-                          if (success > 0) {
+                        for (let attempt = 0; attempt < maxRetries; attempt++) {
+                          if (attempt > 0)
+                            results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                          const solveResult = await solveCaptchaGrid(
+                            p,
+                            challengeFrame,
+                            'recaptcha'
+                          );
+                          results.push(solveResult);
+
+                          if (solveResult.includes('CAPTCHA SOLVED')) {
                             solved = true;
                             break;
                           }
+
+                          if (solveResult.includes('Falling back to manual mode')) {
+                            break;
+                          }
+
+                          await p.waitForTimeout(2000);
+                          const refreshedFrames = p.frames();
+                          const newChallenge = refreshedFrames.find(
+                            (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                          );
+                          if (!newChallenge) {
+                            results.push('Challenge frame disappeared, captcha may be solved');
+                            solved = true;
+                            break;
+                          }
+                          challengeFrame = newChallenge;
                         }
-
-                        await p.mouse.up();
-
-                        if (solved) {
-                           results.push('[OK] Microsoft Press and Hold captcha solved successfully!');
-                        } else {
-                           results.push('[WARN] Hold action completed but success indicator not detected. It might have succeeded anyway.');
+                        if (!solved && !results.some((r) => r.includes('Falling back'))) {
+                          results.push(
+                            `\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
+                          );
                         }
                       } else {
-                        results.push(err('Could not find bounding box for hold button.'));
+                        const checkmark = checkboxFrame.locator(
+                          '.recaptcha-checkbox-checked, .rc-anchor-checkbox-checked'
+                        );
+                        if ((await checkmark.count()) > 0) {
+                          results.push(
+                            ok('reCAPTCHA solved — no image challenge needed', {
+                              status: 'verified',
+                            })
+                          );
+                        } else {
+                          results.push(
+                            warn('Checkbox clicked but verification unclear', {
+                              suggestion: 'Use "captcha-grid" to check for image challenge',
+                            })
+                          );
+                        }
                       }
                     } else {
-                      results.push('Hold button still not visible after accessibility toggle. Use screenshot + click/drag to solve manually.');
+                      results.push(
+                        warn('reCAPTCHA anchor frame found but checkbox element missing', {
+                          action: 'clicking anchor body to trigger challenge',
+                        })
+                      );
+                      const anchor = checkboxFrame
+                        .locator(
+                          '#recaptcha-anchor, .recaptcha-checkbox-area, [role="presentation"], .recaptcha-checkbox-border, body'
+                        )
+                        .first();
+                      await humanClick(anchor, p).catch(() => {});
+                      await p.waitForTimeout(4000);
+
+                      let retryFrames = p.frames();
+                      let challengeFrame = retryFrames.find(
+                        (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                      );
+                      if (!challengeFrame) {
+                        await anchor.click({ force: true }).catch(() => {});
+                        await p.waitForTimeout(3000);
+                        retryFrames = p.frames();
+                        challengeFrame = retryFrames.find(
+                          (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                        );
+                      }
+                      if (challengeFrame) {
+                        results.push(
+                          'Image challenge appeared after clicking anchor. Auto-solving...'
+                        );
+                        const maxRetries = 5;
+                        let solved = false;
+                        for (let attempt = 0; attempt < maxRetries; attempt++) {
+                          if (attempt > 0)
+                            results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                          const solveResult = await solveCaptchaGrid(
+                            p,
+                            challengeFrame,
+                            'recaptcha'
+                          );
+                          results.push(solveResult);
+                          if (solveResult.includes('CAPTCHA SOLVED')) {
+                            solved = true;
+                            break;
+                          }
+                          if (solveResult.includes('Falling back to manual mode')) break;
+                          await p.waitForTimeout(2000);
+                          const refreshedFrames = p.frames();
+                          const newChallenge = refreshedFrames.find(
+                            (f) => f.url().includes('/recaptcha/') && f.url().includes('/bframe')
+                          );
+                          if (!newChallenge) {
+                            results.push('Challenge frame disappeared, captcha may be solved');
+                            solved = true;
+                            break;
+                          }
+                          challengeFrame = newChallenge;
+                        }
+                        if (!solved && !results.some((r) => r.includes('Falling back'))) {
+                          results.push(
+                            `\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
+                          );
+                        }
+                      } else {
+                        results.push(
+                          'No challenge appeared after clicking anchor. Use "captcha-grid" to check state.'
+                        );
+                      }
                     }
                   } else {
-                    results.push('Use screenshot + click/drag to solve manually.');
-                  }
-                }
-              }
-              } // end resolvedPkey else
-            } catch (e: any) {
-              results.push(err(`FunCaptcha auto-solve failed: ${e.message}`));
-            }
-          }
-
-          if (captchaType === 'mtcaptcha' || captchaType === 'geetest') {
-            results.push(`Detected ${captchaType} challenge. Analyzing...`);
-            const targetFrame = mtcaptchaFrame || geetestFrame || p;
-
-            const hasSlider = await targetFrame.locator('.geetest_slider_button, .geetest_slider, [class*="slider_button"], [class*="slider-track"]').count();
-            if (hasSlider > 0) {
-              results.push('Type: SLIDER puzzle');
-
-              const puzzleEl = targetFrame.locator('.geetest_panel, .geetest_widget, [class*="geetest_container"]').first();
-              const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
-              try {
-                if (await puzzleEl.count() > 0) await puzzleEl.screenshot({ path: screenshotPath });
-                else await p.screenshot({ path: screenshotPath });
-              } catch { await p.screenshot({ path: screenshotPath }); }
-              results.push(`Puzzle screenshot: ${screenshotPath}`);
-
-              const maxAttempts = 3;
-              for (let attempt = 0; attempt < maxAttempts; attempt++) {
-                if (attempt > 0) results.push(`\nSlider retry ${attempt}/${maxAttempts - 1}...`);
-
-                const sliderInfo = await targetFrame.evaluate(() => {
-                  const info: Record<string, any> = {};
-                  const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"]');
-                  if (cut) {
-                    const cutRect = cut.getBoundingClientRect();
-                    const style = window.getComputedStyle(cut);
-                    info.cut = { left: cutRect.left, width: cutRect.width, styleLeft: parseFloat(style.left) || null, transform: style.transform || null };
-                  }
-                  const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
-                  if (bg) {
-                    const bgRect = bg.getBoundingClientRect();
-                    info.bg = { left: bgRect.left, width: bgRect.width };
-                  }
-                  const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"]');
-                  if (piece) {
-                    const pieceRect = piece.getBoundingClientRect();
-                    info.piece = { left: pieceRect.left, width: pieceRect.width };
-                  }
-                  const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"]');
-                  if (slider) {
-                    const sliderRect = slider.getBoundingClientRect();
-                    info.slider = { left: sliderRect.left, width: sliderRect.width, centerX: sliderRect.left + sliderRect.width / 2, centerY: sliderRect.top + sliderRect.height / 2 };
-                  }
-                  const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"]');
-                  if (track) info.track = { width: track.getBoundingClientRect().width };
-                  return info;
-                });
-
-                let gapOffset: number | null = null;
-                if (sliderInfo.cut && sliderInfo.bg) {
-                  if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) {
-                    gapOffset = Math.round(sliderInfo.cut.styleLeft);
-                  } else {
-                    gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
-                  }
-                }
-                if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
-                  const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
-                  if (match) gapOffset = Math.round(parseFloat(match[1]));
-                }
-
-                if (gapOffset === null) {
-                  results.push('DOM gap detection failed, using vision model...');
-                  try {
-                    const ssBase64 = readFileBase64(screenshotPath);
-                    const visionResp = await visionClassify(ssBase64,
-                      'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").');
-                    const parsed = parseInt(visionResp.replace(/[^\d]/g, ''));
-                    if (!isNaN(parsed) && parsed > 10 && parsed < 500) {
-                      gapOffset = parsed;
-                      results.push(`Vision model: gap at ~${gapOffset}px`);
+                    results.push(
+                      warn('No reCAPTCHA anchor frame found', { action: 'trying main page widget' })
+                    );
+                    const mainCheckbox = p.locator('.g-recaptcha, [data-sitekey]');
+                    if ((await mainCheckbox.count()) > 0) {
+                      await humanClick(mainCheckbox, p);
+                      await p.waitForTimeout(3000);
+                      results.push(
+                        'Clicked reCAPTCHA widget. Use "captcha-grid" if image challenge appeared.'
+                      );
                     } else {
-                      results.push(`Vision model returned: "${visionResp}" — could not parse gap position`);
+                      results.push(
+                        err(
+                          'reCAPTCHA widget not found on page',
+                          'Check if the page has loaded or use "detect-captcha" first'
+                        )
+                      );
                     }
-                  } catch (e: any) {
-                    results.push(`Vision model failed: ${e.message}`);
                   }
-                }
-
-                if (gapOffset === null) {
-                  results.push('[WARN] Could not determine gap position. Use "slider-analyze" for manual analysis, then "drag-to" to slide.');
-                  break;
-                }
-
-                const pieceHalf = Math.round((sliderInfo.piece?.width || 44) / 2);
-                const adjusted = gapOffset - pieceHalf;
-                results.push(`Gap: ${gapOffset}px, piece half: ${pieceHalf}px, drag distance: ${adjusted}px`);
-
-                if (sliderInfo.slider) {
-                  try {
-                    const startX = sliderInfo.slider.centerX;
-                    const startY = sliderInfo.slider.centerY;
-                    const endX = startX + adjusted;
-
-                    await humanMove(startX, startY, p);
-                    await p.waitForTimeout(150 + Math.random() * 250);
-                    await p.mouse.down();
-                    await p.waitForTimeout(200 + Math.random() * 300);
-
-                    const steps = 25 + Math.floor(Math.random() * 20);
-                    for (let i = 1; i <= steps; i++) {
-                      const progress = i / steps;
-                      const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-                      const x = startX + adjusted * eased + (Math.random() - 0.5) * 2;
-                      const y = startY + (Math.random() - 0.5) * 2;
-                      await p.mouse.move(x, y);
-                      await p.waitForTimeout(10 + Math.random() * 20);
-                    }
-                    await p.mouse.move(endX, startY);
-                    await p.waitForTimeout(150);
-                    await p.mouse.up();
-                    await p.waitForTimeout(2000);
-
-                    results.push('Slider dragged, checking result...');
-
-                    const successEl = await targetFrame.locator('.geetest_success, .geetest_tip_success, [class*="success"], [class*="verified"]').count();
-                    if (successEl > 0) {
-                      results.push('[OK] Slider captcha solved!');
-                      break;
-                    }
-
-                    const failEl = await targetFrame.locator('.geetest_fail, .geetest_tip_fail, [class*="fail"], [class*="error"], [class*="retry"]').count();
-                    if (failEl > 0) {
-                      results.push('Slider attempt failed, retrying...');
-                      const refreshBtn = targetFrame.locator('.geetest_refresh, [class*="refresh"], [class*="retry"]').first();
-                      if (await refreshBtn.count() > 0) await refreshBtn.click().catch(() => {});
-                      await p.waitForTimeout(1500);
-                      try {
-                        if (await puzzleEl.count() > 0) await puzzleEl.screenshot({ path: screenshotPath });
-                      } catch {}
-                      continue;
-                    }
-
-                    results.push('[OK] Slider dragged — outcome unconfirmed, check page state.');
-                    break;
-                  } catch (e: any) {
-                    results.push(`Drag failed: ${e.message}`);
-                    break;
-                  }
-                } else {
-                  results.push('[WARN] Slider handle not found in DOM.');
-                  break;
-                }
+                } // close else (no bframe)
+              } catch (e: any) {
+                results.push(
+                  err(
+                    `reCAPTCHA click failed: ${e.message}`,
+                    'Use "detect-captcha" first, then retry "solve-captcha"'
+                  )
+                );
               }
-            } else {
-              results.push('Type: IMAGE challenge');
-              const gridResult = await solveCaptchaGrid(p, targetFrame, captchaType);
-              results.push(gridResult);
             }
-          }
 
-          if (captchaType === 'unknown') {
-            const imgCaptcha = p.locator('img[src*="captcha"], #captcha-image, .captcha-image, img.captcha');
-            if (await imgCaptcha.count() > 0) {
-              results.push('Text-based captcha detected.');
-              const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
-              await imgCaptcha.first().screenshot({ path: screenshotPath });
-              results.push(`Captcha image saved: ${screenshotPath}`);
-
+            if (captchaType === 'hcaptcha') {
+              results.push('Attempting hCaptcha...');
               try {
-                const ssBase64 = readFileBase64(screenshotPath);
-                const visionResp = await visionClassify(ssBase64,
-                  'Read the text/numbers in this captcha image. Reply with ONLY the exact text shown, nothing else.');
-                const captchaText = visionResp.replace(/[^a-zA-Z0-9]/g, '').trim();
+                const checkboxFrame = hcaptchaCheckbox;
+                if (checkboxFrame) {
+                  const checkbox = checkboxFrame.locator('#checkbox, .check');
+                  if ((await checkbox.count()) > 0) {
+                    await p.waitForTimeout(800 + Math.random() * 1200);
+                    await humanClick(checkbox, p);
+                    await p.waitForTimeout(3000);
 
-                if (captchaText.length >= 2) {
-                  const input = p.locator('input[name*="captcha"], input[id*="captcha"], input[placeholder*="captcha" i], input[placeholder*="code" i]');
-                  if (await input.count() > 0) {
-                    await input.first().click();
-                    await input.first().fill('');
-                    for (const char of captchaText) {
-                      await input.first().type(char, { delay: 80 + Math.random() * 120 });
+                    const updatedFrames = p.frames();
+                    let challengeFrame = updatedFrames.find(
+                      (f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge')
+                    );
+                    if (challengeFrame) {
+                      results.push('Image challenge appeared. Auto-solving...');
+                      const maxRetries = 5;
+                      let solved = false;
+                      for (let attempt = 0; attempt < maxRetries; attempt++) {
+                        if (attempt > 0)
+                          results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
+                        const solveResult = await solveCaptchaGrid(p, challengeFrame, 'hcaptcha');
+                        results.push(solveResult);
+
+                        if (solveResult.includes('CAPTCHA SOLVED')) {
+                          solved = true;
+                          break;
+                        }
+
+                        if (solveResult.includes('Falling back to manual mode')) {
+                          break;
+                        }
+
+                        await p.waitForTimeout(2000);
+                        const refreshedFrames = p.frames();
+                        const newChallenge = refreshedFrames.find(
+                          (f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge')
+                        );
+                        if (!newChallenge) {
+                          results.push('Challenge frame disappeared, captcha may be solved');
+                          solved = true;
+                          break;
+                        }
+                        challengeFrame = newChallenge;
+                      }
+                      if (!solved && !results.some((r) => r.includes('Falling back'))) {
+                        results.push(
+                          `\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
+                        );
+                      }
+                    } else {
+                      const checkmark = checkboxFrame.locator(
+                        '.check.solved, #checkbox[aria-checked="true"]'
+                      );
+                      if ((await checkmark.count()) > 0) {
+                        results.push(ok('hCaptcha solved', { status: 'verified' }));
+                      } else {
+                        results.push(
+                          warn('hCaptcha checkbox clicked, status unclear', {
+                            suggestion: 'Use "captcha-grid" to check for image challenge',
+                          })
+                        );
+                      }
                     }
-                    results.push(`[OK] Auto-filled captcha text: "${captchaText}"`);
                   } else {
-                    results.push(`Vision model read: "${captchaText}" — but no captcha input field found. Use "fill" to type it manually.`);
+                    results.push(err('hCaptcha checkbox element not found in frame'));
                   }
                 } else {
-                  results.push(`Vision model returned: "${visionResp}" — could not read captcha text`);
-                  results.push('Read the screenshot and use "fill" to type the captcha text manually.');
+                  results.push(
+                    err(
+                      'hCaptcha checkbox frame not found',
+                      'Use "detect-captcha" to scan for captcha type'
+                    )
+                  );
                 }
               } catch (e: any) {
-                results.push(`Vision auto-fill failed: ${e.message}`);
-                results.push('Read the captcha screenshot and use "fill" to type it manually.');
+                results.push(err(`hCaptcha click failed: ${e.message}`));
               }
-            } else {
-              results.push('No recognizable captcha. Taking screenshot and scanning...');
-              const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
-              await p.screenshot({ path: screenshotPath });
-              results.push(`Screenshot saved: ${screenshotPath}`);
-              results.push('Use "captcha-grid" to scan for any challenge overlay.');
             }
-          }
 
-          const screenshotPath = join(homedir(), '.aurix-captcha-after.png');
-          await p.screenshot({ path: screenshotPath });
-          results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
-          return results.join('\n');
+            if (captchaType === 'turnstile') {
+              results.push('Attempting Cloudflare Turnstile...');
+              try {
+                // Managed challenge with auto-retry: clicks checkbox → waits → reloads if still blocked
+                // CloakBrowser's good fingerprinting means managed challenges often pass silently
+                const maxRetries = 3;
+                let resolved = false;
+                for (let attempt = 0; attempt < maxRetries; attempt++) {
+                  if (attempt > 0) results.push(`Turnstile retry ${attempt}/${maxRetries}...`);
+                  const tFrame = p.frames().find((f) => f.url().includes('challenges.cloudflare'));
+                  if (tFrame) {
+                    await p.waitForTimeout(1000 + Math.random() * 1000);
+                    const cb = tFrame.locator(
+                      'input[type="checkbox"], .cb-lb, #challenge-stage label'
+                    );
+                    if ((await cb.count()) > 0) {
+                      await humanClick(cb, p);
+                    } else {
+                      await tFrame
+                        .locator('body')
+                        .click({ timeout: 3000 })
+                        .catch(() => {});
+                    }
+                    await p.waitForTimeout(4000);
+                  }
+                  // Check if resolved
+                  const c = await p.content();
+                  if (!c.includes('cf-turnstile') && !c.includes('challenges.cloudflare')) {
+                    resolved = true;
+                    results.push(ok('Cloudflare Turnstile bypassed — page unlocked'));
+                    break;
+                  }
+                  // Reload to trigger fresh managed challenge
+                  if (attempt < maxRetries - 1) {
+                    await p
+                      .reload({ waitUntil: 'domcontentloaded', timeout: 15000 })
+                      .catch(() => {});
+                    await p.waitForTimeout(2000);
+                  }
+                }
+                if (!resolved) {
+                  results.push(
+                    warn('Turnstile still active after retries — try switching proxy or waiting')
+                  );
+                }
+              } catch (e: any) {
+                results.push(
+                  err(`Turnstile error: ${e.message}`, 'Try reloading the page or switching proxy')
+                );
+              }
+            }
+
+            if (captchaType === 'funcaptcha') {
+              results.push(
+                'FunCaptcha (Arkose Labs) detected. Solving via API-level solver (BDA fingerprint + audio/vision)...'
+              );
+              try {
+                // Extract public key and service URL from the FunCaptcha iframe
+                const fcFrameUrl = funcaptchaFrame
+                  ? await (async () => {
+                      try {
+                        return funcaptchaFrame.url();
+                      } catch {
+                        return '';
+                      }
+                    })()
+                  : '';
+
+                let resolvedPkey: string | null = extractPublicKey(fcFrameUrl);
+                if (!resolvedPkey) {
+                  // Fallback: try to find public key from page content
+                  resolvedPkey = await p
+                    .evaluate(() => {
+                      const scripts = document.querySelectorAll('script');
+                      for (const s of scripts) {
+                        const m = s.textContent?.match(/public_key['":\s]+([A-F0-9-]{36})/i);
+                        if (m) return m[1];
+                      }
+                      const iframes = document.querySelectorAll('iframe');
+                      for (const f of iframes) {
+                        const m =
+                          (f as HTMLIFrameElement).src.match(/public_key\/([A-F0-9-]{36})/i) ||
+                          (f as HTMLIFrameElement).src.match(/#([A-F0-9-]{36})/i);
+                        if (m) return m[1];
+                      }
+                      return null;
+                    })
+                    .catch(() => null);
+                }
+
+                if (!resolvedPkey) {
+                  results.push(err('Could not extract FunCaptcha public key from page'));
+                } else {
+                  results.push(`Public key: ${resolvedPkey}`);
+
+                  const serviceUrl = extractServiceUrl(fcFrameUrl);
+                  const siteUrl = await p.url();
+                  const proxyUrl = sessionProxies.get(currentSessionKey) || browserProxy || '';
+
+                  // Build vision callback using existing visionClassify
+                  const visionFn = async (imgBase64: string, prompt: string): Promise<string> => {
+                    return visionClassify(imgBase64, prompt);
+                  };
+
+                  const solver = new FuncaptchaSolver({
+                    publicKey: resolvedPkey,
+                    serviceUrl,
+                    site: siteUrl,
+                    proxy: proxyUrl || undefined,
+                    visionFn,
+                  });
+
+                  // Try up to 2 full solve cycles
+                  let solveResult: any = null;
+                  for (let attempt = 0; attempt < 2; attempt++) {
+                    if (attempt > 0) results.push(`Retry ${attempt + 1}/2...`);
+                    solveResult = await solver.solve();
+                    if (solveResult.success) break;
+                    results.push(`Attempt ${attempt + 1} failed: ${solveResult.error}`);
+                  }
+
+                  if (solveResult?.success) {
+                    results.push(
+                      `[OK] FunCaptcha solved via ${solveResult.method}! (${solveResult.solveTime}ms)`
+                    );
+
+                    // Inject the solved token into the page
+                    if (solveResult.token) {
+                      await p
+                        .evaluate((token: string) => {
+                          // Standard Arkose callback injection
+                          const callbackNames = [
+                            'funcaptchaCallback',
+                            'arkoseCallback',
+                            'onFunCaptchaSuccess',
+                            'enforcementCallback',
+                          ];
+                          for (const name of callbackNames) {
+                            if (typeof (window as any)[name] === 'function') {
+                              (window as any)[name]({ token });
+                              return;
+                            }
+                          }
+                          // Fallback: set hidden input
+                          const inputs = document.querySelectorAll(
+                            'input[name*="captcha"], input[name*="token"], input[name*="fc-token"], input[name*="arkose"]'
+                          );
+                          for (const input of inputs) {
+                            (input as HTMLInputElement).value = token;
+                          }
+                          // Also try global enforcement object
+                          if ((window as any).ArkoseEnforcement) {
+                            try {
+                              (window as any).ArkoseEnforcement.setConfig({ data: { token } });
+                            } catch {}
+                          }
+                        }, solveResult.token)
+                        .catch(() => {});
+                      results.push('Token injected into page.');
+                    }
+                  } else {
+                    results.push(
+                      err(`FunCaptcha API solver failed: ${solveResult?.error || 'unknown'}`)
+                    );
+                    results.push('Falling back to visual solving via browser...');
+
+                    // Fallback: Check for Microsoft "Press and hold" variant
+                    if (funcaptchaFrame) {
+                      const hasHoldButton = await funcaptchaFrame
+                        .locator(
+                          'button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]'
+                        )
+                        .count();
+                      const accessibilityBtn = await funcaptchaFrame
+                        .locator(
+                          'button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn'
+                        )
+                        .count();
+
+                      if (hasHoldButton > 0 || accessibilityBtn > 0) {
+                        results.push(
+                          '[INFO] Detected Microsoft "Press and hold" / Accessibility variant.'
+                        );
+
+                        if (accessibilityBtn > 0 && hasHoldButton === 0) {
+                          results.push(
+                            'Clicking accessibility mode button to reveal hold button...'
+                          );
+                          await funcaptchaFrame
+                            .locator(
+                              'button[aria-label*="accessibility" i], button[title*="accessibility" i], .accessibility-btn'
+                            )
+                            .first()
+                            .click();
+                          await p.waitForTimeout(1000);
+                        }
+
+                        const holdBtn = funcaptchaFrame
+                          .locator(
+                            'button:has-text("Press and hold"), #challenge-stage .button-hold, [aria-label*="hold"]'
+                          )
+                          .first();
+                        if ((await holdBtn.count()) > 0) {
+                          results.push('Executing automated HOLD action...');
+                          const box = await holdBtn.boundingBox();
+                          if (box) {
+                            const cx = box.x + box.width / 2;
+                            const cy = box.y + box.height / 2;
+
+                            await p.mouse.move(cx, cy, { steps: 10 });
+                            await p.waitForTimeout(200);
+                            await p.mouse.down();
+
+                            // Hold for up to 10 seconds, waiting for success indicator
+                            let solved = false;
+                            for (let i = 0; i < 20; i++) {
+                              // 20 * 500ms = 10s
+                              await p.waitForTimeout(500);
+                              const success = await funcaptchaFrame
+                                .locator(
+                                  '[class*="success"], [class*="correct"], [class*="verified"], .game-success'
+                                )
+                                .count();
+                              if (success > 0) {
+                                solved = true;
+                                break;
+                              }
+                            }
+
+                            await p.mouse.up();
+
+                            if (solved) {
+                              results.push(
+                                '[OK] Microsoft Press and Hold captcha solved successfully!'
+                              );
+                            } else {
+                              results.push(
+                                '[WARN] Hold action completed but success indicator not detected. It might have succeeded anyway.'
+                              );
+                            }
+                          } else {
+                            results.push(err('Could not find bounding box for hold button.'));
+                          }
+                        } else {
+                          results.push(
+                            'Hold button still not visible after accessibility toggle. Use screenshot + click/drag to solve manually.'
+                          );
+                        }
+                      } else {
+                        results.push('Use screenshot + click/drag to solve manually.');
+                      }
+                    }
+                  }
+                } // end resolvedPkey else
+              } catch (e: any) {
+                results.push(err(`FunCaptcha auto-solve failed: ${e.message}`));
+              }
+            }
+
+            if (captchaType === 'mtcaptcha' || captchaType === 'geetest') {
+              results.push(`Detected ${captchaType} challenge. Analyzing...`);
+              const targetFrame = mtcaptchaFrame || geetestFrame || p;
+
+              const hasSlider = await targetFrame
+                .locator(
+                  '.geetest_slider_button, .geetest_slider, [class*="slider_button"], [class*="slider-track"]'
+                )
+                .count();
+              if (hasSlider > 0) {
+                results.push('Type: SLIDER puzzle');
+
+                const puzzleEl = targetFrame
+                  .locator('.geetest_panel, .geetest_widget, [class*="geetest_container"]')
+                  .first();
+                const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
+                try {
+                  if ((await puzzleEl.count()) > 0)
+                    await puzzleEl.screenshot({ path: screenshotPath });
+                  else await p.screenshot({ path: screenshotPath });
+                } catch {
+                  await p.screenshot({ path: screenshotPath });
+                }
+                results.push(`Puzzle screenshot: ${screenshotPath}`);
+
+                const maxAttempts = 3;
+                for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                  if (attempt > 0) results.push(`\nSlider retry ${attempt}/${maxAttempts - 1}...`);
+
+                  const sliderInfo = await targetFrame.evaluate(() => {
+                    const info: Record<string, any> = {};
+                    const cut = document.querySelector(
+                      '.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"]'
+                    );
+                    if (cut) {
+                      const cutRect = cut.getBoundingClientRect();
+                      const style = window.getComputedStyle(cut);
+                      info.cut = {
+                        left: cutRect.left,
+                        width: cutRect.width,
+                        styleLeft: parseFloat(style.left) || null,
+                        transform: style.transform || null,
+                      };
+                    }
+                    const bg = document.querySelector(
+                      '.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]'
+                    );
+                    if (bg) {
+                      const bgRect = bg.getBoundingClientRect();
+                      info.bg = { left: bgRect.left, width: bgRect.width };
+                    }
+                    const piece = document.querySelector(
+                      '.geetest_piece, .geetest_slider_piece, [class*="slider_piece"]'
+                    );
+                    if (piece) {
+                      const pieceRect = piece.getBoundingClientRect();
+                      info.piece = { left: pieceRect.left, width: pieceRect.width };
+                    }
+                    const slider = document.querySelector(
+                      '.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"]'
+                    );
+                    if (slider) {
+                      const sliderRect = slider.getBoundingClientRect();
+                      info.slider = {
+                        left: sliderRect.left,
+                        width: sliderRect.width,
+                        centerX: sliderRect.left + sliderRect.width / 2,
+                        centerY: sliderRect.top + sliderRect.height / 2,
+                      };
+                    }
+                    const track = document.querySelector(
+                      '.geetest_slider_track, .geetest_slider, [class*="slider_track"]'
+                    );
+                    if (track) info.track = { width: track.getBoundingClientRect().width };
+                    return info;
+                  });
+
+                  let gapOffset: number | null = null;
+                  if (sliderInfo.cut && sliderInfo.bg) {
+                    if (sliderInfo.cut.styleLeft && sliderInfo.cut.styleLeft > 0) {
+                      gapOffset = Math.round(sliderInfo.cut.styleLeft);
+                    } else {
+                      gapOffset = Math.round(sliderInfo.cut.left - sliderInfo.bg.left);
+                    }
+                  }
+                  if (
+                    gapOffset === null &&
+                    sliderInfo.cut?.transform &&
+                    sliderInfo.cut.transform !== 'none'
+                  ) {
+                    const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
+                    if (match) gapOffset = Math.round(parseFloat(match[1]));
+                  }
+
+                  if (gapOffset === null) {
+                    results.push('DOM gap detection failed, using vision model...');
+                    try {
+                      const ssBase64 = readFileBase64(screenshotPath);
+                      const visionResp = await visionClassify(
+                        ssBase64,
+                        'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").'
+                      );
+                      const parsed = parseInt(visionResp.replace(/[^\d]/g, ''));
+                      if (!isNaN(parsed) && parsed > 10 && parsed < 500) {
+                        gapOffset = parsed;
+                        results.push(`Vision model: gap at ~${gapOffset}px`);
+                      } else {
+                        results.push(
+                          `Vision model returned: "${visionResp}" — could not parse gap position`
+                        );
+                      }
+                    } catch (e: any) {
+                      results.push(`Vision model failed: ${e.message}`);
+                    }
+                  }
+
+                  if (gapOffset === null) {
+                    results.push(
+                      '[WARN] Could not determine gap position. Use "slider-analyze" for manual analysis, then "drag-to" to slide.'
+                    );
+                    break;
+                  }
+
+                  const pieceHalf = Math.round((sliderInfo.piece?.width || 44) / 2);
+                  const adjusted = gapOffset - pieceHalf;
+                  results.push(
+                    `Gap: ${gapOffset}px, piece half: ${pieceHalf}px, drag distance: ${adjusted}px`
+                  );
+
+                  if (sliderInfo.slider) {
+                    try {
+                      const startX = sliderInfo.slider.centerX;
+                      const startY = sliderInfo.slider.centerY;
+                      const endX = startX + adjusted;
+
+                      await humanMove(startX, startY, p);
+                      await p.waitForTimeout(150 + Math.random() * 250);
+                      await p.mouse.down();
+                      await p.waitForTimeout(200 + Math.random() * 300);
+
+                      const steps = 25 + Math.floor(Math.random() * 20);
+                      for (let i = 1; i <= steps; i++) {
+                        const progress = i / steps;
+                        const eased =
+                          progress < 0.5
+                            ? 2 * progress * progress
+                            : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                        const x = startX + adjusted * eased + (Math.random() - 0.5) * 2;
+                        const y = startY + (Math.random() - 0.5) * 2;
+                        await p.mouse.move(x, y);
+                        await p.waitForTimeout(10 + Math.random() * 20);
+                      }
+                      await p.mouse.move(endX, startY);
+                      await p.waitForTimeout(150);
+                      await p.mouse.up();
+                      await p.waitForTimeout(2000);
+
+                      results.push('Slider dragged, checking result...');
+
+                      const successEl = await targetFrame
+                        .locator(
+                          '.geetest_success, .geetest_tip_success, [class*="success"], [class*="verified"]'
+                        )
+                        .count();
+                      if (successEl > 0) {
+                        results.push('[OK] Slider captcha solved!');
+                        break;
+                      }
+
+                      const failEl = await targetFrame
+                        .locator(
+                          '.geetest_fail, .geetest_tip_fail, [class*="fail"], [class*="error"], [class*="retry"]'
+                        )
+                        .count();
+                      if (failEl > 0) {
+                        results.push('Slider attempt failed, retrying...');
+                        const refreshBtn = targetFrame
+                          .locator('.geetest_refresh, [class*="refresh"], [class*="retry"]')
+                          .first();
+                        if ((await refreshBtn.count()) > 0)
+                          await refreshBtn.click().catch(() => {});
+                        await p.waitForTimeout(1500);
+                        try {
+                          if ((await puzzleEl.count()) > 0)
+                            await puzzleEl.screenshot({ path: screenshotPath });
+                        } catch {}
+                        continue;
+                      }
+
+                      results.push('[OK] Slider dragged — outcome unconfirmed, check page state.');
+                      break;
+                    } catch (e: any) {
+                      results.push(`Drag failed: ${e.message}`);
+                      break;
+                    }
+                  } else {
+                    results.push('[WARN] Slider handle not found in DOM.');
+                    break;
+                  }
+                }
+              } else {
+                results.push('Type: IMAGE challenge');
+                const gridResult = await solveCaptchaGrid(p, targetFrame, captchaType);
+                results.push(gridResult);
+              }
+            }
+
+            if (captchaType === 'unknown') {
+              const imgCaptcha = p.locator(
+                'img[src*="captcha"], #captcha-image, .captcha-image, img.captcha'
+              );
+              if ((await imgCaptcha.count()) > 0) {
+                results.push('Text-based captcha detected.');
+                const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                await imgCaptcha.first().screenshot({ path: screenshotPath });
+                results.push(`Captcha image saved: ${screenshotPath}`);
+
+                try {
+                  const ssBase64 = readFileBase64(screenshotPath);
+                  const visionResp = await visionClassify(
+                    ssBase64,
+                    'Read the text/numbers in this captcha image. Reply with ONLY the exact text shown, nothing else.'
+                  );
+                  const captchaText = visionResp.replace(/[^a-zA-Z0-9]/g, '').trim();
+
+                  if (captchaText.length >= 2) {
+                    const input = p.locator(
+                      'input[name*="captcha"], input[id*="captcha"], input[placeholder*="captcha" i], input[placeholder*="code" i]'
+                    );
+                    if ((await input.count()) > 0) {
+                      await input.first().click();
+                      await input.first().fill('');
+                      for (const char of captchaText) {
+                        await input.first().type(char, { delay: 80 + Math.random() * 120 });
+                      }
+                      results.push(`[OK] Auto-filled captcha text: "${captchaText}"`);
+                    } else {
+                      results.push(
+                        `Vision model read: "${captchaText}" — but no captcha input field found. Use "fill" to type it manually.`
+                      );
+                    }
+                  } else {
+                    results.push(
+                      `Vision model returned: "${visionResp}" — could not read captcha text`
+                    );
+                    results.push(
+                      'Read the screenshot and use "fill" to type the captcha text manually.'
+                    );
+                  }
+                } catch (e: any) {
+                  results.push(`Vision auto-fill failed: ${e.message}`);
+                  results.push('Read the captcha screenshot and use "fill" to type it manually.');
+                }
+              } else {
+                results.push('No recognizable captcha. Taking screenshot and scanning...');
+                const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                await p.screenshot({ path: screenshotPath });
+                results.push(`Screenshot saved: ${screenshotPath}`);
+                results.push('Use "captcha-grid" to scan for any challenge overlay.');
+              }
+            }
+
+            const screenshotPath = join(homedir(), '.aurix-captcha-after.png');
+            await p.screenshot({ path: screenshotPath });
+            results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
+            return results.join('\n');
           };
 
           try {
             return await Promise.race([
               _solveLogic(),
-              new Promise<string>((_, rej) => setTimeout(() => rej(new Error('solve-captcha timed out (120s)')), _solveTimeout)),
+              new Promise<string>((_, rej) =>
+                setTimeout(() => rej(new Error('solve-captcha timed out (120s)')), _solveTimeout)
+              ),
             ]);
           } catch (e: any) {
             results.push(`\n[TIMEOUT] ${e.message}`);
-            results.push('Auto-solve did not complete. Use "captcha-grid" and "click-tile" for manual solving.');
+            results.push(
+              'Auto-solve did not complete. Use "captcha-grid" and "click-tile" for manual solving.'
+            );
             return results.join('\n');
           }
         }
@@ -2083,7 +2593,10 @@ except Exception as e:
         case 'click-tile': {
           const p = await ensureBrowser();
           const rawValue = (value || target || '0').toString();
-          const tileIndices = rawValue.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+          const tileIndices = rawValue
+            .split(',')
+            .map((s) => parseInt(s.trim()))
+            .filter((n) => !isNaN(n));
           const frames = p.frames();
 
           let challengeFrame: any = null;
@@ -2111,9 +2624,11 @@ except Exception as e:
           if (!challengeFrame) challengeFrame = p;
 
           const initialTiles = await findGridTiles(challengeFrame, provider);
-          if (initialTiles.length === 0) return err('No grid tiles found', 'Use "captcha-grid" to scan the challenge first');
+          if (initialTiles.length === 0)
+            return err('No grid tiles found', 'Use "captcha-grid" to scan the challenge first');
           for (const idx of tileIndices) {
-            if (idx < 0 || idx >= initialTiles.length) return err(`Tile index ${idx} out of range (0-${initialTiles.length - 1})`);
+            if (idx < 0 || idx >= initialTiles.length)
+              return err(`Tile index ${idx} out of range (0-${initialTiles.length - 1})`);
           }
 
           const isRecaptcha = provider === 'recaptcha';
@@ -2124,11 +2639,14 @@ except Exception as e:
           let instruction = '';
           if (isRecaptcha) {
             try {
-              const instrEl = challengeFrame.locator('.rc-imageselect-instructions, .prompt-text, .prompt-text-h');
-              if (await instrEl.count() > 0) instruction = (await instrEl.first().textContent() || '').trim();
+              const instrEl = challengeFrame.locator(
+                '.rc-imageselect-instructions, .prompt-text, .prompt-text-h'
+              );
+              if ((await instrEl.count()) > 0)
+                instruction = ((await instrEl.first().textContent()) || '').trim();
               if (!instruction) {
                 const st = challengeFrame.locator('strong').first();
-                if (await st.count() > 0) instruction = (await st.textContent() || '').trim();
+                if ((await st.count()) > 0) instruction = ((await st.textContent()) || '').trim();
               }
             } catch {}
           }
@@ -2139,12 +2657,17 @@ except Exception as e:
           for (const tileIndex of tileIndices) {
             try {
               if (tileIndex >= initialTiles.length) {
-                results.push(`  Tile ${tileIndex}: out of range (${initialTiles.length} tiles), skipping`);
+                results.push(
+                  `  Tile ${tileIndex}: out of range (${initialTiles.length} tiles), skipping`
+                );
                 continue;
               }
 
               const tile = initialTiles[tileIndex];
-              const selectedBefore = await challengeFrame.locator(selectedClass).count().catch(() => 0);
+              const selectedBefore = await challengeFrame
+                .locator(selectedClass)
+                .count()
+                .catch(() => 0);
               try {
                 await challengeFrame.evaluate((idx: number) => {
                   const tds = document.querySelectorAll('table td');
@@ -2155,10 +2678,14 @@ except Exception as e:
               }
               await p.waitForTimeout(300 + Math.random() * 300);
 
-              const selectedCount = await challengeFrame.locator(selectedClass).count().catch(() => 0);
-              const clickStatus = selectedCount !== selectedBefore
-                ? `selected (${selectedBefore} → ${selectedCount})`
-                : `unchanged (${selectedCount})`;
+              const selectedCount = await challengeFrame
+                .locator(selectedClass)
+                .count()
+                .catch(() => 0);
+              const clickStatus =
+                selectedCount !== selectedBefore
+                  ? `selected (${selectedBefore} → ${selectedCount})`
+                  : `unchanged (${selectedCount})`;
               results.push(`  Tile ${tileIndex}: ${clickStatus}`);
 
               if (isRecaptcha) {
@@ -2171,7 +2698,9 @@ except Exception as e:
 
           if (isRecaptcha) {
             results.push('');
-            results.push('Use "captcha-verify" when all matching tiles are clicked, or "captcha-grid" to re-analyze.');
+            results.push(
+              'Use "captcha-verify" when all matching tiles are clicked, or "captcha-grid" to re-analyze.'
+            );
           } else {
             const ss = await autoScreenshot(p, 'click-tile');
             results.push(`Screenshot: ${ss}`);
@@ -2211,7 +2740,9 @@ except Exception as e:
           const timeSinceAnalyze = _lastGridAnalyzeTime > 0 ? Date.now() - _lastGridAnalyzeTime : 0;
           if (timeSinceAnalyze > 90_000 && _lastGridAnalyzeTime > 0) {
             const results: string[] = [];
-            results.push(`[WARN] Grid was analyzed ${Math.round(timeSinceAnalyze / 1000)}s ago — challenge likely refreshed.`);
+            results.push(
+              `[WARN] Grid was analyzed ${Math.round(timeSinceAnalyze / 1000)}s ago — challenge likely refreshed.`
+            );
             results.push('Re-analyzing before verify...');
             try {
               const reAnalyze = await analyzeImageChallenge(p, challengeFrame, provider);
@@ -2221,17 +2752,26 @@ except Exception as e:
           }
 
           try {
-            let verifyBtn = challengeFrame.locator('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]');
-            if (await verifyBtn.count() === 0) {
-              verifyBtn = challengeFrame.locator('button:has-text("Verify"), button:has-text("Next"), button:has-text("Submit")');
+            let verifyBtn = challengeFrame.locator(
+              '#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]'
+            );
+            if ((await verifyBtn.count()) === 0) {
+              verifyBtn = challengeFrame.locator(
+                'button:has-text("Verify"), button:has-text("Next"), button:has-text("Submit")'
+              );
             }
-            if (await verifyBtn.count() === 0) {
-              return err('No verify button found', 'Use "captcha-grid" to analyze the challenge first');
+            if ((await verifyBtn.count()) === 0) {
+              return err(
+                'No verify button found',
+                'Use "captcha-grid" to analyze the challenge first'
+              );
             }
 
             try {
               await challengeFrame.evaluate(() => {
-                const btn = document.querySelector('#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]') as HTMLElement;
+                const btn = document.querySelector(
+                  '#recaptcha-verify-button, .rc-button-submit, .button-submit, [id*="verify"]'
+                ) as HTMLElement;
                 if (btn) btn.click();
               });
             } catch {
@@ -2241,10 +2781,17 @@ except Exception as e:
 
             const screenshotPath = join(homedir(), '.aurix-captcha-verify-result.png');
 
-            const errorEl2 = challengeFrame.locator('.rc-imageselect-incorrect-response, .error-message, .incorrect').first();
-            const errorVisible2 = await errorEl2.count() > 0 && await errorEl2.isVisible().catch(() => false);
+            const errorEl2 = challengeFrame
+              .locator('.rc-imageselect-incorrect-response, .error-message, .incorrect')
+              .first();
+            const errorVisible2 =
+              (await errorEl2.count()) > 0 && (await errorEl2.isVisible().catch(() => false));
             if (errorVisible2) {
-              const errorMsg = await challengeFrame.locator('.rc-imageselect-incorrect-response, .error-message').first().textContent().catch(() => 'Incorrect answer');
+              const errorMsg = await challengeFrame
+                .locator('.rc-imageselect-incorrect-response, .error-message')
+                .first()
+                .textContent()
+                .catch(() => 'Incorrect answer');
               await p.screenshot({ path: screenshotPath });
 
               const results: string[] = [];
@@ -2258,8 +2805,10 @@ except Exception as e:
                 const currentFrames = p.frames();
                 const retryFrame = currentFrames.find((f: any) => {
                   const u = f.url();
-                  return (u.includes('/recaptcha/') && u.includes('/bframe')) ||
-                         (u.includes('hcaptcha') && u.includes('challenge'));
+                  return (
+                    (u.includes('/recaptcha/') && u.includes('/bframe')) ||
+                    (u.includes('hcaptcha') && u.includes('challenge'))
+                  );
                 });
 
                 if (!retryFrame) {
@@ -2268,7 +2817,9 @@ except Exception as e:
                   return results.join('\n');
                 }
 
-                const retryProvider = retryFrame.url().includes('hcaptcha') ? 'hcaptcha' : 'recaptcha';
+                const retryProvider = retryFrame.url().includes('hcaptcha')
+                  ? 'hcaptcha'
+                  : 'recaptcha';
                 const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
                 results.push(solveResult);
 
@@ -2277,13 +2828,21 @@ except Exception as e:
                 }
               }
 
-              results.push(`\nAuto-retry exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`);
+              results.push(
+                `\nAuto-retry exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
+              );
               return results.join('\n');
             }
 
-            const newChallenge = await challengeFrame.locator('.rc-imageselect-instructions, .prompt-text').count();
+            const newChallenge = await challengeFrame
+              .locator('.rc-imageselect-instructions, .prompt-text')
+              .count();
             if (newChallenge > 0) {
-              const instruction = await challengeFrame.locator('.rc-imageselect-instructions, .prompt-text').first().textContent().catch(() => '');
+              const instruction = await challengeFrame
+                .locator('.rc-imageselect-instructions, .prompt-text')
+                .first()
+                .textContent()
+                .catch(() => '');
               await p.screenshot({ path: screenshotPath });
 
               const results: string[] = [];
@@ -2295,14 +2854,18 @@ except Exception as e:
                 const currentFrames = p.frames();
                 const retryFrame = currentFrames.find((f: any) => {
                   const u = f.url();
-                  return (u.includes('/recaptcha/') && u.includes('/bframe')) ||
-                         (u.includes('hcaptcha') && u.includes('challenge'));
+                  return (
+                    (u.includes('/recaptcha/') && u.includes('/bframe')) ||
+                    (u.includes('hcaptcha') && u.includes('challenge'))
+                  );
                 });
                 if (!retryFrame) {
                   results.push('Challenge frame gone — captcha may be solved');
                   return results.join('\n');
                 }
-                const retryProvider = retryFrame.url().includes('hcaptcha') ? 'hcaptcha' : 'recaptcha';
+                const retryProvider = retryFrame.url().includes('hcaptcha')
+                  ? 'hcaptcha'
+                  : 'recaptcha';
                 const solveResult = await solveCaptchaGrid(p, retryFrame, retryProvider);
                 results.push(solveResult);
                 if (solveResult.includes('CAPTCHA SOLVED')) return results.join('\n');
@@ -2330,13 +2893,17 @@ except Exception as e:
           const sliderInfo = await p.evaluate(() => {
             const info: Record<string, any> = {};
 
-            const track = document.querySelector('.geetest_slider_track, .geetest_slider, [class*="slider_track"], [class*="slider-track"]');
+            const track = document.querySelector(
+              '.geetest_slider_track, .geetest_slider, [class*="slider_track"], [class*="slider-track"]'
+            );
             if (track) {
               const trackRect = track.getBoundingClientRect();
               info.track = { left: trackRect.left, width: trackRect.width, top: trackRect.top };
             }
 
-            const cut = document.querySelector('.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"], [class*="slider-gap"]');
+            const cut = document.querySelector(
+              '.geetest_cut, .geetest_piece_bg, [class*="geetest_cut"], [class*="slider_cut"], [class*="puzzle-gap"], [class*="slider-gap"]'
+            );
             if (cut) {
               const cutRect = cut.getBoundingClientRect();
               const style = window.getComputedStyle(cut);
@@ -2348,37 +2915,53 @@ except Exception as e:
               };
             }
 
-            const bg = document.querySelector('.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]');
+            const bg = document.querySelector(
+              '.geetest_canvas_bg, .geetest_bg, [class*="geetest_canvas"], canvas[class*="bg"]'
+            );
             if (bg) {
               const bgRect = bg.getBoundingClientRect();
               info.bg = { left: bgRect.left, width: bgRect.width };
             }
 
-            const piece = document.querySelector('.geetest_piece, .geetest_slider_piece, [class*="slider_piece"], [class*="puzzle-piece"]');
+            const piece = document.querySelector(
+              '.geetest_piece, .geetest_slider_piece, [class*="slider_piece"], [class*="puzzle-piece"]'
+            );
             if (piece) {
               const pieceRect = piece.getBoundingClientRect();
               info.piece = { left: pieceRect.left, width: pieceRect.width };
             }
 
-            const slider = document.querySelector('.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"], [class*="slider-handle"]');
+            const slider = document.querySelector(
+              '.geetest_slider_button, .geetest_slider_knob, [class*="slider_button"], [class*="slider-handle"]'
+            );
             if (slider) {
               const sliderRect = slider.getBoundingClientRect();
-              info.slider = { left: sliderRect.left, width: sliderRect.width, centerX: sliderRect.left + sliderRect.width / 2 };
+              info.slider = {
+                left: sliderRect.left,
+                width: sliderRect.width,
+                centerX: sliderRect.left + sliderRect.width / 2,
+              };
             }
 
             info.canvasCount = document.querySelectorAll('canvas').length;
-            info.allGeeTestClasses = Array.from(document.querySelectorAll('[class*="geetest"]')).slice(0, 20).map(el => {
-              const r = el.getBoundingClientRect();
-              return `${el.className?.toString().slice(0, 80)} [${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}]`;
-            });
+            info.allGeeTestClasses = Array.from(document.querySelectorAll('[class*="geetest"]'))
+              .slice(0, 20)
+              .map((el) => {
+                const r = el.getBoundingClientRect();
+                return `${el.className?.toString().slice(0, 80)} [${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)}]`;
+              });
 
             return info;
           });
 
-          const puzzleEl = p.locator('.geetest_panel, .geetest_widget, [class*="geetest_container"], [class*="slider_container"]').first();
+          const puzzleEl = p
+            .locator(
+              '.geetest_panel, .geetest_widget, [class*="geetest_container"], [class*="slider_container"]'
+            )
+            .first();
           const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
           try {
-            if (await puzzleEl.count() > 0) {
+            if ((await puzzleEl.count()) > 0) {
               await puzzleEl.screenshot({ path: screenshotPath });
             } else {
               await p.screenshot({ path: screenshotPath });
@@ -2406,7 +2989,11 @@ except Exception as e:
             }
           }
 
-          if (gapOffset === null && sliderInfo.cut?.transform && sliderInfo.cut.transform !== 'none') {
+          if (
+            gapOffset === null &&
+            sliderInfo.cut?.transform &&
+            sliderInfo.cut.transform !== 'none'
+          ) {
             const match = sliderInfo.cut.transform.match(/matrix\(.*?,\s*([\d.]+)/);
             if (match) {
               gapOffset = Math.round(parseFloat(match[1]));
@@ -2415,7 +3002,9 @@ except Exception as e:
           }
 
           if (sliderInfo.slider) {
-            results.push(`Slider handle: at x=${Math.round(sliderInfo.slider.left)}, width=${Math.round(sliderInfo.slider.width)}`);
+            results.push(
+              `Slider handle: at x=${Math.round(sliderInfo.slider.left)}, width=${Math.round(sliderInfo.slider.width)}`
+            );
           }
           if (sliderInfo.track) {
             results.push(`Slider track: width=${Math.round(sliderInfo.track.width)}px`);
@@ -2425,7 +3014,9 @@ except Exception as e:
             const pieceHalfWidth = Math.round((sliderInfo.piece.width || 44) / 2);
             const adjustedOffset = gapOffset - pieceHalfWidth;
             results.push('');
-            results.push(`[OK] Gap at ${gapOffset}px, piece half ${pieceHalfWidth}px, drag distance ${adjustedOffset}px`);
+            results.push(
+              `[OK] Gap at ${gapOffset}px, piece half ${pieceHalfWidth}px, drag distance ${adjustedOffset}px`
+            );
             gapOffset = adjustedOffset;
           } else if (gapOffset !== null) {
             results.push('');
@@ -2435,8 +3026,10 @@ except Exception as e:
             results.push('DOM gap detection failed, trying vision model...');
             try {
               const ssBase64 = readFileBase64(screenshotPath);
-              const visionResp = await visionClassify(ssBase64,
-                'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").');
+              const visionResp = await visionClassify(
+                ssBase64,
+                'This is a slider puzzle captcha. There is a gap/hole in the background image where a puzzle piece needs to go. Estimate the horizontal pixel position of the CENTER of the gap, measured from the LEFT edge of the puzzle image. Reply with ONLY the number (e.g. "145").'
+              );
               const parsed = parseInt(visionResp.replace(/[^\d]/g, ''));
               if (!isNaN(parsed) && parsed > 10 && parsed < 500) {
                 gapOffset = parsed;
@@ -2452,8 +3045,10 @@ except Exception as e:
           if (gapOffset !== null && sliderInfo.slider) {
             results.push('Auto-dragging slider...');
             try {
-              const startX = sliderInfo.slider.centerX || (sliderInfo.slider.left + sliderInfo.slider.width / 2);
-              const startY = sliderInfo.slider.centerY || (sliderInfo.slider.top + sliderInfo.slider.height / 2);
+              const startX =
+                sliderInfo.slider.centerX || sliderInfo.slider.left + sliderInfo.slider.width / 2;
+              const startY =
+                sliderInfo.slider.centerY || sliderInfo.slider.top + sliderInfo.slider.height / 2;
               const endX = startX + gapOffset;
 
               await humanMove(startX, startY, p);
@@ -2464,7 +3059,8 @@ except Exception as e:
               const steps = 25 + Math.floor(Math.random() * 20);
               for (let i = 1; i <= steps; i++) {
                 const progress = i / steps;
-                const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+                const eased =
+                  progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
                 const x = startX + gapOffset * eased + (Math.random() - 0.5) * 2;
                 const y = startY + (Math.random() - 0.5) * 2;
                 await p.mouse.move(x, y);
@@ -2476,10 +3072,14 @@ except Exception as e:
               await p.waitForTimeout(2000);
               results.push('[OK] Slider auto-dragged. Check page state to confirm.');
             } catch (e: any) {
-              results.push(`Auto-drag failed: ${e.message}. Use: drag-to target=".geetest_slider_button" value="${gapOffset},0"`);
+              results.push(
+                `Auto-drag failed: ${e.message}. Use: drag-to target=".geetest_slider_button" value="${gapOffset},0"`
+              );
             }
           } else if (gapOffset === null) {
-            results.push('Could not determine gap position. Use "drag-to" manually with estimated offset.');
+            results.push(
+              'Could not determine gap position. Use "drag-to" manually with estimated offset.'
+            );
           }
 
           if (sliderInfo.allGeeTestClasses?.length > 0) {
@@ -2493,18 +3093,27 @@ except Exception as e:
 
         case 'signup-assist': {
           const p = await ensureBrowser();
-          if (!value) return err('signup-assist requires value as JSON', 'Example: value=\'{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}\'');
+          if (!value)
+            return err(
+              'signup-assist requires value as JSON',
+              'Example: value=\'{"email":"user@mail.com","password":"Pass123!","firstName":"John","lastName":"Doe"}\''
+            );
 
           let data: Record<string, string> = {};
-          try { data = JSON.parse(value); } catch {
-            const parts = value.split(',').map(s => s.trim());
+          try {
+            data = JSON.parse(value);
+          } catch {
+            const parts = value.split(',').map((s) => s.trim());
             if (parts.length >= 2) {
               data.email = parts[0];
               data.password = parts[1];
               if (parts[2]) data.firstName = parts[2];
               if (parts[3]) data.lastName = parts[3];
             } else {
-              return err('signup-assist: could not parse value', 'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"');
+              return err(
+                'signup-assist: could not parse value',
+                'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"'
+              );
             }
           }
 
@@ -2514,18 +3123,28 @@ except Exception as e:
           results.push('');
 
           const cookieSelectors = [
-            'button:has-text("Accept All")', 'button:has-text("Accept all")', 'button:has-text("accept all")',
-            'button:has-text("Accept")', 'button:has-text("Accept Cookies")',
-            'button:has-text("I agree")', 'button:has-text("Got it")', 'button:has-text("OK")',
-            'button:has-text("Allow All")', 'button:has-text("Allow all")',
-            '[id*="cookie"] button', '[class*="cookie"] button',
-            '[id*="consent"] button', '[class*="consent"] button',
-            '.cc-accept', '.cookie-accept', '#accept-cookies',
+            'button:has-text("Accept All")',
+            'button:has-text("Accept all")',
+            'button:has-text("accept all")',
+            'button:has-text("Accept")',
+            'button:has-text("Accept Cookies")',
+            'button:has-text("I agree")',
+            'button:has-text("Got it")',
+            'button:has-text("OK")',
+            'button:has-text("Allow All")',
+            'button:has-text("Allow all")',
+            '[id*="cookie"] button',
+            '[class*="cookie"] button',
+            '[id*="consent"] button',
+            '[class*="consent"] button',
+            '.cc-accept',
+            '.cookie-accept',
+            '#accept-cookies',
           ];
           for (const sel of cookieSelectors) {
             try {
               const btn = p.locator(sel).first();
-              if (await btn.count() > 0 && await btn.isVisible()) {
+              if ((await btn.count()) > 0 && (await btn.isVisible())) {
                 await btn.click({ timeout: 2000 });
                 results.push(`  ✓ Dismissed cookie banner: ${sel}`);
                 await p.waitForTimeout(500);
@@ -2534,35 +3153,56 @@ except Exception as e:
             } catch {}
           }
 
-          const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
+          const allFrames = [p, ...p.frames().filter((f) => f !== p.mainFrame())];
           let activeFrame: any = p;
 
           for (const frame of allFrames) {
-            const inputs = await frame.locator('input:visible, select:visible, textarea:visible').count();
-            if (inputs > 0) { activeFrame = frame; break; }
+            const inputs = await frame
+              .locator('input:visible, select:visible, textarea:visible')
+              .count();
+            if (inputs > 0) {
+              activeFrame = frame;
+              break;
+            }
           }
 
-          const hasEmailField = await activeFrame.locator('input[type="email"]:visible, input[name*="email" i]:visible, input[autocomplete="email"]:visible').count() > 0;
-          const hasPasswordField = await activeFrame.locator('input[type="password"]:visible').count() > 0;
+          const hasEmailField =
+            (await activeFrame
+              .locator(
+                'input[type="email"]:visible, input[name*="email" i]:visible, input[autocomplete="email"]:visible'
+              )
+              .count()) > 0;
+          const hasPasswordField =
+            (await activeFrame.locator('input[type="password"]:visible').count()) > 0;
 
           if (!hasEmailField && !hasPasswordField) {
             const ctaSelectors = [
-              'button:has-text("Sign Up With Email")', 'button:has-text("sign up with email")',
-              'a:has-text("Sign Up With Email")', 'a:has-text("sign up with email")',
+              'button:has-text("Sign Up With Email")',
+              'button:has-text("sign up with email")',
+              'a:has-text("Sign Up With Email")',
+              'a:has-text("sign up with email")',
               'button:has-text("Sign up with email")',
-              'button:has-text("Create Account")', 'button:has-text("create account")',
-              'button:has-text("Sign Up")', 'button:has-text("sign up")',
-              'button:has-text("Register")', 'button:has-text("register")',
-              'button:has-text("Get Started")', 'button:has-text("get started")',
-              'button:has-text("Continue with Email")', 'button:has-text("continue with email")',
-              'button:has-text("Use Email")', 'button:has-text("use email")',
-              'a:has-text("Sign Up")', 'a:has-text("Register")',
-              '[data-testid*="signup"]', '[data-testid*="email"]',
+              'button:has-text("Create Account")',
+              'button:has-text("create account")',
+              'button:has-text("Sign Up")',
+              'button:has-text("sign up")',
+              'button:has-text("Register")',
+              'button:has-text("register")',
+              'button:has-text("Get Started")',
+              'button:has-text("get started")',
+              'button:has-text("Continue with Email")',
+              'button:has-text("continue with email")',
+              'button:has-text("Use Email")',
+              'button:has-text("use email")',
+              'a:has-text("Sign Up")',
+              'a:has-text("Register")',
+              '[data-testid*="signup"]',
+              '[data-testid*="email"]',
             ];
             for (const sel of ctaSelectors) {
               try {
                 const btn = activeFrame.locator(sel).first();
-                if (await btn.count() > 0 && await btn.isVisible()) {
+                if ((await btn.count()) > 0 && (await btn.isVisible())) {
                   await btn.click({ timeout: 3000 });
                   results.push(`  ✓ Clicked CTA: ${sel}`);
                   await p.waitForTimeout(1500);
@@ -2571,19 +3211,30 @@ except Exception as e:
               } catch {}
             }
 
-            for (const frame of [p, ...p.frames().filter(f => f !== p.mainFrame())]) {
-              const inputs = await frame.locator('input:visible, select:visible, textarea:visible').count();
-              if (inputs > 0) { activeFrame = frame; break; }
+            for (const frame of [p, ...p.frames().filter((f) => f !== p.mainFrame())]) {
+              const inputs = await frame
+                .locator('input:visible, select:visible, textarea:visible')
+                .count();
+              if (inputs > 0) {
+                activeFrame = frame;
+                break;
+              }
             }
           }
 
-          results.push(`Active frame: ${activeFrame === p ? 'main page' : 'iframe'} (${await activeFrame.locator('input:visible, select:visible, textarea:visible').count()} fields)`);
+          results.push(
+            `Active frame: ${activeFrame === p ? 'main page' : 'iframe'} (${await activeFrame.locator('input:visible, select:visible, textarea:visible').count()} fields)`
+          );
 
-          const fillField = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+          const fillField = async (
+            selectors: string[],
+            val: string,
+            label: string
+          ): Promise<boolean> => {
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible()) {
+                if ((await loc.count()) > 0 && (await loc.isVisible())) {
                   const cur = await loc.inputValue().catch(() => '');
                   if (cur && cur.length > 0) {
                     results.push(`  ✓ ${label}: already filled`);
@@ -2607,7 +3258,7 @@ except Exception as e:
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible()) {
+                if ((await loc.count()) > 0 && (await loc.isVisible())) {
                   const checked = await loc.isChecked().catch(() => false);
                   if (checked) {
                     results.push(`  ✓ ${label}: already checked`);
@@ -2622,12 +3273,18 @@ except Exception as e:
             return false;
           };
 
-          const selectDropdown = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+          const selectDropdown = async (
+            selectors: string[],
+            val: string,
+            label: string
+          ): Promise<boolean> => {
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible()) {
-                  const tag = await loc.evaluate((el: HTMLElement) => el.tagName.toLowerCase()).catch(() => '');
+                if ((await loc.count()) > 0 && (await loc.isVisible())) {
+                  const tag = await loc
+                    .evaluate((el: HTMLElement) => el.tagName.toLowerCase())
+                    .catch(() => '');
                   if (tag === 'select') {
                     try {
                       await loc.selectOption({ label: val }, { timeout: 3000 });
@@ -2657,7 +3314,7 @@ except Exception as e:
                   for (const os of optSels) {
                     try {
                       const opt = activeFrame.locator(os).first();
-                      if (await opt.count() > 0 && await opt.isVisible()) {
+                      if ((await opt.count()) > 0 && (await opt.isVisible())) {
                         await opt.click({ timeout: 2000 });
                         results.push(`  ✓ ${label}: selected "${val}" (dropdown)`);
                         return true;
@@ -2674,102 +3331,159 @@ except Exception as e:
           results.push('--- Filling fields ---');
 
           if (data.email) {
-            await fillField([
-              'input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]',
-              'input[autocomplete="email"]', 'input[placeholder*="email" i]',
-            ], data.email, 'Email');
+            await fillField(
+              [
+                'input[type="email"]',
+                'input[name*="email" i]',
+                'input[id*="email" i]',
+                'input[autocomplete="email"]',
+                'input[placeholder*="email" i]',
+              ],
+              data.email,
+              'Email'
+            );
           }
 
           if (data.password) {
-            await fillField([
-              'input[type="password"]', 'input[name*="password" i]', 'input[id*="password" i]',
-              'input[autocomplete="new-password"]',
-            ], data.password, 'Password');
+            await fillField(
+              [
+                'input[type="password"]',
+                'input[name*="password" i]',
+                'input[id*="password" i]',
+                'input[autocomplete="new-password"]',
+              ],
+              data.password,
+              'Password'
+            );
           }
 
           if (data.firstName) {
-            await fillField([
-              'input[name*="first" i]', 'input[id*="first" i]',
-              'input[autocomplete="given-name"]', 'input[placeholder*="first" i]',
-            ], data.firstName, 'First name');
+            await fillField(
+              [
+                'input[name*="first" i]',
+                'input[id*="first" i]',
+                'input[autocomplete="given-name"]',
+                'input[placeholder*="first" i]',
+              ],
+              data.firstName,
+              'First name'
+            );
           }
 
           if (data.lastName) {
-            await fillField([
-              'input[name*="last" i]', 'input[id*="last" i]',
-              'input[autocomplete="family-name"]', 'input[placeholder*="last" i]',
-            ], data.lastName, 'Last name');
+            await fillField(
+              [
+                'input[name*="last" i]',
+                'input[id*="last" i]',
+                'input[autocomplete="family-name"]',
+                'input[placeholder*="last" i]',
+              ],
+              data.lastName,
+              'Last name'
+            );
           }
 
           if (data.firstName && !data.lastName) {
-            await fillField([
-              'input[name*="name" i]', 'input[id*="name" i]', 'input[autocomplete="name"]',
-            ], data.firstName + ' User', 'Full name');
+            await fillField(
+              ['input[name*="name" i]', 'input[id*="name" i]', 'input[autocomplete="name"]'],
+              data.firstName + ' User',
+              'Full name'
+            );
           }
 
           if (data.phone) {
-            await fillField([
-              'input[type="tel"]', 'input[name*="phone" i]', 'input[autocomplete="tel"]',
-            ], data.phone, 'Phone');
+            await fillField(
+              ['input[type="tel"]', 'input[name*="phone" i]', 'input[autocomplete="tel"]'],
+              data.phone,
+              'Phone'
+            );
           }
 
           if (data.birthYear || data.birthMonth || data.birthDay) {
             const birthYear = data.birthYear || '2003';
             const birthMonth = data.birthMonth || 'January';
             const birthDay = data.birthDay || '15';
-            await selectDropdown([
-              'select[id*="year" i]', 'select[name*="year" i]',
-            ], birthYear, 'Birth year');
-            await selectDropdown([
-              'select[id*="month" i]', 'select[name*="month" i]',
-            ], birthMonth, 'Birth month');
-            await selectDropdown([
-              'select[id*="day" i]', 'select[name*="day" i]',
-            ], birthDay, 'Birth day');
+            await selectDropdown(
+              ['select[id*="year" i]', 'select[name*="year" i]'],
+              birthYear,
+              'Birth year'
+            );
+            await selectDropdown(
+              ['select[id*="month" i]', 'select[name*="month" i]'],
+              birthMonth,
+              'Birth month'
+            );
+            await selectDropdown(
+              ['select[id*="day" i]', 'select[name*="day" i]'],
+              birthDay,
+              'Birth day'
+            );
           }
 
           if (data.country) {
-            await selectDropdown([
-              'select[name*="country" i]', 'select[id*="country" i]',
-            ], data.country, 'Country');
+            await selectDropdown(
+              ['select[name*="country" i]', 'select[id*="country" i]'],
+              data.country,
+              'Country'
+            );
           }
 
           if (data.username) {
-            await fillField([
-              'input[name*="username" i]', 'input[id*="username" i]',
-            ], data.username, 'Username');
+            await fillField(
+              ['input[name*="username" i]', 'input[id*="username" i]'],
+              data.username,
+              'Username'
+            );
           }
 
-          await clickField([
-            'input[type="checkbox"][name*="agree" i]',
-            'input[type="checkbox"][name*="terms" i]',
-            'input[type="checkbox"][name*="consent" i]',
-            'input[type="checkbox"][id*="agree" i]',
-            'input[type="checkbox"][id*="terms" i]',
-            'label:has-text("agree") input[type="checkbox"]',
-            'label:has-text("terms") input[type="checkbox"]',
-            'label:has-text("accept") input[type="checkbox"]',
-            'label:has-text("I agree") input[type="checkbox"]',
-            '[role="checkbox"][aria-checked="false"]',
-          ], 'Terms/Agreement checkbox');
+          await clickField(
+            [
+              'input[type="checkbox"][name*="agree" i]',
+              'input[type="checkbox"][name*="terms" i]',
+              'input[type="checkbox"][name*="consent" i]',
+              'input[type="checkbox"][id*="agree" i]',
+              'input[type="checkbox"][id*="terms" i]',
+              'label:has-text("agree") input[type="checkbox"]',
+              'label:has-text("terms") input[type="checkbox"]',
+              'label:has-text("accept") input[type="checkbox"]',
+              'label:has-text("I agree") input[type="checkbox"]',
+              '[role="checkbox"][aria-checked="false"]',
+            ],
+            'Terms/Agreement checkbox'
+          );
 
           await p.waitForTimeout(500);
 
-          let clicked = await clickField([
-            'button[type="submit"]', 'input[type="submit"]',
-            '[data-testid*="signup"]', '[data-testid*="submit"]',
-            'button:has-text("Sign Up With Email")', 'button:has-text("Sign up")',
-            'button:has-text("Sign Up")', 'button:has-text("sign up")',
-            'button:has-text("Create Account")', 'button:has-text("create account")',
-            'button:has-text("Register")', 'button:has-text("register")',
-            'button:has-text("Next")', 'button:has-text("Continue")',
-            'button:has-text("Submit")', 'button:has-text("Create")',
-            '#signup-button', '#submit-btn',
-          ], 'Submit/Next button');
+          let clicked = await clickField(
+            [
+              'button[type="submit"]',
+              'input[type="submit"]',
+              '[data-testid*="signup"]',
+              '[data-testid*="submit"]',
+              'button:has-text("Sign Up With Email")',
+              'button:has-text("Sign up")',
+              'button:has-text("Sign Up")',
+              'button:has-text("sign up")',
+              'button:has-text("Create Account")',
+              'button:has-text("create account")',
+              'button:has-text("Register")',
+              'button:has-text("register")',
+              'button:has-text("Next")',
+              'button:has-text("Continue")',
+              'button:has-text("Submit")',
+              'button:has-text("Create")',
+              '#signup-button',
+              '#submit-btn',
+            ],
+            'Submit/Next button'
+          );
 
           if (!clicked) {
-            const submitBtn = activeFrame.locator('button').filter({ hasText: /sign\s*up|register|submit|create|continue|next/i }).first();
-            if (await submitBtn.count() > 0 && await submitBtn.isVisible()) {
+            const submitBtn = activeFrame
+              .locator('button')
+              .filter({ hasText: /sign\s*up|register|submit|create|continue|next/i })
+              .first();
+            if ((await submitBtn.count()) > 0 && (await submitBtn.isVisible())) {
               try {
                 await submitBtn.click({ timeout: 3000 });
                 results.push('  ✓ Submit button: clicked (regex match)');
@@ -2781,11 +3495,20 @@ except Exception as e:
           if (!clicked) {
             try {
               const btnClicked = await activeFrame.evaluate(() => {
-                const btns = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'));
+                const btns = Array.from(
+                  document.querySelectorAll('button, [role="button"], input[type="submit"]')
+                );
                 for (const btn of btns) {
-                  const text = (btn as HTMLElement).innerText?.toLowerCase() || (btn as HTMLInputElement).value?.toLowerCase() || '';
+                  const text =
+                    (btn as HTMLElement).innerText?.toLowerCase() ||
+                    (btn as HTMLInputElement).value?.toLowerCase() ||
+                    '';
                   const rect = btn.getBoundingClientRect();
-                  if (rect.width > 0 && rect.height > 0 && /sign\s*up|register|submit|create|continue|next/.test(text)) {
+                  if (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    /sign\s*up|register|submit|create|continue|next/.test(text)
+                  ) {
                     (btn as HTMLElement).click();
                     return text;
                   }
@@ -2802,22 +3525,33 @@ except Exception as e:
           if (clicked) {
             results.push('  Form submitted successfully.');
           } else {
-            results.push('  ⚠ Could not find submit button. Take a screenshot and try clicking it manually.');
+            results.push(
+              '  ⚠ Could not find submit button. Take a screenshot and try clicking it manually.'
+            );
           }
 
           await p.waitForTimeout(2000);
 
-          const postCaptcha = p.frames().some(f => {
+          const postCaptcha = p.frames().some((f) => {
             const u = f.url();
-            return u.includes('/recaptcha/') && u.includes('/bframe') ||
-              u.includes('hcaptcha') && u.includes('challenge') ||
-              u.includes('funcaptcha') || u.includes('arkoselabs');
+            return (
+              (u.includes('/recaptcha/') && u.includes('/bframe')) ||
+              (u.includes('hcaptcha') && u.includes('challenge')) ||
+              u.includes('funcaptcha') ||
+              u.includes('arkoselabs')
+            );
           });
-          const hasCaptchaWidget = p.frames().some(f => {
+          const hasCaptchaWidget = p.frames().some((f) => {
             const u = f.url();
-            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
-              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
-              u.includes('mtcaptcha');
+            return (
+              u.includes('recaptcha') ||
+              u.includes('hcaptcha') ||
+              u.includes('funcaptcha') ||
+              u.includes('arkoselabs') ||
+              u.includes('geetest') ||
+              u.includes('turnstile') ||
+              u.includes('mtcaptcha')
+            );
           });
 
           if (postCaptcha) {
@@ -2828,7 +3562,9 @@ except Exception as e:
           } else if (hasCaptchaWidget) {
             results.push('');
             results.push('⚠ CAPTCHA widget present on page.');
-            results.push('→ Use action "solve-captcha" to complete verification, then re-click submit if needed.');
+            results.push(
+              '→ Use action "solve-captcha" to complete verification, then re-click submit if needed.'
+            );
           }
 
           results.push('');
@@ -2841,7 +3577,7 @@ except Exception as e:
           results.push(`Screenshot: ${screenshotPath}`);
 
           const newInputs = await (async () => {
-            for (const frame of [p, ...p.frames().filter(f => f !== p.mainFrame())]) {
+            for (const frame of [p, ...p.frames().filter((f) => f !== p.mainFrame())]) {
               const count = await frame.locator('input:visible').count();
               if (count > 0) return count;
             }
@@ -2850,7 +3586,9 @@ except Exception as e:
 
           if (newInputs > 0) {
             results.push('');
-            results.push(`${newInputs} input field(s) still visible — run signup-assist again with any remaining data`);
+            results.push(
+              `${newInputs} input field(s) still visible — run signup-assist again with any remaining data`
+            );
             results.push('Common next fields: password, first name, last name, birth date, phone');
           }
 
@@ -2859,16 +3597,25 @@ except Exception as e:
 
         case 'signin-assist': {
           const p = await ensureBrowser();
-          if (!value) return err('signin-assist requires value as JSON', 'Example: value=\'{"email":"user@mail.com","password":"Pass123!"}\'');
+          if (!value)
+            return err(
+              'signin-assist requires value as JSON',
+              'Example: value=\'{"email":"user@mail.com","password":"Pass123!"}\''
+            );
 
           let data: Record<string, string> = {};
-          try { data = JSON.parse(value); } catch {
-            const parts = value.split(',').map(s => s.trim());
+          try {
+            data = JSON.parse(value);
+          } catch {
+            const parts = value.split(',').map((s) => s.trim());
             if (parts.length >= 2) {
               data.email = parts[0];
               data.password = parts[1];
             } else {
-              return err('signin-assist: could not parse value', 'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"');
+              return err(
+                'signin-assist: could not parse value',
+                'Use JSON: {"email":"...","password":"..."} or comma-separated: "email,password"'
+              );
             }
           }
 
@@ -2876,18 +3623,28 @@ except Exception as e:
           results.push('=== SIGNIN ASSIST ===');
 
           const cookieSelectors = [
-            'button:has-text("Accept All")', 'button:has-text("Accept all")', 'button:has-text("accept all")',
-            'button:has-text("Accept")', 'button:has-text("Accept Cookies")',
-            'button:has-text("I agree")', 'button:has-text("Got it")', 'button:has-text("OK")',
-            'button:has-text("Allow All")', 'button:has-text("Allow all")',
-            '[id*="cookie"] button', '[class*="cookie"] button',
-            '[id*="consent"] button', '[class*="consent"] button',
-            '.cc-accept', '.cookie-accept', '#accept-cookies',
+            'button:has-text("Accept All")',
+            'button:has-text("Accept all")',
+            'button:has-text("accept all")',
+            'button:has-text("Accept")',
+            'button:has-text("Accept Cookies")',
+            'button:has-text("I agree")',
+            'button:has-text("Got it")',
+            'button:has-text("OK")',
+            'button:has-text("Allow All")',
+            'button:has-text("Allow all")',
+            '[id*="cookie"] button',
+            '[class*="cookie"] button',
+            '[id*="consent"] button',
+            '[class*="consent"] button',
+            '.cc-accept',
+            '.cookie-accept',
+            '#accept-cookies',
           ];
           for (const sel of cookieSelectors) {
             try {
               const btn = p.locator(sel).first();
-              if (await btn.count() > 0 && await btn.isVisible()) {
+              if ((await btn.count()) > 0 && (await btn.isVisible())) {
                 await btn.click({ timeout: 2000 });
                 results.push(`  ✓ Dismissed cookie banner: ${sel}`);
                 await p.waitForTimeout(500);
@@ -2896,19 +3653,26 @@ except Exception as e:
             } catch {}
           }
 
-          const allFrames = [p, ...p.frames().filter(f => f !== p.mainFrame())];
+          const allFrames = [p, ...p.frames().filter((f) => f !== p.mainFrame())];
           let activeFrame: any = p;
           for (const frame of allFrames) {
             const inputs = await frame.locator('input:visible').count();
-            if (inputs > 0) { activeFrame = frame; break; }
+            if (inputs > 0) {
+              activeFrame = frame;
+              break;
+            }
           }
           results.push(`Active frame: ${activeFrame === p ? 'main page' : 'iframe'}`);
 
-          const fillField = async (selectors: string[], val: string, label: string): Promise<boolean> => {
+          const fillField = async (
+            selectors: string[],
+            val: string,
+            label: string
+          ): Promise<boolean> => {
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible()) {
+                if ((await loc.count()) > 0 && (await loc.isVisible())) {
                   const cur = await loc.inputValue().catch(() => '');
                   if (cur && cur.length > 0) {
                     results.push(`  ✓ ${label}: already filled`);
@@ -2932,7 +3696,7 @@ except Exception as e:
             for (const sel of selectors) {
               try {
                 const loc = activeFrame.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible()) {
+                if ((await loc.count()) > 0 && (await loc.isVisible())) {
                   const checked = await loc.isChecked().catch(() => false);
                   if (checked) {
                     results.push(`  ✓ ${label}: already checked`);
@@ -2951,42 +3715,69 @@ except Exception as e:
           results.push('--- Filling login ---');
 
           if (data.email) {
-            await fillField([
-              'input[type="email"]',
-              'input[name*="email" i]', 'input[name*="Email"]',
-              'input[name*="username" i]', 'input[name*="MemberName"]',
-              'input[id*="email" i]', 'input[id*="username" i]',
-              'input[placeholder*="email" i]', 'input[placeholder*="Email"]',
-              'input[autocomplete="email"]', 'input[autocomplete="username"]',
-              'input[name="loginfmt"]', 'input[name="login"]',
-              'input[type="text"][name*="user" i]',
-            ], data.email, 'Email/Username');
+            await fillField(
+              [
+                'input[type="email"]',
+                'input[name*="email" i]',
+                'input[name*="Email"]',
+                'input[name*="username" i]',
+                'input[name*="MemberName"]',
+                'input[id*="email" i]',
+                'input[id*="username" i]',
+                'input[placeholder*="email" i]',
+                'input[placeholder*="Email"]',
+                'input[autocomplete="email"]',
+                'input[autocomplete="username"]',
+                'input[name="loginfmt"]',
+                'input[name="login"]',
+                'input[type="text"][name*="user" i]',
+              ],
+              data.email,
+              'Email/Username'
+            );
           }
 
           if (data.password) {
-            await fillField([
-              'input[type="password"]',
-              'input[name*="password" i]', 'input[name*="Password"]', 'input[name*="Passwd"]',
-              'input[id*="password" i]', 'input[name*="pass" i]',
-              'input[autocomplete="current-password"]',
-            ], data.password, 'Password');
+            await fillField(
+              [
+                'input[type="password"]',
+                'input[name*="password" i]',
+                'input[name*="Password"]',
+                'input[name*="Passwd"]',
+                'input[id*="password" i]',
+                'input[name*="pass" i]',
+                'input[autocomplete="current-password"]',
+              ],
+              data.password,
+              'Password'
+            );
           }
 
-          await clickField([
-            'input[type="checkbox"][name*="remember" i]',
-            'input[type="checkbox"][id*="remember" i]',
-            'label:has-text("remember") input[type="checkbox"]',
-            'label:has-text("Keep me") input[type="checkbox"]',
-            'label:has-text("Stay signed") input[type="checkbox"]',
-          ], 'Remember me checkbox');
+          await clickField(
+            [
+              'input[type="checkbox"][name*="remember" i]',
+              'input[type="checkbox"][id*="remember" i]',
+              'label:has-text("remember") input[type="checkbox"]',
+              'label:has-text("Keep me") input[type="checkbox"]',
+              'label:has-text("Stay signed") input[type="checkbox"]',
+            ],
+            'Remember me checkbox'
+          );
 
           await p.waitForTimeout(300);
 
-          const hasCaptcha = p.frames().some(f => {
+          const hasCaptcha = p.frames().some((f) => {
             const u = f.url();
-            return u.includes('recaptcha') || u.includes('hcaptcha') || u.includes('funcaptcha') ||
-              u.includes('arkoselabs') || u.includes('geetest') || u.includes('turnstile') ||
-              u.includes('captcha') || u.includes('mtcaptcha');
+            return (
+              u.includes('recaptcha') ||
+              u.includes('hcaptcha') ||
+              u.includes('funcaptcha') ||
+              u.includes('arkoselabs') ||
+              u.includes('geetest') ||
+              u.includes('turnstile') ||
+              u.includes('captcha') ||
+              u.includes('mtcaptcha')
+            );
           });
 
           if (hasCaptcha) {
@@ -2997,39 +3788,58 @@ except Exception as e:
             try {
               solveResults = await Promise.race([
                 autoSolveCaptcha(p),
-                new Promise<string[]>((_, rej) => setTimeout(() => rej(new Error('auto-solve timed out (30s)')), 30000)),
+                new Promise<string[]>((_, rej) =>
+                  setTimeout(() => rej(new Error('auto-solve timed out (30s)')), 30000)
+                ),
               ]);
             } catch (e: any) {
               solveResults = [`Auto-solve: ${e.message}`];
             }
-            solveResults.forEach(r => results.push(`  ${r}`));
+            solveResults.forEach((r) => results.push(`  ${r}`));
 
-            const needsVision = solveResults.some(r => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION'));
-            const unconfirmed = solveResults.some(r => /unconfirmed|shows an error/i.test(r));
+            const needsVision = solveResults.some(
+              (r) => r.includes('VERIFICATION COMPLETION STEPS') || r.includes('REQUIRES_VISION')
+            );
+            const unconfirmed = solveResults.some((r) => /unconfirmed|shows an error/i.test(r));
             if (needsVision) {
               results.push('');
-              results.push('⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signin-assist to continue.');
+              results.push(
+                '⚠ Verification widget analysis is above. Follow the VERIFICATION COMPLETION STEPS to complete it, then re-run signin-assist to continue.'
+              );
             } else if (unconfirmed) {
-              results.push('Verification attempted but NOT confirmed — take a screenshot to check the widget passed before relying on login.');
+              results.push(
+                'Verification attempted but NOT confirmed — take a screenshot to check the widget passed before relying on login.'
+              );
             } else {
               await p.waitForTimeout(2000);
               results.push('Verification confirmed. Continuing login...');
             }
           }
 
-          await clickField([
-            'button[type="submit"]',
-            'input[type="submit"]',
-            'button:has-text("Sign in")', 'button:has-text("sign in")',
-            'button:has-text("Log in")', 'button:has-text("log in")',
-            'button:has-text("Login")', 'button:has-text("login")',
-            'button:has-text("Next")', 'button:has-text("next")',
-            'button:has-text("Continue")', 'button:has-text("continue")',
-            'button:has-text("Submit")',
-            '#idSIButton9', '#loginButton', '#submitBtn',
-            'button.fui-Button[type="button"]:visible',
-            'a:has-text("Sign in")', 'a:has-text("Log in")',
-          ], 'Login/Sign in button');
+          await clickField(
+            [
+              'button[type="submit"]',
+              'input[type="submit"]',
+              'button:has-text("Sign in")',
+              'button:has-text("sign in")',
+              'button:has-text("Log in")',
+              'button:has-text("log in")',
+              'button:has-text("Login")',
+              'button:has-text("login")',
+              'button:has-text("Next")',
+              'button:has-text("next")',
+              'button:has-text("Continue")',
+              'button:has-text("continue")',
+              'button:has-text("Submit")',
+              '#idSIButton9',
+              '#loginButton',
+              '#submitBtn',
+              'button.fui-Button[type="button"]:visible',
+              'a:has-text("Sign in")',
+              'a:has-text("Log in")',
+            ],
+            'Login/Sign in button'
+          );
 
           await p.waitForTimeout(2000);
 
@@ -3044,7 +3854,11 @@ except Exception as e:
 
           const has2FA = await (async () => {
             for (const frame of allFrames) {
-              const otp = await frame.locator('input[name*="otp" i], input[name*="code" i], input[name*="verification" i], input[placeholder*="code" i], input[type="tel"]:visible').count();
+              const otp = await frame
+                .locator(
+                  'input[name*="otp" i], input[name*="code" i], input[name*="verification" i], input[placeholder*="code" i], input[type="tel"]:visible'
+                )
+                .count();
               if (otp > 0) return true;
             }
             return false;
@@ -3061,8 +3875,16 @@ except Exception as e:
 
         case 'drag-to': {
           const p = await ensureBrowser();
-          if (!target) return err('drag-to requires a target (source element or CSS selector)', 'Example: target=".slider-handle" value="200,0" or target="#puzzle-piece" value=".drop-zone"');
-          if (!value) return err('drag-to requires a value (offset "x,y" or target element selector)', 'Offset: "200,0" for 200px right. Element: ".drop-zone" to drag to another element.');
+          if (!target)
+            return err(
+              'drag-to requires a target (source element or CSS selector)',
+              'Example: target=".slider-handle" value="200,0" or target="#puzzle-piece" value=".drop-zone"'
+            );
+          if (!value)
+            return err(
+              'drag-to requires a value (offset "x,y" or target element selector)',
+              'Offset: "200,0" for 200px right. Element: ".drop-zone" to drag to another element.'
+            );
 
           try {
             const sourceEl = p.locator(target).first();
@@ -3074,7 +3896,7 @@ except Exception as e:
 
             let endX: number, endY: number;
 
-            const coords = value.split(',').map(s => parseInt(s.trim()));
+            const coords = value.split(',').map((s) => parseInt(s.trim()));
             if (coords.length === 2 && !isNaN(coords[0]) && !isNaN(coords[1])) {
               endX = startX + coords[0];
               endY = startY + coords[1];
@@ -3186,46 +4008,89 @@ except Exception as e:
               screenshot: screenshotPath,
             });
           } catch (e: any) {
-            return err(`Hold-click failed: ${e.message}`, 'Check if the element exists with "snapshot"');
+            return err(
+              `Hold-click failed: ${e.message}`,
+              'Check if the element exists with "snapshot"'
+            );
           }
         }
 
         default:
-          return err(`Unknown action: "${action}"`, `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`);
+          return err(
+            `Unknown action: "${action}"`,
+            `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`
+          );
       }
     } catch (e: any) {
       const msg = e.message || String(e);
       if (msg.includes('Timeout') || msg.includes('timeout')) {
-        return err(`Timeout waiting for element or page load: ${msg.slice(0, 120)}`, 'Use "wait" to wait for page load, "snapshot" to check current state, or verify the element exists');
+        return err(
+          `Timeout waiting for element or page load: ${msg.slice(0, 120)}`,
+          'Use "wait" to wait for page load, "snapshot" to check current state, or verify the element exists'
+        );
       }
       if (msg.includes('strict mode') || msg.includes('more than one')) {
-        return err(`Multiple elements matched "${target || '(unknown)'}"`, 'Use a more specific selector (CSS #id, [attr]), or .first()/.nth(0)');
+        return err(
+          `Multiple elements matched "${target || '(unknown)'}"`,
+          'Use a more specific selector (CSS #id, [attr]), or .first()/.nth(0)'
+        );
       }
       if (msg.includes('not visible') || msg.includes('element is not visible')) {
-        return err(`Element "${target || '(unknown)'}" is not visible on the page`, 'Scroll to the element, wait for it to appear, or use "evaluate" for JS-based interaction');
+        return err(
+          `Element "${target || '(unknown)'}" is not visible on the page`,
+          'Scroll to the element, wait for it to appear, or use "evaluate" for JS-based interaction'
+        );
       }
       if (msg.includes('detached') || msg.includes('was removed')) {
-        return err(`Element was removed from the page during interaction`, 'The page updated while interacting. Use "snapshot" to get fresh elements and retry');
+        return err(
+          `Element was removed from the page during interaction`,
+          'The page updated while interacting. Use "snapshot" to get fresh elements and retry'
+        );
       }
       if (msg.includes('intercepts pointer') || msg.includes('overlapped')) {
-        return err(`Another element is covering "${target || '(unknown)'}"`, 'Use "evaluate" with JavaScript click: document.querySelector(selector).click(), or scroll to reveal the element');
+        return err(
+          `Another element is covering "${target || '(unknown)'}"`,
+          'Use "evaluate" with JavaScript click: document.querySelector(selector).click(), or scroll to reveal the element'
+        );
       }
       if (msg.includes('frame was detached') || msg.includes('Frame was detached')) {
-        return err('The iframe was detached or reloaded during interaction', 'Re-detect frames with "detect-captcha" or "snapshot" and retry');
+        return err(
+          'The iframe was detached or reloaded during interaction',
+          'Re-detect frames with "detect-captcha" or "snapshot" and retry'
+        );
       }
       if (msg.includes('Navigation') || msg.includes('navigated')) {
-        return err(`Page navigation interrupted the action: ${msg.slice(0, 120)}`, 'Wait for navigation to complete with "wait" action, then retry');
+        return err(
+          `Page navigation interrupted the action: ${msg.slice(0, 120)}`,
+          'Wait for navigation to complete with "wait" action, then retry'
+        );
       }
-      if (msg.includes('closed') || msg.includes('Target closed') || msg.includes('browser has been closed')) {
-        return err('Browser or page was closed unexpectedly', 'Re-open the browser with action="navigate" to the target URL');
+      if (
+        msg.includes('closed') ||
+        msg.includes('Target closed') ||
+        msg.includes('browser has been closed')
+      ) {
+        return err(
+          'Browser or page was closed unexpectedly',
+          'Re-open the browser with action="navigate" to the target URL'
+        );
       }
       if (msg.includes('net::') || msg.includes('ERR_')) {
-        return err(`Network error: ${msg.slice(0, 150)}`, 'Check internet connection, proxy settings (action="set-proxy"), or if the URL is accessible');
+        return err(
+          `Network error: ${msg.slice(0, 150)}`,
+          'Check internet connection, proxy settings (action="set-proxy"), or if the URL is accessible'
+        );
       }
       if (msg.includes('Execution context was destroyed')) {
-        return err('Page JavaScript context was destroyed (page navigated or reloaded)', 'Use "wait" to let the page settle, then "snapshot" to check state before retrying');
+        return err(
+          'Page JavaScript context was destroyed (page navigated or reloaded)',
+          'Use "wait" to let the page settle, then "snapshot" to check state before retrying'
+        );
       }
-      return err(`Browser error: ${msg.slice(0, 200)}`, 'Use "snapshot" to check current page state, or "screenshot" to see what the page looks like');
+      return err(
+        `Browser error: ${msg.slice(0, 200)}`,
+        'Use "snapshot" to check current page state, or "screenshot" to see what the page looks like'
+      );
     }
   },
 };

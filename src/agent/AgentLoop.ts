@@ -180,7 +180,7 @@ export class AgentLoop {
     // Add system message to prompt todo creation
     this.messages.push({ 
       role: 'system', 
-      content: `[AUTO-TODO] The user's request appears complex. Please break it down into 3-7 concrete tasks and use the todo_create tool to track them. Then work through each task systematically.` 
+      content: `[AUTO-TODO] The user's request appears complex. Please break it down into 3-7 concrete tasks and use the todo tool to track them. Then work through each task systematically.` 
     });
   }
 

@@ -49,6 +49,8 @@ export interface AurixConfig {
     disabled?: string[];
   };
   features?: string[];
+  searchEngine?: 'ddg' | 'serper' | 'tavily';
+  searchApiKey?: string;
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.aurix');
@@ -105,6 +107,8 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     browser: file.browser,
     tools: file.tools,
     features: file.features,
+    searchEngine: file.searchEngine || 'ddg',
+    searchApiKey: process.env.SEARCH_API_KEY || file.searchApiKey || '',
   };
 }
 
