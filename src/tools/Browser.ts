@@ -58,7 +58,7 @@ function warn(msg: string, details?: Record<string, string>): string {
 
 let _lastActionScreenshot = '';
 async function autoScreenshot(p: Page, label: string): Promise<string> {
-  const path = join(homedir(), '.aurix-last-action.png');
+  const path = join(homedir(), '.aurix', 'last-action.png');
   try {
     await p.screenshot({ path });
     _lastActionScreenshot = path;
@@ -1315,7 +1315,7 @@ except Exception as e:
 
         case 'screenshot': {
           const p = await ensureBrowser();
-          const screenshotPath = options.path || join(homedir(), '.aurix-screenshot.png');
+          const screenshotPath = options.path || join(homedir(), '.aurix', 'screenshot.png');
           if (target) {
             const locator = await resolveLocator(p, target);
             await locator.first().screenshot({ path: screenshotPath });
@@ -2278,7 +2278,7 @@ except Exception as e:
                 const puzzleEl = targetFrame
                   .locator('.geetest_panel, .geetest_widget, [class*="geetest_container"]')
                   .first();
-                const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
+                const screenshotPath = join(homedir(), '.aurix', 'slider-puzzle.png');
                 try {
                   if ((await puzzleEl.count()) > 0)
                     await puzzleEl.screenshot({ path: screenshotPath });
@@ -2476,7 +2476,7 @@ except Exception as e:
               );
               if ((await imgCaptcha.count()) > 0) {
                 results.push('Text-based captcha detected.');
-                const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                const screenshotPath = join(homedir(), '.aurix', 'captcha-challenge.png');
                 await imgCaptcha.first().screenshot({ path: screenshotPath });
                 results.push(`Captcha image saved: ${screenshotPath}`);
 
@@ -2518,14 +2518,14 @@ except Exception as e:
                 }
               } else {
                 results.push('No recognizable captcha. Taking screenshot and scanning...');
-                const screenshotPath = join(homedir(), '.aurix-captcha-challenge.png');
+                const screenshotPath = join(homedir(), '.aurix', 'captcha-challenge.png');
                 await p.screenshot({ path: screenshotPath });
                 results.push(`Screenshot saved: ${screenshotPath}`);
                 results.push('Use "captcha-grid" to scan for any challenge overlay.');
               }
             }
 
-            const screenshotPath = join(homedir(), '.aurix-captcha-after.png');
+            const screenshotPath = join(homedir(), '.aurix', 'captcha-after.png');
             await p.screenshot({ path: screenshotPath });
             results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
             return results.join('\n');
@@ -2779,7 +2779,7 @@ except Exception as e:
             }
             await p.waitForTimeout(3000);
 
-            const screenshotPath = join(homedir(), '.aurix-captcha-verify-result.png');
+            const screenshotPath = join(homedir(), '.aurix', 'captcha-verify-result.png');
 
             const errorEl2 = challengeFrame
               .locator('.rc-imageselect-incorrect-response, .error-message, .incorrect')
@@ -2959,7 +2959,7 @@ except Exception as e:
               '.geetest_panel, .geetest_widget, [class*="geetest_container"], [class*="slider_container"]'
             )
             .first();
-          const screenshotPath = join(homedir(), '.aurix-slider-puzzle.png');
+          const screenshotPath = join(homedir(), '.aurix', 'slider-puzzle.png');
           try {
             if ((await puzzleEl.count()) > 0) {
               await puzzleEl.screenshot({ path: screenshotPath });
@@ -3572,7 +3572,7 @@ except Exception as e:
           results.push(`URL: ${p.url()}`);
           results.push(`Title: ${await p.title()}`);
 
-          const screenshotPath = join(homedir(), '.aurix-signup-result.png');
+          const screenshotPath = join(homedir(), '.aurix', 'signup-result.png');
           await p.screenshot({ path: screenshotPath });
           results.push(`Screenshot: ${screenshotPath}`);
 
@@ -3848,7 +3848,7 @@ except Exception as e:
           results.push(`URL: ${p.url()}`);
           results.push(`Title: ${await p.title()}`);
 
-          const screenshotPath = join(homedir(), '.aurix-signin-result.png');
+          const screenshotPath = join(homedir(), '.aurix', 'signin-result.png');
           await p.screenshot({ path: screenshotPath });
           results.push(`Screenshot: ${screenshotPath}`);
 
@@ -3961,7 +3961,7 @@ except Exception as e:
             await p.mouse.up();
             await p.waitForTimeout(400 + Math.random() * 300);
 
-            const screenshotPath = join(homedir(), '.aurix-drag-result.png');
+            const screenshotPath = join(homedir(), '.aurix', 'drag-result.png');
             await p.screenshot({ path: screenshotPath });
 
             return ok(`Dragged "${target}" to (${Math.round(endX)}, ${Math.round(endY)})`, {
@@ -4000,7 +4000,7 @@ except Exception as e:
             await humanHold(x, y, duration, p);
             await p.waitForTimeout(300 + Math.random() * 400);
 
-            const screenshotPath = join(homedir(), '.aurix-hold-result.png');
+            const screenshotPath = join(homedir(), '.aurix', 'hold-result.png');
             await p.screenshot({ path: screenshotPath });
 
             return ok(`Held click on "${target}" for ${Math.round(duration)}ms (human-like)`, {
