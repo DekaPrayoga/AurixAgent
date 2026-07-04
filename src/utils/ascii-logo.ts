@@ -1,34 +1,54 @@
-// AURIX ANSI logo — braille art phoenix, teal-to-ocean gradient
-// https://github.com/DekaPrayoga/AurixAgent
-// logoLines() strips ANSI for OpenTUI React; asciiLogo() keeps colors for stdout
+// AURIX ANSI logo — braille phoenix art
+// Left half: warm teal (#fab283 palette) | Right half: ocean blue (#2980b9 palette)
+// logoLines() strips ANSI for OpenTUI React; asciiLogo() keeps colors
 
 const T = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
 
-const LINES: string[] = [
-  // Padding
-  T(80,203,196) + '⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀',
-  // Decorative bar
-  T(250,178,131) + '⡀⡀⡀⡀⣀⣀⡀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⣀⣀⣀⣀⣀⣀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⣀⡀⡀⡀⡀⡀⡀⣀⣀',
-  // Main art — top row
-  T(100,181,190) + '⡀⡀⡀⡀⣾⡿⣿⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀' + T(64,180,180) + '⣿⣿⠛⠛⠛⠛⢿⣿⡄⡀⡀⢸⣿⡀⡀⡀⠹⣿⡄⡀⡀⡀⣼⣿⡀',
-  T(80,170,175) + '⡀⡀⡀⣠⣿⡀⣿⣇⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀' + T(52,152,182) + '⣿⣿⡀⡀⡀⡀⡀⣿⣿⡀⡀⢸⣿⡀⡀⡀⡀⠹⣿⡀⡀⣰⣿⠁⡀',
-  T(60,155,160) + '⡀⡀⡀⣿⡏⡀⠸⣿⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀' + T(41,128,185) + '⣿⣿⡀⡀⡀⡀⡀⣿⡿⡀⡀⢸⣿⡀⡀⡀⡀⡀⢻⣿⣠⣿⠁⡀⡀',
-  T(45,140,148) + '⡀⡀⣸⣿⡀⡀⡀⣿⣧⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀' + T(33,115,170) + '⣿⣿⣶⣶⣶⣶⣿⠟⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⣿⣿⡃⡀⡀⡀',
-  // Ocean blue section
-  T(30,100,155) + '⡀⡀⣿⣷⣶⣶⣶⣾⣿⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⣼⣿⡀⡀⡀' + T(29,130,181) + '⣿⣿⡀⡀⠙⣿⣄⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⣼⡿⠹⣿⡀⡀⡀',
-  T(28,95,145) + '⡀⣼⣿⡀⡀⡀⡀⡀⣿⣷⡀⡀⡀⣿⡆⡀⡀⡀⡀⡀⣿⡿⡀⡀⡀' + T(26,80,165) + '⣿⣿⡀⡀⡀⠹⣿⡄⡀⡀⡀⢸⣿⡀⡀⡀⡀⣼⣿⡀⡀⠹⣿⡀⡀',
-  T(26,80,130) + '⣀⣿⠇⡀⡀⡀⡀⡀⠘⣿⡄⡀⡀⠻⣿⣦⣀⣀⣠⣾⣿⠁⡀⡀⡀' + T(24,65,140) + '⣿⣿⡀⡀⡀⡀⠹⣿⡄⡀⡀⢸⣿⡀⡀⡀⣴⣿⠁⡀⡀⡀⢻⣿⡀',
-  T(20,50,110) + '⠚⠛⡀⡀⡀⡀⡀⡀⡀⠛⠛⡀⡀⡀⠈⠛⠻⠿⠛⠋⡀⡀⡀⡀⡀⠛⠛⡀⡀⡀⡀⡀⠙⠛⡀⡀⠘⠛⡀⡀⠐⠛⠁⡀⡀⡀⡀⡀⠛⠛',
-  // Bottom fade
-  T(15,40,95)  + '⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀',
-  T(12,30,80)  + '⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀',
-  T(10,20,65)  + '⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀⡀',
-].map(l => l + '\x1b[0m');
+// Each line: first 25 chars teal, last 25 chars ocean
+function splitColor(line: string): string {
+  const chars = [...line]; // spread to handle multi-byte braille
+  const mid = Math.floor(chars.length / 2);
+  // Teal phase colors (warm peach → teal)
+  const tealColors = [
+    [250,178,131], [240,170,125], [180,200,195],
+    [150,195,190], [120,185,185], [100,181,190],
+    [80,170,175],  [60,155,160],  [45,140,148],
+    [30,100,155],  [28,95,145],   [26,80,130],
+    [20,50,110],   [15,40,95],    [12,30,80],
+    [10,20,65],
+  ];
+  // Ocean phase colors
+  const oceanColors = [
+    [64,180,180],  [52,152,182], [41,128,185],
+    [33,115,170],  [29,130,181], [26,80,165],
+    [24,65,140],   [41,128,185], [41,128,185],
+    [26,80,165],   [24,65,140],  [20,50,110],
+    [15,40,95],    [12,30,80],   [10,20,65],
+    [10,20,65],
+  ];
+  const lineIdx = ART_LINES.indexOf(line);
+  const tc = tealColors[lineIdx] || tealColors[0];
+  const oc = oceanColors[lineIdx] || oceanColors[0];
+  return T(tc[0],tc[1],tc[2]) + chars.slice(0,mid).join('') + T(oc[0],oc[1],oc[2]) + chars.slice(mid).join('') + '\x1b[0m';
+}
 
-const ANSI_LOGO = LINES.join('\n');
+const ART_LINES: string[] = [
+  '⡀⡀⡀⡀⣀⣀⡀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⣀⣀⣀⣀⣀⣀⡀⡀⡀⡀⡀⣀⣀⡀⡀⡀⣀⡀⡀⡀⡀⡀⡀⣀⣀',
+  '⡀⡀⡀⡀⣾⡿⣿⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⣿⣿⠛⠛⠛⠛⢿⣿⡄⡀⡀⢸⣿⡀⡀⡀⠹⣿⡄⡀⡀⡀⣼⣿⡀',
+  '⡀⡀⡀⣠⣿⡀⣿⣇⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⣿⣿⡀⡀⡀⡀⡀⣿⣿⡀⡀⢸⣿⡀⡀⡀⡀⠹⣿⡀⡀⣰⣿⠁⡀',
+  '⡀⡀⡀⣿⡏⡀⠸⣿⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⣿⣿⡀⡀⡀⡀⡀⣿⡿⡀⡀⢸⣿⡀⡀⡀⡀⡀⢻⣿⣠⣿⠁⡀⡀',
+  '⡀⡀⣸⣿⡀⡀⡀⣿⣧⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⢸⣿⡀⡀⡀⣿⣿⣶⣶⣶⣶⣿⠟⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⣿⣿⡃⡀⡀⡀',
+  '⡀⡀⣿⣷⣶⣶⣶⣾⣿⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⡀⣼⣿⡀⡀⡀⣿⣿⡀⡀⠙⣿⣄⡀⡀⡀⡀⢸⣿⡀⡀⡀⡀⡀⣼⡿⠹⣿⡀⡀⡀',
+  '⡀⣼⣿⡀⡀⡀⡀⡀⣿⣷⡀⡀⡀⣿⡆⡀⡀⡀⡀⡀⣿⡿⡀⡀⡀⣿⣿⡀⡀⡀⠹⣿⡄⡀⡀⡀⢸⣿⡀⡀⡀⡀⣼⣿⡀⡀⠹⣿⡀⡀',
+  '⣀⣿⠇⡀⡀⡀⡀⡀⠘⣿⡄⡀⡀⠻⣿⣦⣀⣀⣠⣾⣿⠁⡀⡀⡀⣿⣿⡀⡀⡀⡀⠹⣿⡄⡀⡀⢸⣿⡀⡀⡀⣴⣿⠁⡀⡀⡀⢻⣿⡀',
+  '⠚⠛⡀⡀⡀⡀⡀⡀⡀⠛⠛⡀⡀⡀⠈⠛⠻⠿⠛⠋⡀⡀⡀⡀⡀⠛⠛⡀⡀⡀⡀⡀⠙⠛⡀⡀⠘⠛⡀⡀⠐⠛⠁⡀⡀⡀⡀⡀⠛⠛',
+];
 
-// Plain-text version for OpenTUI React (no ANSI escape codes)
-const PLAIN_LINES = LINES.map(l => l.replace(/\x1b\[[0-9;]*m/g, ''));
+// Colored version for stdout / LiteApp
+const ANSI_LOGO = ART_LINES.map(splitColor).join('\n');
+
+// Plain version for OpenTUI React (no ANSI)
+const PLAIN_LINES = ART_LINES.slice();
 
 export function asciiLogo(): string {
   return ANSI_LOGO;
@@ -59,6 +79,5 @@ export function miniLogo(): string {
 }
 
 export function banner(model: string, provider: string, version: string = '0.1.0'): string {
-  const meta = 'provider ' + provider + ' · model ' + model + ' · v' + version;
-  return ANSI_LOGO + '\n' + wordmark() + '\n' + meta;
+  return ANSI_LOGO + '\n' + wordmark() + '\nprovider ' + provider + ' · model ' + model + ' · v' + version;
 }
