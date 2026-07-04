@@ -128,10 +128,15 @@ export function App({ config, registry, resumeId }: AppProps) {
   }, [renderer, showToast]);
 
   const doExit = useCallback(() => {
+    // Cleanup: interrupt any running agent task, stop gateway, stop MCP
+    try { agentRef.current?.interrupt(); } catch {}
+    try { gatewayRef.current?.stop(); } catch {}
+    try { mcpManager.stopAll(); } catch {}
+
     const name = sessionNameRef.current !== 'New session' ? sessionNameRef.current : undefined;
     const saveId = resumeSessionIdRef.current || name;
     const sessionId = agentRef.current?.saveSession(saveId) || '';
-    renderer.destroy();
+    try { renderer.destroy(); } catch {}
 
     process.stdout.write(
       '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l' +
@@ -491,6 +496,7 @@ Supervisor auto-routes tasks to the right specialist(s).`);
       }
 
       if (commandName === 'reset') {
+        try { agentRef.current?.interrupt(); } catch {}
         agentRef.current = new AgentLoop(config, registry);
         setMessages([{
           role: 'assistant',
@@ -1654,7 +1660,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
 
     setIsProcessing(false);
     setActiveTool(undefined);
-  }, [isProcessing, config, registry, showBanner, researchMode, toolCount, skillCount, skills, commands, doExit]);
+  }, [isProcessing, commands, doExit]); // commands & doExit are stable (memoized); isProcessing gates submission
 
   const isHome = showBanner && messages.length === 0 && !isProcessing;
   const ctxStats = agent.getContextStats();

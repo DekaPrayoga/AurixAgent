@@ -408,6 +408,13 @@ export class Gateway extends EventEmitter {
 
     if (!platform) return;
 
+    // Guard: prevent concurrent processing for the same user
+    // (queue processing via setImmediate can race with a new message)
+    if ((this as any).__processing?.[agentKey]) return;
+    if (!(this as any).__processing) (this as any).__processing = new Set<string>();
+    (this as any).__processing.add(agentKey);
+    try {
+
     if (AskUserManager.isWaiting(agentKey)) {
       AskUserManager.submitAnswer(agentKey, msg.content.trim());
       return;
@@ -532,6 +539,7 @@ export class Gateway extends EventEmitter {
     }
 
     if (cmd === 'reset') {
+      try { this.agents.get(agentKey)?.interrupt(); this.activeProcessing.delete(agentKey); } catch {}
       this.agents.delete(agentKey);
       await platform.send('✅ Context reset. Starting fresh.', msg.channelId, msg.replyTo);
       return;
@@ -789,6 +797,7 @@ export class Gateway extends EventEmitter {
       await platform.send(`❌ Error: ${e.message}`, msg.channelId, msg.replyTo);
     } finally {
       this.activeProcessing.delete(agentKey);
+      (this as any).__processing?.delete(agentKey);
     }
 
     this.emit('response', { msg, response: 'sent' });
@@ -799,6 +808,7 @@ export class Gateway extends EventEmitter {
       await platform.send('▶️ Processing queued message...', queued.channelId, queued.replyTo);
       setImmediate(() => this.handleMessage(queued));
     }
+    } finally { (this as any).__processing?.delete(agentKey); }
   }
 
   async start(): Promise<void> {
