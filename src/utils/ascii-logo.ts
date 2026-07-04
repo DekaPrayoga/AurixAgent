@@ -12,7 +12,8 @@ export function asciiLogo(): string {
 }
 
 export function logoLines(): string[] {
-  return ANSI_LOGO.split('\n');
+  // Strip ANSI escape codes for TUI renderers (OpenTUI React doesn't process them)
+  return ANSI_LOGO.replace(/\x1b\[[0-9;]*m/g, '').split('\n');
 }
 
 export function aurixLogoMark(): string {
