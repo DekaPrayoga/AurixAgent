@@ -94,6 +94,7 @@ interface BrowserSession {
   context: BrowserContext;
   page: Page;
   profileDir: string;
+  crashed?: boolean;
 }
 
 const sessions = new Map<string, BrowserSession>();
@@ -232,7 +233,11 @@ function randomPick<T>(arr: T[]): T {
 
 async function ensureBrowser(): Promise<Page> {
   const existing = getSession();
-  if (existing && !existing.page.isClosed()) return existing.page;
+  if (existing && !existing.page.isClosed() && !(existing as any).crashed) return existing.page;
+  // If session crashed, clean it up before creating a new one
+  if (existing && ((existing as any).crashed || existing.page.isClosed())) {
+    await closeBrowser();
+  }
 
   await ensureBinary();
 
@@ -444,11 +449,14 @@ async function ensureBrowser(): Promise<Page> {
     }
   }
 
-  let pageCrashed = false;
-  page.on('crash', () => { pageCrashed = true; });
-  context.on('close', () => { pageCrashed = true; });
+  const _updateCrashed = () => {
+    const s = sessions.get(currentSessionKey);
+    if (s) (s as any).crashed = true;
+  };
+  page.on('crash', _updateCrashed);
+  context.on('close', _updateCrashed);
 
-  sessions.set(currentSessionKey, { context, page, profileDir });
+  sessions.set(currentSessionKey, { context, page, profileDir, crashed: false });
   return page;
 }
 
@@ -457,6 +465,52 @@ async function closeBrowser(): Promise<void> {
   if (session) {
     await session.context.close().catch(() => {});
     sessions.delete(currentSessionKey);
+  }
+}
+
+// Auto-handle Cloudflare Turnstile — click the checkbox to trigger managed challenge.
+// With good fingerprinting (CloakBrowser), managed challenges auto-pass without visual puzzles.
+// Returns true if Turnstile was handled, false if no Turnstile detected.
+async function autoBypassTurnstile(page: Page, timeoutMs = 15000): Promise<{ handled: boolean; blocked: boolean }> {
+  try {
+    const pageContent = await page.content();
+    const hasTurnstile = pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare');
+    if (!hasTurnstile) return { handled: false, blocked: false };
+
+    const turnstileFrame = page.frames().find(f => f.url().includes('challenges.cloudflare'));
+    if (turnstileFrame) {
+      try {
+        // Click the checkbox to trigger managed challenge
+        const cb = turnstileFrame.locator('input[type="checkbox"], .cb-lb, #challenge-stage label');
+        if (await cb.count() > 0) {
+          await cb.first().click({ timeout: 5000 }).catch(() => {});
+        } else {
+          await turnstileFrame.locator('body').click({ timeout: 5000 }).catch(() => {});
+        }
+        await page.waitForTimeout(4000 + Math.random() * 2000);
+
+        // Check if Turnstile resolved
+        const afterContent = await page.content();
+        if (!afterContent.includes('cf-turnstile') && !afterContent.includes('challenges.cloudflare')) {
+          return { handled: true, blocked: false };
+        }
+      } catch {}
+    }
+
+    // Try reloading to get a fresh managed challenge (often passes on retry with good proxy/IP)
+    try {
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+      await page.waitForTimeout(3000);
+      const reloadContent = await page.content();
+      if (!reloadContent.includes('cf-turnstile') && !reloadContent.includes('challenges.cloudflare')) {
+        return { handled: true, blocked: false };
+      }
+    } catch {}
+
+    // Still blocked — signal to agent
+    return { handled: true, blocked: true };
+  } catch {
+    return { handled: false, blocked: false };
   }
 }
 
@@ -536,7 +590,8 @@ Step 3: If type fails → click the input first, then type again
 Step 4: If ALL 3 fail → take a snapshot to find a better selector, then retry
 
 # Captcha Auto-Solve (all types)
-- solve-captcha: ONE call auto-solves image grids, sliders, FunCaptcha. Use this FIRST.
+- solve-captcha: ONE call auto-solves image grids, sliders, FunCaptcha, Turnstile. Use this FIRST.
+- Navigate auto-handles Cloudflare Turnstile — clicks checkbox + waits for managed challenge to pass (no manual action needed).
 - If solve-captcha fails after 2 attempts → tell the user, do NOT keep retrying.
 
 # Action Reference
@@ -802,6 +857,12 @@ except Exception as e:
           return 'Browser closed. Profile preserved at ' + profilePath;
         }
 
+        case 'close-all': {
+          const count = sessions.size;
+          await closeAllSessions();
+          return `All ${count} browser session(s) closed. Profiles preserved at ${BASE_PROFILE_DIR}`;
+        }
+
         case 'navigate': {
           const p = await ensureBrowser();
           const url = value || target;
@@ -868,7 +929,9 @@ except Exception as e:
               }
 
               if (didNavigate(freshPage)) {
-                return ok(`Navigated to ${freshPage.url()}`, { title: await freshPage.title() });
+                const ts = await autoBypassTurnstile(freshPage);
+                const extra = ts.blocked ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.' : ts.handled ? '\n✓ Cloudflare Turnstile auto-bypassed.' : '';
+                return ok(`Navigated to ${freshPage.url()}${extra}`, { title: await freshPage.title(), turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none' });
               }
               diagnostics.push(`fresh page final url: ${freshPage.url()}`);
             } catch (e: any) {
@@ -878,7 +941,9 @@ except Exception as e:
 
           const currentPage = getSession()?.page;
           if (currentPage && didNavigate(currentPage)) {
-            return ok(`Navigated to ${currentPage.url()}`, { title: await currentPage.title() });
+            const ts = await autoBypassTurnstile(currentPage);
+            const extra = ts.blocked ? '\n⚠ Cloudflare Turnstile detected but could not auto-bypass — try switching proxy or reloading.' : ts.handled ? '\n✓ Cloudflare Turnstile auto-bypassed.' : '';
+            return ok(`Navigated to ${currentPage.url()}${extra}`, { title: await currentPage.title(), turnstile: ts.blocked ? 'blocked' : ts.handled ? 'bypassed' : 'none' });
           }
 
           // DIAGNOSTIC: test if the browser can execute JS and access the page
@@ -1573,22 +1638,41 @@ except Exception as e:
           if (captchaType === 'turnstile') {
             results.push('Attempting Cloudflare Turnstile...');
             try {
-              const turnstileFrame = frames.find(f => f.url().includes('challenges.cloudflare'));
-              if (turnstileFrame) {
-                await p.waitForTimeout(1500 + Math.random() * 1000);
-                const cb = turnstileFrame.locator('input[type="checkbox"], .cb-lb');
-                if (await cb.count() > 0) {
-                  await humanClick(cb, p);
-                  await p.waitForTimeout(3000);
-                  results.push(ok('Turnstile checkbox clicked'));
-                } else {
-                  await turnstileFrame.locator('body').click();
-                  await p.waitForTimeout(3000);
-                  results.push(warn('Turnstile frame clicked (managed challenge)', { next: 'Check if challenge resolved with screenshot' }));
+              // Managed challenge with auto-retry: clicks checkbox → waits → reloads if still blocked
+              // CloakBrowser's good fingerprinting means managed challenges often pass silently
+              const maxRetries = 3;
+              let resolved = false;
+              for (let attempt = 0; attempt < maxRetries; attempt++) {
+                if (attempt > 0) results.push(`Turnstile retry ${attempt}/${maxRetries}...`);
+                const tFrame = p.frames().find(f => f.url().includes('challenges.cloudflare'));
+                if (tFrame) {
+                  await p.waitForTimeout(1000 + Math.random() * 1000);
+                  const cb = tFrame.locator('input[type="checkbox"], .cb-lb, #challenge-stage label');
+                  if (await cb.count() > 0) {
+                    await humanClick(cb, p);
+                  } else {
+                    await tFrame.locator('body').click({ timeout: 3000 }).catch(() => {});
+                  }
+                  await p.waitForTimeout(4000);
+                }
+                // Check if resolved
+                const c = await p.content();
+                if (!c.includes('cf-turnstile') && !c.includes('challenges.cloudflare')) {
+                  resolved = true;
+                  results.push(ok('Cloudflare Turnstile bypassed — page unlocked'));
+                  break;
+                }
+                // Reload to trigger fresh managed challenge
+                if (attempt < maxRetries - 1) {
+                  await p.reload({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+                  await p.waitForTimeout(2000);
                 }
               }
+              if (!resolved) {
+                results.push(warn('Turnstile still active after retries — try switching proxy or waiting'));
+              }
             } catch (e: any) {
-              results.push(err(`Turnstile failed: ${e.message}`));
+              results.push(err(`Turnstile error: ${e.message}`, 'Try reloading the page or switching proxy'));
             }
           }
 
