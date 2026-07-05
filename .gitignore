@@ -66,3 +66,7 @@ test-*.ts
 *.cmd
 test-run.mjs
 test-*.js
+debug-*.js
+fix-*.js
+patch-*.js
+check-*.js

@@ -1368,6 +1368,12 @@ export class AgentLoop {
     this.messages = [system];
   }
 
+  async compactMessages(): Promise<number> {
+    const before = this.messages.length;
+    this.messages = await this.contextManager.compact(this.messages);
+    return before - this.messages.length;
+  }
+
   setProvider(config: Partial<AurixConfig>): void {
     this.config = { ...this.config, ...config };
     this.provider = createProvider(this.config);

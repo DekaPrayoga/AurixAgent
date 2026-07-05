@@ -426,7 +426,7 @@ export class Gateway extends EventEmitter {
 
     if (!platform) return;
 
-    const text = msg.content.trim();
+    let text = msg.content.trim();
     const isWA = this.isWhatsApp(msg);
     const { cmd, args } = this.normalizeCommand(text, msg.platform);
 
@@ -451,6 +451,15 @@ export class Gateway extends EventEmitter {
         replyTo: msg.replyTo,
       });
 
+      if (!this.isUserAllowed(msg)) {
+        await platform.send(
+          '🔒 Access denied. Your user ID is not in the allowed list for this bot.',
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
       if (cmd === 'cancel') {
         if (this.activeProcessing.has(agentKey)) {
           const agent = this.agents.get(agentKey);
@@ -461,15 +470,6 @@ export class Gateway extends EventEmitter {
         } else {
           await platform.send('No active task to cancel.', msg.channelId, msg.replyTo);
         }
-        return;
-      }
-
-      if (!this.isUserAllowed(msg)) {
-        await platform.send(
-          '🔒 Access denied. Your user ID is not in the allowed list for this bot.',
-          msg.channelId,
-          msg.replyTo
-        );
         return;
       }
 
@@ -823,7 +823,17 @@ export class Gateway extends EventEmitter {
       }
 
       if (cmd === 'compress') {
-        await platform.send('⏳ Compressing context...', msg.channelId, msg.replyTo);
+        const agent = this.agents.get(agentKey);
+        if (agent) {
+          const removed = await agent.compactMessages();
+          await platform.send(
+            `✅ Compressed: removed ${removed} tool results from context.`,
+            msg.channelId,
+            msg.replyTo
+          );
+        } else {
+          await platform.send('No active session to compress.', msg.channelId, msg.replyTo);
+        }
         return;
       }
 
@@ -842,17 +852,37 @@ export class Gateway extends EventEmitter {
       }
 
       if (cmd === 'review') {
-        await platform.send(
-          "🔍 Code review: paste your code and I'll review it!",
-          msg.channelId,
-          msg.replyTo
-        );
-        return;
+        const reviewCode = args;
+        if (!reviewCode) {
+          await platform.send(
+            '🔍 Usage: /review <code or paste>\nI will analyze your code for bugs, security, and improvements.',
+            msg.channelId,
+            msg.replyTo
+          );
+          return;
+        }
+        // Route as a code review prompt
+        text = `[REVIEW REQUEST] Review the following code for bugs, security issues, and improvements:\n\n${reviewCode}`;
       }
 
       if (cmd === 'plan') {
+        const planDesc = args;
+        if (!planDesc) {
+          await platform.send(
+            '📋 Usage: /plan <project description>\nI will create an implementation plan with architecture and steps.',
+            msg.channelId,
+            msg.replyTo
+          );
+          return;
+        }
+        text = `[PLAN REQUEST] Create a detailed implementation plan for this project. Include architecture, file structure, and step-by-step tasks:\n\n${planDesc}`;
+      }
+
+      if (cmd === 'login') {
         await platform.send(
-          "📋 Planning mode: describe your project and I'll create a plan!",
+          '🔑 To update credentials:\n' +
+            'Run `aurix setup` on your terminal.\n' +
+            'Or set env vars: AURIX_API_KEY, AURIX_BASE_URL, AURIX_MODEL.',
           msg.channelId,
           msg.replyTo
         );

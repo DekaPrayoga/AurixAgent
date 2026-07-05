@@ -10,12 +10,22 @@ import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 import { filterFiles } from './fileList.js';
 
-function runCmd(cmd: string, args: string[], input?: string, env?: Record<string, string>): Promise<string> {
+function runCmd(
+  cmd: string,
+  args: string[],
+  input?: string,
+  env?: Record<string, string>
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(cmd, args, { timeout: 2000, env: env ? { ...process.env, ...env } : undefined }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
+    const child = execFile(
+      cmd,
+      args,
+      { timeout: 2000, env: env ? { ...process.env, ...env } : undefined },
+      (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      }
+    );
     if (input && child.stdin) {
       child.stdin.write(input);
       child.stdin.end();
@@ -33,14 +43,17 @@ function findDisplay(): { display: string; xauth: string } | null {
 
   const home = process.env.HOME || process.env.USERPROFILE || '';
 
-  const xauthCandidates = [
-    process.env.XAUTHORITY,
-    home && `${home}/.Xauthority`,
-  ].filter(Boolean) as string[];
+  const xauthCandidates = [process.env.XAUTHORITY, home && `${home}/.Xauthority`].filter(
+    Boolean
+  ) as string[];
 
   let xauth = '';
   for (const p of xauthCandidates) {
-    try { fs.accessSync(p); xauth = p; break; } catch {}
+    try {
+      fs.accessSync(p);
+      xauth = p;
+      break;
+    } catch {}
   }
 
   if (process.env.DISPLAY) {
@@ -82,13 +95,18 @@ function xclipEnv(): Record<string, string> | undefined {
 export function readClipboard(): Promise<string | undefined> {
   return (async () => {
     if (isMac) {
-      try { const t = await runCmd('pbpaste', []); if (t) return t; } catch {}
+      try {
+        const t = await runCmd('pbpaste', []);
+        if (t) return t;
+      } catch {}
       return undefined;
     }
     if (isWindows) {
       try {
         const t = await runCmd('powershell.exe', [
-          '-NoProfile', '-Sta', '-command',
+          '-NoProfile',
+          '-Sta',
+          '-command',
           '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $clip = Get-Clipboard -Raw; if ($clip -ne $null) { Write-Output $clip }',
         ]);
         if (t) return t.replace(/\r\n/g, '\n');
@@ -96,12 +114,21 @@ export function readClipboard(): Promise<string | undefined> {
       return undefined;
     }
     if (process.env.WAYLAND_DISPLAY) {
-      try { const t = await runCmd('wl-paste', ['--no-newline']); if (t) return t; } catch {}
+      try {
+        const t = await runCmd('wl-paste', ['--no-newline']);
+        if (t) return t;
+      } catch {}
     }
     const env = xclipEnv();
     if (env || process.env.DISPLAY) {
-      try { const t = await runCmd('xclip', ['-selection', 'clipboard', '-o'], undefined, env); if (t) return t; } catch {}
-      try { const t = await runCmd('xsel', ['--clipboard', '--output'], undefined, env); if (t) return t; } catch {}
+      try {
+        const t = await runCmd('xclip', ['-selection', 'clipboard', '-o'], undefined, env);
+        if (t) return t;
+      } catch {}
+      try {
+        const t = await runCmd('xsel', ['--clipboard', '--output'], undefined, env);
+        if (t) return t;
+      } catch {}
     }
     return undefined;
   })();
@@ -112,26 +139,28 @@ export function writeClipboard(text: string): void {
   const osc52 = `\x1b]52;c;${b64}\x07`;
   process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
 
-  import('node:child_process').then(({ spawn }) => {
-    const clipEnv: Record<string, string> = { ...process.env as Record<string, string> };
-    if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
-    if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
-    const tools: [string, string[]][] = [
-      ['wl-copy', []],
-      ['xclip', ['-selection', 'clipboard']],
-      ['xsel', ['--clipboard', '--input']],
-      ['pbcopy', []],
-      ['clip', []],
-      ['clip.exe', []]
-    ];
-    for (const [cmd, args] of tools) {
-      try {
-        const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
-        child.stdin?.end(text);
-        child.on('error', () => {});
-      } catch {}
-    }
-  }).catch(() => {});
+  import('node:child_process')
+    .then(({ spawn }) => {
+      const clipEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+      if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
+      if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
+      const tools: [string, string[]][] = [
+        ['wl-copy', []],
+        ['xclip', ['-selection', 'clipboard']],
+        ['xsel', ['--clipboard', '--input']],
+        ['pbcopy', []],
+        ['clip', []],
+        ['clip.exe', []],
+      ];
+      for (const [cmd, args] of tools) {
+        try {
+          const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
+          child.stdin?.end(text);
+          child.on('error', () => {});
+        } catch {}
+      }
+    })
+    .catch(() => {});
 }
 
 function readClipboardImage(): Promise<string | undefined> {
@@ -158,7 +187,9 @@ end try
 return "ok"`;
         const child = sp('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
         let out = '';
-        child.stdout?.on('data', (d: Buffer) => { out += d; });
+        child.stdout?.on('data', (d: Buffer) => {
+          out += d;
+        });
         child.on('close', () => resolve(out.includes('ok') ? tmpFile : undefined));
         child.on('error', () => resolve(undefined));
       });
@@ -168,9 +199,14 @@ return "ok"`;
       const tmpFileWin = path.join(os.tmpdir(), `aurix-paste-${Date.now()}.png`);
       return new Promise<string | undefined>((resolve) => {
         const psScript = `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('${tmpFileWin.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output '' }`;
-        const child = sp('powershell', ['-NoProfile', '-Command', psScript], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+        const child = sp('powershell', ['-NoProfile', '-Command', psScript], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        });
         let out = '';
-        child.stdout?.on('data', (d: Buffer) => { out += d; });
+        child.stdout?.on('data', (d: Buffer) => {
+          out += d;
+        });
         child.on('close', () => resolve(out.includes('ok') ? tmpFileWin : undefined));
         child.on('error', () => resolve(undefined));
       });
@@ -178,7 +214,9 @@ return "ok"`;
 
     if (process.env.WAYLAND_DISPLAY) {
       return new Promise<string | undefined>((resolve) => {
-        const child = sp('wl-paste', ['--type', 'image/png'], { stdio: ['ignore', 'pipe', 'ignore'] });
+        const child = sp('wl-paste', ['--type', 'image/png'], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
         const chunks: Buffer[] = [];
         child.stdout?.on('data', (d: Buffer) => chunks.push(d));
         child.on('close', (code: number) => {
@@ -192,7 +230,10 @@ return "ok"`;
     }
 
     return new Promise<string | undefined>((resolve) => {
-      const child = sp('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { stdio: ['ignore', 'pipe', 'ignore'], env: fullEnv });
+      const child = sp('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: fullEnv,
+      });
       const chunks: Buffer[] = [];
       child.stdout?.on('data', (d: Buffer) => chunks.push(d));
       child.on('close', (code: number) => {
@@ -235,7 +276,19 @@ let lastPasteLen = 0;
 let lastCtrlCEmpty = 0;
 const pastedBlocks = new Map<string, string>();
 
-export function InputBox({ onSubmit, disabled, commands = [], home = false, model, contextPct = 0, cwd, mode = 'auto', onModeCycle, onExit, onRewind }: InputBoxProps) {
+export function InputBox({
+  onSubmit,
+  disabled,
+  commands = [],
+  home = false,
+  model,
+  contextPct = 0,
+  cwd,
+  mode = 'auto',
+  onModeCycle,
+  onExit,
+  onRewind,
+}: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
@@ -259,7 +312,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   // with keystrokes during normal typing (was causing ~500ms input lag)
   useEffect(() => {
     if (!disabled) return;
-    const id = setInterval(() => setSpinnerTick(n => n + 1), 530);
+    const id = setInterval(() => setSpinnerTick((n) => n + 1), 530);
     return () => clearInterval(id);
   }, [disabled]);
 
@@ -292,21 +345,22 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         if (lines.length >= 2 || text.length > 200) {
           const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
           pastedBlocks.set(placeholder, text);
-          setValue(prev => prev.slice(0, start) + placeholder + prev.slice(end));
+          setValue((prev) => prev.slice(0, start) + placeholder + prev.slice(end));
           setCursor(start + placeholder.length);
         } else {
-          setValue(prev => prev.slice(0, start) + text + prev.slice(end));
+          setValue((prev) => prev.slice(0, start) + text + prev.slice(end));
           setCursor(start + text.length);
         }
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       } else if (lines.length >= 2 || text.length > 200) {
         const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
         pastedBlocks.set(placeholder, text);
-        setValue(prev => prev + placeholder);
-        setCursor(prev => prev + placeholder.length);
+        setValue((prev) => prev + placeholder);
+        setCursor((prev) => prev + placeholder.length);
       } else {
-        setValue(prev => prev + text);
-        setCursor(prev => prev + text.length);
+        setValue((prev) => prev + text);
+        setCursor((prev) => prev + text.length);
       }
     }
   });
@@ -316,9 +370,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     return frames[spinnerTick % frames.length];
   };
 
-  const commandQuery = value.startsWith('/') && !/\s/.test(value.slice(1))
-    ? value.slice(1)
-    : null;
+  const commandQuery = value.startsWith('/') && !/\s/.test(value.slice(1)) ? value.slice(1) : null;
 
   const suggestions = useMemo(() => {
     if (commandQuery === null || commands.length === 0) return [];
@@ -326,7 +378,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   }, [commandQuery, commands, home]);
 
   const suggestionsVisible = suggestions.length > 0;
-  useEffect(() => { setSelectedCommand(0); }, [commandQuery]);
+  useEffect(() => {
+    setSelectedCommand(0);
+  }, [commandQuery]);
 
   // @-mention: detect a trailing @token (no whitespace after the @) to attach a file.
   const atQuery = (() => {
@@ -338,7 +392,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     return filterFiles(atQuery, 12);
   }, [atQuery]);
   const fileSuggestionsVisible = fileSuggestions.length > 0;
-  useEffect(() => { setSelectedCommand(0); }, [atQuery]);
+  useEffect(() => {
+    setSelectedCommand(0);
+  }, [atQuery]);
 
   function applyFileCompletion(index = selectedCommand) {
     const file = fileSuggestions[index];
@@ -371,8 +427,14 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       evt.stopPropagation();
       lastPasteStart = -1;
       lastPasteLen = 0;
-      if (suggestionsVisible) { applyCommandCompletion(); return; }
-      if (fileSuggestionsVisible) { applyFileCompletion(); return; }
+      if (suggestionsVisible) {
+        applyCommandCompletion();
+        return;
+      }
+      if (fileSuggestionsVisible) {
+        applyFileCompletion();
+        return;
+      }
       const trimmed = value.trim();
       if (trimmed) {
         let expanded = trimmed;
@@ -381,7 +443,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         }
         pastedBlocks.clear();
         onSubmit(expanded);
-        setHistory(prev => [...prev, trimmed]);
+        setHistory((prev) => [...prev, trimmed]);
         setValue('');
         setCursor(0);
         setHistoryIdx(-1);
@@ -391,9 +453,18 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (name === 'tab') {
       evt.preventDefault();
       evt.stopPropagation();
-      if (evt.shift && onModeCycle) { onModeCycle(); return; }
-      if (suggestionsVisible) { applyCommandCompletion(); return; }
-      if (fileSuggestionsVisible) { applyFileCompletion(); return; }
+      if (evt.shift && onModeCycle) {
+        onModeCycle();
+        return;
+      }
+      if (suggestionsVisible) {
+        applyCommandCompletion();
+        return;
+      }
+      if (fileSuggestionsVisible) {
+        applyFileCompletion();
+        return;
+      }
       return;
     }
     if (evt.ctrl && name === 'p') {
@@ -427,9 +498,10 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           lastCtrlCEmpty = now;
           setValue('press Ctrl+C again to exit');
           setCursor(0);
-          setSelStart(-1); setSelEnd(-1);
+          setSelStart(-1);
+          setSelEnd(-1);
           setTimeout(() => {
-            setValue(prev => prev === 'press Ctrl+C again to exit' ? '' : prev);
+            setValue((prev) => (prev === 'press Ctrl+C again to exit' ? '' : prev));
           }, 1500);
         }
       }
@@ -451,32 +523,34 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     if (evt.ctrl && name === 'v') {
       evt.preventDefault();
       const insertAt = cursor;
-      readClipboardImage().then((imgPath) => {
-        if (imgPath) {
-          const summary = `[image: ${imgPath}]`;
-          setValue(prev => {
-            lastPasteStart = insertAt;
-            lastPasteLen = summary.length;
-            return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
-          });
-          setCursor(insertAt + summary.length);
-          return;
-        }
-        return readClipboard().then((text) => {
-          if (!text) return;
-          const clean = text.replace(/\r\n/g, '\n').trimEnd();
-          const lines = clean.split('\n');
-          if (lines.length >= 2 || clean.length > 200) {
-            const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
-            pastedBlocks.set(placeholder, clean);
-            setValue(prev => prev.slice(0, insertAt) + placeholder + prev.slice(insertAt));
-            setCursor(insertAt + placeholder.length);
-          } else {
-            setValue(prev => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-            setCursor(insertAt + clean.length);
+      readClipboardImage()
+        .then((imgPath) => {
+          if (imgPath) {
+            const summary = `[image: ${imgPath}]`;
+            setValue((prev) => {
+              lastPasteStart = insertAt;
+              lastPasteLen = summary.length;
+              return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
+            });
+            setCursor(insertAt + summary.length);
+            return;
           }
-        });
-      }).catch(() => {});
+          return readClipboard().then((text) => {
+            if (!text) return;
+            const clean = text.replace(/\r\n/g, '\n').trimEnd();
+            const lines = clean.split('\n');
+            if (lines.length >= 2 || clean.length > 200) {
+              const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
+              pastedBlocks.set(placeholder, clean);
+              setValue((prev) => prev.slice(0, insertAt) + placeholder + prev.slice(insertAt));
+              setCursor(insertAt + placeholder.length);
+            } else {
+              setValue((prev) => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+              setCursor(insertAt + clean.length);
+            }
+          });
+        })
+        .catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {
@@ -487,7 +561,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         const end = Math.max(selStart, selEnd);
         setValue(value.slice(0, start) + value.slice(end));
         setCursor(start);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
         lastPasteStart = -1;
         lastPasteLen = 0;
       } else if (cursor > 0 && lastPasteStart >= 0 && cursor === lastPasteStart + lastPasteLen) {
@@ -513,7 +588,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         setSelEnd(newCursor);
       } else {
         setCursor(Math.max(0, cursor - 1));
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
       return;
     }
@@ -527,7 +603,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         setSelEnd(newCursor);
       } else {
         setCursor(Math.min(value.length, cursor + 1));
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
       return;
     }
@@ -539,7 +616,8 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         setSelEnd(0);
       } else {
         setCursor(0);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
       return;
     }
@@ -551,32 +629,33 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         setSelEnd(value.length);
       } else {
         setCursor(value.length);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
       return;
     }
     if (fileSuggestionsVisible && name === 'up') {
       evt.preventDefault();
       evt.stopPropagation();
-      setSelectedCommand(prev => prev <= 0 ? fileSuggestions.length - 1 : prev - 1);
+      setSelectedCommand((prev) => (prev <= 0 ? fileSuggestions.length - 1 : prev - 1));
       return;
     }
     if (fileSuggestionsVisible && name === 'down') {
       evt.preventDefault();
       evt.stopPropagation();
-      setSelectedCommand(prev => (prev + 1) % fileSuggestions.length);
+      setSelectedCommand((prev) => (prev + 1) % fileSuggestions.length);
       return;
     }
     if (suggestionsVisible && name === 'up') {
       evt.preventDefault();
       evt.stopPropagation();
-      setSelectedCommand(prev => prev <= 0 ? suggestions.length - 1 : prev - 1);
+      setSelectedCommand((prev) => (prev <= 0 ? suggestions.length - 1 : prev - 1));
       return;
     }
     if (suggestionsVisible && name === 'down') {
       evt.preventDefault();
       evt.stopPropagation();
-      setSelectedCommand(prev => (prev + 1) % suggestions.length);
+      setSelectedCommand((prev) => (prev + 1) % suggestions.length);
       return;
     }
     if (!suggestionsVisible && name === 'up') {
@@ -594,7 +673,12 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       evt.preventDefault();
       evt.stopPropagation();
       const nextIdx = historyIdx + 1;
-      if (nextIdx >= history.length) { setHistoryIdx(-1); setValue(''); setCursor(0); return; }
+      if (nextIdx >= history.length) {
+        setHistoryIdx(-1);
+        setValue('');
+        setCursor(0);
+        return;
+      }
       setHistoryIdx(nextIdx);
       setValue(history[nextIdx] || '');
       setCursor((history[nextIdx] || '').length);
@@ -608,11 +692,13 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         const end = Math.max(selStart, selEnd);
         setValue(value.slice(0, start) + ' ' + value.slice(end));
         setCursor(start + 1);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       } else {
         setValue(value.slice(0, cursor) + ' ' + value.slice(cursor));
         setCursor(cursor + 1);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
       return;
     }
@@ -624,11 +710,13 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
         const end = Math.max(selStart, selEnd);
         setValue(value.slice(0, start) + input + value.slice(end));
         setCursor(start + input.length);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       } else {
         setValue(value.slice(0, cursor) + input + value.slice(cursor));
         setCursor(cursor + input.length);
-        setSelStart(-1); setSelEnd(-1);
+        setSelStart(-1);
+        setSelEnd(-1);
       }
     }
   });
@@ -656,9 +744,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   const barLen = 8;
   const filled = Math.round((contextPct / 100) * barLen);
   const barColor = contextPct > 75 ? theme.error : contextPct > 50 ? theme.warn : theme.ok;
-  const ctxBar = Array.from({ length: barLen }).map((_, i) =>
-    i < filled ? '█' : '░'
-  ).join('');
+  const ctxBar = Array.from({ length: barLen })
+    .map((_, i) => (i < filled ? '█' : '░'))
+    .join('');
 
   if (disabled) {
     return (
@@ -670,8 +758,13 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
           paddingBottom={1}
           minHeight={3}
         >
-          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
-          <text fg={theme.textMuted}>{'  '}{frame()} thinking...</text>
+          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
+            {MODE_LABEL[mode]}
+          </text>
+          <text fg={theme.textMuted}>
+            {'  '}
+            {frame()} thinking...
+          </text>
           <text fg={theme.textMuted}>{'  '}esc to cancel</text>
         </box>
         <box marginTop={1} paddingX={1}>
@@ -690,23 +783,30 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
     const boxWidth = Math.min(termWidth - 4, 72);
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
-        <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
+        <box
+          flexDirection="column"
+          border={
+            suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined
+          }
+          borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined}
+          backgroundColor={theme.bgElement}
+          width={boxWidth}
+        >
           {suggestionsVisible && (
             <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
           )}
           {fileSuggestionsVisible && (
             <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
           )}
-          <box
-            paddingX={2}
-            paddingTop={1}
-            paddingBottom={1}
-            minHeight={3}
-          >
+          <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
             {value ? (
               <text fg={theme.text} wrapMode="word">
                 <span style={{ fg: theme.text }}>{beforeText}</span>
-                {hasSelection ? <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span> : <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>}
+                {hasSelection ? (
+                  <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span>
+                ) : (
+                  <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
+                )}
                 <span style={{ fg: theme.text }}>{afterText}</span>
               </text>
             ) : (
@@ -714,7 +814,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
             )}
           </box>
           <box paddingX={2} paddingBottom={1} flexDirection="row" justifyContent="flex-end">
-            <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+            <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
+              {MODE_LABEL[mode]}
+            </text>
             <text fg={theme.textMuted}>{'  '}</text>
             <text fg={theme.text}>{model || 'aurix'}</text>
             <text fg={theme.textMuted}>{' · ctx '}</text>
@@ -728,23 +830,27 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-      <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ["top", "left", "right"] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
+      <box
+        flexDirection="column"
+        border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined}
+        borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined}
+        backgroundColor={theme.bgElement}
+      >
         {suggestionsVisible && (
           <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
         )}
         {fileSuggestionsVisible && (
           <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
         )}
-        <box
-          paddingX={2}
-          paddingTop={1}
-          paddingBottom={1}
-          minHeight={3}
-        >
+        <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
           {value ? (
             <text fg={theme.text} wrapMode="word">
               <span style={{ fg: theme.text }}>{beforeText}</span>
-              {hasSelection ? <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span> : <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>}
+              {hasSelection ? (
+                <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span>
+              ) : (
+                <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
+              )}
               <span style={{ fg: theme.text }}>{afterText}</span>
             </text>
           ) : (
@@ -754,7 +860,9 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
       </box>
       <box paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
         <box>
-          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
+            {MODE_LABEL[mode]}
+          </text>
           <text fg={theme.textMuted}>{'  '}</text>
           <text fg={theme.text}>{model || 'aurix'}</text>
           <text fg={theme.textMuted}>{' · ctx '}</text>
@@ -788,12 +896,20 @@ function FileSuggestions({ files, selected }: { files: string[]; selected: numbe
           </box>
         );
       })}
-      <box><text fg={theme.border}>{'─'.repeat(40)}</text></box>
+      <box>
+        <text fg={theme.border}>{'─'.repeat(40)}</text>
+      </box>
     </box>
   );
 }
 
-function CommandSuggestions({ suggestions, selected }: { suggestions: SlashCommand[]; selected: number }) {
+function CommandSuggestions({
+  suggestions,
+  selected,
+}: {
+  suggestions: SlashCommand[];
+  selected: number;
+}) {
   return (
     <box flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={1}>
       {suggestions.map((command, index) => {
@@ -810,7 +926,9 @@ function CommandSuggestions({ suggestions, selected }: { suggestions: SlashComma
           </box>
         );
       })}
-      <box><text fg={theme.border}>{'─'.repeat(40)}</text></box>
+      <box>
+        <text fg={theme.border}>{'─'.repeat(40)}</text>
+      </box>
     </box>
   );
 }
