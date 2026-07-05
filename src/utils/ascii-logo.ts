@@ -3,6 +3,7 @@
 // logoLines() strips ANSI for OpenTUI React; asciiLogo() keeps colors
 
 const T = (r: number, g: number, b: number) => `\x1b[38;2;${r};${g};${b}m`;
+const cleanLogoLine = (line: string) => line.replace(/⡀/g, ' ');
 
 // Each line: first 25 chars teal, last 25 chars ocean
 function splitColor(line: string): string {
@@ -46,7 +47,8 @@ function splitColor(line: string): string {
     [10, 20, 65],
     [10, 20, 65],
   ];
-  const lineIdx = ART_LINES.indexOf(line);
+  const rawLine = ART_LINES.find((candidate) => cleanLogoLine(candidate) === line) || line;
+  const lineIdx = ART_LINES.indexOf(rawLine);
   const tc = tealColors[lineIdx] || tealColors[0];
   const oc = oceanColors[lineIdx] || oceanColors[0];
   return (
@@ -71,10 +73,10 @@ const ART_LINES: string[] = [
 ];
 
 // Colored version for stdout / LiteApp
-const ANSI_LOGO = ART_LINES.map(splitColor).join('\n');
+const ANSI_LOGO = ART_LINES.map((line) => splitColor(cleanLogoLine(line))).join('\n');
 
 // Plain version for OpenTUI React (no ANSI)
-const PLAIN_LINES = ART_LINES.slice();
+const PLAIN_LINES = ART_LINES.map(cleanLogoLine);
 
 export function asciiLogo(): string {
   return ANSI_LOGO;

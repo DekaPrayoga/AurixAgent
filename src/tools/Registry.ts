@@ -78,7 +78,7 @@ export class ToolRegistry {
   }
 
   getToolDefs(): ToolDef[] {
-    return this.list().map(t => ({
+    return this.list().map((t) => ({
       type: 'function' as const,
       function: {
         name: t.name,
@@ -129,7 +129,10 @@ export class ToolRegistry {
     }
   }
 
-  private getPermissionRequest(tool: Tool, args: Record<string, unknown>): ToolPermissionRequest | null {
+  private getPermissionRequest(
+    tool: Tool,
+    args: Record<string, unknown>
+  ): ToolPermissionRequest | null {
     const risk = classifyRisk(tool.name, args);
     if (!risk) return null;
 
@@ -143,11 +146,15 @@ export class ToolRegistry {
   }
 }
 
-function classifyRisk(name: string, args: Record<string, unknown>): ToolPermissionRequest['risk'] | null {
+function classifyRisk(
+  name: string,
+  args: Record<string, unknown>
+): ToolPermissionRequest['risk'] | null {
   if (name === 'read_file' || name === 'search_files') return 'read';
-  if (name === 'write_file') return 'write';
+  if (name === 'write_file' || name === 'delete_file' || name === 'delete_folder') return 'write';
   if (name === 'terminal' || name === 'code_exec') return 'execute';
-  if (name.startsWith('gh_')) return 'external';
+  if (name === 'git_advanced') return 'external';
+  if (name.startsWith('gh_') || name.startsWith('github_')) return 'external';
   if (name === 'email') {
     return args.action === 'send' ? 'external' : 'network';
   }

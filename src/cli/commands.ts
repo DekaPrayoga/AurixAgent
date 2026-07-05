@@ -1,6 +1,9 @@
 import type { ToolRegistry } from '../tools/Registry.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 export type CommandSource = 'aurix' | 'claude-code' | 'opencode' | 'hermes' | 'skill' | 'plugin';
+
+export type CommandStatus = 'implemented' | 'agent-prompt' | 'not-implemented' | 'internal';
 
 export interface SlashCommand {
   name: string;
@@ -10,6 +13,9 @@ export interface SlashCommand {
   group: string;
   source: CommandSource;
   sensitive?: boolean;
+  status?: CommandStatus;
+  hidden?: boolean;
+  dangerous?: boolean;
 }
 
 export interface CommandContext {
@@ -28,7 +34,6 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'clear',
-    aliases: ['new'],
     description: 'Clear the transcript and reset the visible screen',
     group: 'session',
     source: 'opencode',
@@ -87,7 +92,7 @@ const baseCommands: SlashCommand[] = [
   {
     name: 'multiagent',
     aliases: ['agents'],
-    description: 'Toggle LangGraph multi-agent routing',
+    description: 'Toggle native Aurix multi-agent routing',
     group: 'agent',
     source: 'aurix',
   },
@@ -124,13 +129,6 @@ const baseCommands: SlashCommand[] = [
     description: 'Disable a tool to save tokens (e.g. /disable skill_loader)',
     group: 'tools',
     source: 'aurix',
-  },
-  {
-    name: 'skill',
-    description: 'Create a local skill scaffold',
-    argumentHint: 'new <name>',
-    group: 'skills',
-    source: 'claude-code',
   },
   {
     name: 'plugin',
@@ -263,8 +261,8 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'skill',
-    argumentHint: '[number|off]',
-    description: 'Limit additional skills (core always active). E.g. /skill 50',
+    argumentHint: '[number|off|new <name>]',
+    description: 'Limit additional skills or create a local skill scaffold',
     group: 'config',
     source: 'aurix',
   },
@@ -365,6 +363,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Research any topic across Reddit, X, YouTube, HN, Polymarket + 10 more sources',
     group: 'workflows',
     source: 'skill',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'verify',
@@ -380,11 +380,27 @@ const baseCommands: SlashCommand[] = [
     source: 'claude-code',
   },
   {
+    name: 'rules',
+    argumentHint: '[add|remove|clear|edit]',
+    description: 'Manage session rules for this conversation',
+    group: 'session',
+    source: 'aurix',
+  },
+  {
+    name: 'todo',
+    argumentHint: '[add|done|list|clear]',
+    description: 'Manage file-backed todos for this project',
+    group: 'agent',
+    source: 'aurix',
+  },
+  {
     name: 'fork',
     argumentHint: '<directive>',
     description: 'Spawn background sub-agent for task',
     group: 'agent',
     source: 'claude-code',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'branch',
@@ -392,6 +408,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Create divergent conversation branch',
     group: 'session',
     source: 'claude-code',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'btw',
@@ -412,6 +430,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Enable session debug logging',
     group: 'session',
     source: 'claude-code',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'add-dir',
@@ -419,12 +439,16 @@ const baseCommands: SlashCommand[] = [
     description: 'Grant file access to directory',
     group: 'config',
     source: 'claude-code',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'focus',
     description: 'Toggle minimalist UI mode',
     group: 'config',
     source: 'claude-code',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'resume',
@@ -471,6 +495,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Save or restore config snapshot',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'steer',
@@ -485,12 +511,16 @@ const baseCommands: SlashCommand[] = [
     description: 'Schedule next input after current task',
     group: 'agent',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'verbose',
     description: 'Toggle verbose tool output',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'reasoning',
@@ -498,6 +528,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Adjust reasoning depth level',
     group: 'model',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'yolo',
@@ -520,7 +552,6 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'new',
-    aliases: ['reset'],
     description: 'Start a new session (fresh context + history)',
     group: 'session',
     source: 'hermes',
@@ -537,12 +568,16 @@ const baseCommands: SlashCommand[] = [
     description: 'Approve a pending dangerous command',
     group: 'tools',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'deny',
     description: 'Deny a pending dangerous command',
     group: 'tools',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'background',
@@ -551,6 +586,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Run a prompt in the background',
     group: 'agent',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'agents',
@@ -565,6 +602,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Add or manage extra criteria on active goal',
     group: 'agent',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'whoami',
@@ -584,6 +623,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Set a predefined personality overlay',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'statusbar',
@@ -591,6 +632,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Toggle the context/model status bar',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'footer',
@@ -598,6 +641,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Toggle gateway runtime-metadata footer',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'skin',
@@ -619,6 +664,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Toggle voice mode',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'busy',
@@ -626,18 +673,24 @@ const baseCommands: SlashCommand[] = [
     description: 'Control what Enter does while agent is working',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'toolsets',
     description: 'List available toolsets',
     group: 'tools',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'bundles',
     description: 'List skill bundles (aliases for multiple skills)',
     group: 'skills',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'cron',
@@ -645,6 +698,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Manage scheduled tasks',
     group: 'tools',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'curator',
@@ -652,6 +707,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Background skill maintenance',
     group: 'skills',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'kanban',
@@ -659,6 +716,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Multi-profile collaboration board',
     group: 'workflows',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'reload',
@@ -677,6 +736,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Re-scan skills directory for changes',
     group: 'skills',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'browser',
@@ -684,18 +745,24 @@ const baseCommands: SlashCommand[] = [
     description: 'Connect browser tools to live Chromium via CDP',
     group: 'tools',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'plugins',
     description: 'List installed plugins and their status',
     group: 'plugins',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'restart',
     description: 'Gracefully restart the agent after draining',
     group: 'session',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'usage',
@@ -709,6 +776,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Show gateway/messaging platform status',
     group: 'connect',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'platform',
@@ -716,6 +785,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Pause, resume, or list a gateway platform',
     group: 'connect',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'paste',
@@ -734,6 +805,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Force a full UI repaint',
     group: 'session',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'compress',
@@ -748,6 +821,8 @@ const baseCommands: SlashCommand[] = [
     description: 'Hand off session to a messaging platform',
     group: 'session',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'codex-runtime',
@@ -755,12 +830,16 @@ const baseCommands: SlashCommand[] = [
     description: 'Toggle codex runtime for OpenAI models',
     group: 'config',
     source: 'hermes',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'editor',
     description: 'Open external editor for composing message',
     group: 'session',
     source: 'opencode',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'warp',
@@ -768,18 +847,24 @@ const baseCommands: SlashCommand[] = [
     description: 'Set active workspace',
     group: 'config',
     source: 'opencode',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'move',
     description: 'Move session to different workspace',
     group: 'session',
     source: 'opencode',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'stash',
     description: 'Stash current input for later',
     group: 'session',
     source: 'opencode',
+    hidden: true,
+    status: 'not-implemented',
   },
   {
     name: 'tag',
@@ -792,29 +877,50 @@ const baseCommands: SlashCommand[] = [
     description: 'Select model variant',
     group: 'model',
     source: 'opencode',
+    hidden: true,
+    status: 'not-implemented',
   },
 ];
 
-export function createSlashCommands(ctx: CommandContext): SlashCommand[] {
+export interface CreateSlashCommandOptions {
+  includeHidden?: boolean;
+}
+
+export function createSlashCommands(
+  ctx: CommandContext,
+  options: CreateSlashCommandOptions = {}
+): SlashCommand[] {
   // Sanitize tool descriptions for the palette — strip skill-template markers
   // (markdown headers, JSON argument examples, backticked code fences) that
   // look broken when rendered as a single-line command description.
   const sanitize = (desc: string): string => {
-    let s = desc.replace(/^#+\s+/gm, '').replace(/```[\s\S]*?```/g, '').trim();
-    s = s.replace(/\{[^{}]*"[^"]+"\s*:\s*"[^"]*"[^{}]*\}/g, '{...}');
+    let s = safeDisplayText(desc).slice(0, 2000);
+    s = s
+      .replace(/^#+\s+/gm, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .trim();
+    s = s.replace(/\{\s*"[^"]{0,80}"\s*:\s*"[^"]{0,200}"\s*\}/g, '{...}');
+    s = s.replace(/\{[^}]{0,500}\}/g, '{...}');
     s = s.replace(/\s+/g, ' ');
     if (s.length > 120) s = s.slice(0, 117) + '...';
     return s;
   };
 
-  const toolCommands = ctx.registry.list().slice(0, 16).map((tool): SlashCommand => ({
-    name: `tool:${tool.name}`,
-    description: sanitize(tool.description),
-    group: 'tools',
-    source: 'aurix',
-  }));
+  const commands = options.includeHidden ? baseCommands : baseCommands.filter((c) => !c.hidden);
+  const toolCommands = ctx.registry
+    .list()
+    .slice(0, 16)
+    .map(
+      (tool): SlashCommand => ({
+        name: `tool:${tool.name}`,
+        description: sanitize(tool.description),
+        group: 'tools',
+        source: 'aurix',
+        status: 'implemented',
+      })
+    );
 
-  return [...baseCommands, ...toolCommands].sort((a, b) => a.name.localeCompare(b.name));
+  return [...commands, ...toolCommands].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function parseSlash(input: string): { name: string; args: string } | null {
@@ -825,37 +931,75 @@ export function parseSlash(input: string): { name: string; args: string } | null
 }
 
 export function findCommand(commands: SlashCommand[], name: string): SlashCommand | undefined {
-  return commands.find(command =>
-    command.name === name ||
-    command.aliases?.some(alias => alias === name)
+  return (
+    commands.find((command) => command.name === name) ||
+    commands.find((command) => command.aliases?.some((alias) => alias === name))
   );
 }
 
-export function filterSlashCommands(commands: SlashCommand[], query: string, limit = 30): SlashCommand[] {
+export function filterSlashCommands(
+  commands: SlashCommand[],
+  query: string,
+  limit = 30
+): SlashCommand[] {
   const q = query.replace(/^\//, '').toLowerCase().trim();
   if (!q) return commands.slice(0, limit);
 
   const scored = commands
-    .map(command => {
+    .map((command) => {
       const names = [command.name, ...(command.aliases || [])];
-      const starts = names.some(name => name.startsWith(q));
-      const includes = names.some(name => name.includes(q)) || command.description.toLowerCase().includes(q);
+      const starts = names.some((name) => name.startsWith(q));
+      const includes =
+        names.some((name) => name.includes(q)) || command.description.toLowerCase().includes(q);
       const score = starts ? 0 : includes ? 1 : 2;
       return { command, score };
     })
-    .filter(item => item.score < 2)
+    .filter((item) => item.score < 2)
     .sort((a, b) => a.score - b.score || a.command.name.localeCompare(b.command.name));
 
-  return scored.slice(0, limit).map(item => item.command);
+  return scored.slice(0, limit).map((item) => item.command);
 }
 
 export function completeCommand(command: SlashCommand): string {
   return `/${command.name}${command.argumentHint ? ' ' : ' '}`;
 }
 
+export interface CommandAuditResult {
+  missingHandler: string[];
+  hiddenHandler: string[];
+  stubVisible: string[];
+}
+
+export function auditCommandCoverage(
+  commands: SlashCommand[],
+  handledNames: Iterable<string>,
+  allowedInternalNames: Iterable<string> = []
+): CommandAuditResult {
+  const handled = new Set(handledNames);
+  const allowedInternal = new Set(allowedInternalNames);
+  const visible = commands.filter(
+    (command) => !command.hidden && !command.name.startsWith('tool:')
+  );
+  const registeredNames = new Set(commands.map((command) => command.name));
+  return {
+    missingHandler: visible
+      .filter((command) => !handled.has(command.name))
+      .map((command) => command.name),
+    hiddenHandler: [...handled]
+      .filter(
+        (name) =>
+          !registeredNames.has(name) && !allowedInternal.has(name) && !name.startsWith('tool:')
+      )
+      .sort(),
+    stubVisible: visible
+      .filter((command) => command.status === 'not-implemented')
+      .map((command) => command.name),
+  };
+}
+
 export function formatCommandHelp(commands: SlashCommand[]): string {
   const groups = new Map<string, SlashCommand[]>();
-  for (const command of commands.filter(c => !c.name.startsWith('tool:'))) {
+  for (const command of commands.filter((c) => !c.name.startsWith('tool:'))) {
     const list = groups.get(command.group) || [];
     list.push(command);
     groups.set(command.group, list);
@@ -865,7 +1009,7 @@ export function formatCommandHelp(commands: SlashCommand[]): string {
     .map(([group, items]) => {
       const lines = items
         .sort((a, b) => a.name.localeCompare(b.name))
-        .map(command => {
+        .map((command) => {
           const alias = command.aliases?.length ? ` (${command.aliases.join(', ')})` : '';
           const args = command.argumentHint ? ` ${command.argumentHint}` : '';
           return `  /${(command.name + args).padEnd(28)} ${command.description}${alias}`;

@@ -5,7 +5,6 @@ import chalk from 'chalk';
 import {
   drawInputScreen,
   drawSelector,
-  drawConfirm,
   drawBox,
   drawSuccess,
   drawInfo,
@@ -81,10 +80,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     return await loadConfigOrDefault();
   }
 
-  // Step 5: LangSmith
-  const langsmith = await stepLangSmith();
-
-  // Step 6: Gateway — always offer to set/update tokens
+  // Step 5: Gateway — always offer to set/update tokens
   const gateway = await stepGateway(state.gateway);
 
   // Step 7: Features
@@ -128,13 +124,6 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     themeName: themeChoice.name,
     accentColor: themeChoice.accent,
     gateway: gateway as AurixConfig['gateway'],
-    langsmith:
-      langsmith.enabled && langsmith.apiKey
-        ? {
-            apiKey: langsmith.apiKey,
-            project: langsmith.project || 'aurix-agent',
-          }
-        : undefined,
     integrations,
     plugins,
     features: (Array.isArray(features) ? features : []) as string[],
@@ -150,10 +139,6 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
 
   console.log();
   drawSuccess('Configuration saved to ~/.aurix/config.yaml');
-
-  if (langsmith.enabled) {
-    drawSuccess(`LangSmith tracing enabled (project: ${langsmith.project})`);
-  }
 
   drawInfo('Starting AURIX Agent...\n');
 
@@ -347,36 +332,6 @@ async function stepModel(provider: string): Promise<string> {
   }
 
   return choice;
-}
-
-async function stepLangSmith(): Promise<{ enabled: boolean; apiKey?: string; project?: string }> {
-  const want = await drawConfirm({
-    title: 'LangSmith Tracing (Optional)',
-    message: 'Enable LangSmith to trace LLM calls, tool executions, and debug multi-agent routing.',
-  });
-
-  if (!want) {
-    drawInfo('Skipped. Enable later: export LANGCHAIN_API_KEY=lsv2_...\n');
-    return { enabled: false };
-  }
-
-  const apiKey = await drawInputScreen({
-    title: 'LangSmith API Key',
-    hint: 'Get your key at smith.langchain.com',
-    label: 'API Key:',
-    masked: true,
-  });
-
-  if (!apiKey || apiKey === '__back__') return { enabled: false };
-
-  const project = await drawInputScreen({
-    title: 'LangSmith Project',
-    hint: 'Project name for organizing traces',
-    label: 'Project:',
-    masked: false,
-  });
-
-  return { enabled: true, apiKey, project: project || 'aurix-agent' };
 }
 
 async function stepGateway(existing?: AurixConfig['gateway']): Promise<AurixConfig['gateway']> {

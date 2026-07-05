@@ -34,10 +34,6 @@ export interface AurixConfig {
   useGroqAudio?: boolean;
   captchaAudio?: 'image' | 'audio' | 'hybrid' | boolean;
   groqApiKey?: string;
-  langsmith?: {
-    apiKey: string;
-    project: string;
-  };
   integrations?: {
     github?: { enabled: boolean; auth?: 'gh-cli' | 'token'; token?: string };
     gmail?: { enabled: boolean; address?: string; appPassword?: string };
@@ -112,7 +108,6 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     useGroqAudio: file.useGroqAudio,
     captchaAudio: file.captchaAudio,
     groqApiKey: process.env.GROQ_API_KEY || file.groqApiKey,
-    langsmith: file.langsmith,
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,

@@ -3,6 +3,7 @@ import { TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 class CustomSpeedScroll implements ScrollAcceleration {
   constructor(private speed: number) {}
@@ -32,7 +33,9 @@ function parseInline(text: string): TextSegment[] {
     // Inline code: `text`
     const codeMatch = remaining.match(/`([^`]+)`/);
     // Italic: *text* or _text_
-    const italicMatch = remaining.match(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/);
+    const italicMatch = remaining.match(
+      /(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/
+    );
     // Strikethrough: ~~text~~
     const strikeMatch = remaining.match(/~~(.+?)~~/);
 
@@ -41,7 +44,9 @@ function parseInline(text: string): TextSegment[] {
       codeMatch && { type: 'code', match: codeMatch, text: codeMatch[1] },
       italicMatch && { type: 'italic', match: italicMatch, text: italicMatch[1] || italicMatch[2] },
       strikeMatch && { type: 'strike', match: strikeMatch, text: strikeMatch[1] },
-    ].filter(Boolean).sort((a, b) => (a!.match.index || 0) - (b!.match.index || 0));
+    ]
+      .filter(Boolean)
+      .sort((a, b) => (a!.match.index || 0) - (b!.match.index || 0));
 
     if (matches.length === 0) {
       segments.push({ text: remaining });
@@ -70,7 +75,7 @@ function parseInline(text: string): TextSegment[] {
 }
 
 function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
-  const segments = parseInline(text);
+  const segments = parseInline(safeDisplayText(text));
   const fg = baseFg || theme.text;
 
   return (
@@ -78,7 +83,13 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
       {segments.map((seg, i) => {
         if (seg.code) {
           return (
-            <text key={i} fg={theme.info} bg={theme.bgElement} attributes={TextAttributes.NONE} flexShrink={1}>
+            <text
+              key={i}
+              fg={theme.info}
+              bg={theme.bgElement}
+              attributes={TextAttributes.NONE}
+              flexShrink={1}
+            >
               {` ${seg.text} `}
             </text>
           );
@@ -89,14 +100,18 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
         else if (seg.italic) attrs = TextAttributes.ITALIC;
         else if (seg.strikethrough) attrs = TextAttributes.STRIKETHROUGH;
         const color = seg.bold ? theme.textBright : fg;
-        return <text key={i} fg={color} attributes={attrs} wrapMode="word" flexShrink={1}>{seg.text}</text>;
+        return (
+          <text key={i} fg={color} attributes={attrs} wrapMode="word" flexShrink={1}>
+            {seg.text}
+          </text>
+        );
       })}
     </box>
   );
 }
 
 function MarkdownText({ content }: { content: string }) {
-  const lines = content.split('\n');
+  const lines = safeDisplayText(content).split('\n');
   const elements: React.ReactNode[] = [];
   let i = 0;
 
@@ -114,10 +129,30 @@ function MarkdownText({ content }: { content: string }) {
       }
       i++; // skip closing ```
       elements.push(
-        <box key={`code-${i}`} flexDirection="column" backgroundColor={theme.bgElement} border={["left"]} borderColor={theme.accent} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} marginTop={1} marginBottom={1} flexShrink={0} minWidth={0}>
-          {lang && <text fg={theme.textMuted} attributes={TextAttributes.DIM}>{lang}</text>}
+        <box
+          key={`code-${i}`}
+          flexDirection="column"
+          backgroundColor={theme.bgElement}
+          border={['left']}
+          borderColor={theme.accent}
+          paddingLeft={2}
+          paddingRight={2}
+          paddingTop={1}
+          paddingBottom={1}
+          marginTop={1}
+          marginBottom={1}
+          flexShrink={0}
+          minWidth={0}
+        >
+          {lang && (
+            <text fg={theme.textMuted} attributes={TextAttributes.DIM}>
+              {lang}
+            </text>
+          )}
           {codeLines.map((cl, j) => (
-            <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>{cl}</text>
+            <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>
+              {cl}
+            </text>
           ))}
         </box>
       );
@@ -133,14 +168,15 @@ function MarkdownText({ content }: { content: string }) {
       }
       if (tableLines.length >= 2) {
         const parseRow = (row: string) =>
-          row.split('|').slice(1, -1).map(c => c.trim());
+          row
+            .split('|')
+            .slice(1, -1)
+            .map((c) => c.trim());
         const isSeparator = (row: string) => /^\|[\s:-]+\|$/.test(row.replace(/[\s:-|]/g, ''));
 
         const headers = parseRow(tableLines[0]);
         const sepIdx = tableLines.findIndex((r, idx) => idx > 0 && /^[\s|:-]+$/.test(r));
-        const dataRows = tableLines
-          .filter((r, idx) => idx !== 0 && idx !== sepIdx)
-          .map(parseRow);
+        const dataRows = tableLines.filter((r, idx) => idx !== 0 && idx !== sepIdx).map(parseRow);
 
         const colCount = headers.length;
         const colWidths = headers.map((h, c) => {
@@ -156,15 +192,20 @@ function MarkdownText({ content }: { content: string }) {
           return clean + ' '.repeat(Math.max(0, width - clean.length));
         };
 
-        const topBorder = colWidths.map(w => '─'.repeat(w + 2)).join('┬');
-        const midBorder = colWidths.map(w => '─'.repeat(w + 2)).join('┼');
-        const botBorder = colWidths.map(w => '─'.repeat(w + 2)).join('┴');
+        const topBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┬');
+        const midBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┼');
+        const botBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┴');
 
         const renderRow = (cells: string[], isHeader: boolean) => {
           const parts = cells.map((c, idx) => ` ${padCell(c, colWidths[idx])} `);
           const text = '│' + parts.join('│') + '│';
           return (
-            <text fg={isHeader ? theme.primary : theme.text} attributes={isHeader ? TextAttributes.BOLD : TextAttributes.NONE}>{text}</text>
+            <text
+              fg={isHeader ? theme.primary : theme.text}
+              attributes={isHeader ? TextAttributes.BOLD : TextAttributes.NONE}
+            >
+              {text}
+            </text>
           );
         };
 
@@ -190,7 +231,9 @@ function MarkdownText({ content }: { content: string }) {
       const size = level === 1 ? `━━ ${text} ━━` : level === 2 ? `── ${text} ──` : text;
       elements.push(
         <box key={`h-${i}`} paddingTop={level <= 2 ? 1 : 0}>
-          <text fg={color} attributes={TextAttributes.BOLD} wrapMode="word">{size}</text>
+          <text fg={color} attributes={TextAttributes.BOLD} wrapMode="word">
+            {size}
+          </text>
         </box>
       );
       i++;
@@ -212,8 +255,22 @@ function MarkdownText({ content }: { content: string }) {
     if (line.trimStart().startsWith('>')) {
       const quoteText = line.replace(/^\s*>\s?/, '');
       elements.push(
-        <box key={`q-${i}`} paddingLeft={2} border={["left"]} borderColor={theme.accent} flexShrink={0} minWidth={0}>
-          <text fg={theme.textMuted} attributes={TextAttributes.ITALIC} wrapMode="word" minWidth={0}>{quoteText}</text>
+        <box
+          key={`q-${i}`}
+          paddingLeft={2}
+          border={['left']}
+          borderColor={theme.accent}
+          flexShrink={0}
+          minWidth={0}
+        >
+          <text
+            fg={theme.textMuted}
+            attributes={TextAttributes.ITALIC}
+            wrapMode="word"
+            minWidth={0}
+          >
+            {quoteText}
+          </text>
         </box>
       );
       i++;
@@ -254,7 +311,9 @@ function MarkdownText({ content }: { content: string }) {
       elements.push(
         <box key={`cb-${i}`} paddingLeft={2} flexDirection="row">
           <text fg={checked ? theme.ok : theme.textMuted}>{checked ? '✓ ' : '○ '}</text>
-          <text fg={checked ? theme.text : theme.textMuted} wrapMode="word">{checkMatch[2]}</text>
+          <text fg={checked ? theme.text : theme.textMuted} wrapMode="word">
+            {checkMatch[2]}
+          </text>
         </box>
       );
       i++;
@@ -276,7 +335,11 @@ function MarkdownText({ content }: { content: string }) {
     i++;
   }
 
-  return <box flexDirection="column" flexShrink={0}>{elements}</box>;
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      {elements}
+    </box>
+  );
 }
 
 export interface ChatMessage {
@@ -312,7 +375,7 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   const chars = process.platform === 'win32' ? charsAscii : charsUnicode;
   const frames = process.platform === 'win32' ? chars : [...chars, ...[...chars].reverse()];
   useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), 120);
+    const id = setInterval(() => setTick((n) => n + 1), 120);
     return () => clearInterval(id);
   }, []);
 
@@ -373,8 +436,10 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   return (
     <box paddingX={2} flexDirection="column">
       <box flexDirection="row">
-        <text fg={theme.tool}>{frames[tick % frames.length]} {name}</text>
-        {detail && <text fg={theme.textMuted}> {detail}</text>}
+        <text fg={theme.tool}>
+          {frames[tick % frames.length]} {name}
+        </text>
+        {detail && <text fg={theme.textMuted}> {safeDisplayText(detail)}</text>}
       </box>
     </box>
   );
@@ -392,7 +457,7 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
   return (
     <box flexDirection="column" paddingX={2} flexShrink={0}>
       <box
-        border={["left"]}
+        border={['left']}
         borderColor={theme.primary}
         backgroundColor={theme.bgPanel}
         paddingTop={1}
@@ -402,7 +467,9 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
         flexShrink={0}
         minWidth={0}
       >
-        <text fg={theme.text} wrapMode="word" minWidth={0}>{msg.content}</text>
+        <text fg={theme.text} wrapMode="word" minWidth={0}>
+          {safeDisplayText(msg.content)}
+        </text>
       </box>
     </box>
   );
@@ -414,11 +481,13 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
     <box flexDirection="column" paddingX={2} flexShrink={0}>
       {msg.model && (
         <box paddingBottom={0} paddingLeft={1}>
-          <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>{msg.model}</text>
+          <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+            {msg.model}
+          </text>
         </box>
       )}
       <box
-        border={["left"]}
+        border={['left']}
         borderColor={theme.secondary}
         backgroundColor={theme.bgPanel}
         paddingTop={1}
@@ -435,7 +504,8 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
 }
 
 function ToolMessage({ msg }: { msg: ChatMessage }) {
-  const diff = parseToolEditOutput(msg.content);
+  const content = safeDisplayText(msg.content);
+  const diff = parseToolEditOutput(content);
   if (diff) {
     return (
       <box flexDirection="column" flexShrink={0}>
@@ -443,7 +513,12 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
           <text fg={theme.tool}>▸ </text>
           <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
         </box>
-        <FileDiff filePath={diff.filePath} oldLines={diff.oldLines} newLines={diff.newLines} lineStart={diff.lineStart} />
+        <FileDiff
+          filePath={diff.filePath}
+          oldLines={diff.oldLines}
+          newLines={diff.newLines}
+          lineStart={diff.lineStart}
+        />
       </box>
     );
   }
@@ -454,7 +529,9 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
         <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
       </box>
       <box paddingLeft={2}>
-        <text fg={theme.textMuted} wrapMode="word">{truncateOutput(msg.content)}</text>
+        <text fg={theme.textMuted} wrapMode="word">
+          {truncateOutput(content)}
+        </text>
       </box>
     </box>
   );
@@ -463,24 +540,34 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
 function SystemMessage({ msg }: { msg: ChatMessage }) {
   return (
     <box paddingLeft={4} paddingRight={2} flexShrink={0}>
-      <text fg={theme.warn} wrapMode="word">{msg.content}</text>
+      <text fg={theme.warn} wrapMode="word">
+        {safeDisplayText(msg.content)}
+      </text>
     </box>
   );
 }
 
-export function ChatArea({ messages, isProcessing, activeTool, scrollOffset, todos }: ChatAreaProps) {
+export function ChatArea({
+  messages,
+  isProcessing,
+  activeTool,
+  scrollOffset,
+  todos,
+}: ChatAreaProps) {
   const maxVisible = 100;
   const end = Math.max(0, messages.length - scrollOffset);
   const start = Math.max(0, end - maxVisible);
   const visible = messages.slice(start, end);
 
-  const todoCount = todos ? `${todos.filter(t => t.done).length}/${todos.length}` : null;
+  const todoCount = todos ? `${todos.filter((t) => t.done).length}/${todos.length}` : null;
 
   return (
     <box flexDirection="column" minHeight={0} backgroundColor={theme.bg}>
       {todoCount && (
         <box flexDirection="row" justifyContent="flex-end" paddingX={1}>
-          <text fg={theme.accent} attributes={TextAttributes.BOLD}>Todo: {todoCount}</text>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+            Todo: {todoCount}
+          </text>
         </box>
       )}
       <scrollbox
@@ -506,7 +593,9 @@ export function ChatArea({ messages, isProcessing, activeTool, scrollOffset, tod
               </box>
             ))
           )}
-          {isProcessing && activeTool && <ToolSpinner name={activeTool.name} args={activeTool.args} />}
+          {isProcessing && activeTool && (
+            <ToolSpinner name={activeTool.name} args={activeTool.args} />
+          )}
           {isProcessing && !activeTool && <ThinkingIndicator />}
         </box>
       </scrollbox>

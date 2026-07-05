@@ -2,18 +2,30 @@ import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 async function readClipboard(): Promise<string> {
   const { execSync } = await import('child_process');
   try {
     if (process.platform === 'win32') {
-      return execSync('powershell -NoProfile -Command "Get-Clipboard"', { encoding: 'utf8', windowsHide: true }).replace(/\r\n/g, '\n').trimEnd();
+      return execSync('powershell -NoProfile -Command "Get-Clipboard"', {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+        .replace(/\r\n/g, '\n')
+        .trimEnd();
     }
     if (process.platform === 'darwin') {
-      return execSync('pbpaste', { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
+      return execSync('pbpaste', { encoding: 'utf8', timeout: 2000 })
+        .replace(/\r\n/g, '\n')
+        .trimEnd();
     }
     // Linux
-    for (const cmd of ['wl-paste --no-newline', 'xclip -selection clipboard -o', 'xsel --clipboard --output']) {
+    for (const cmd of [
+      'wl-paste --no-newline',
+      'xclip -selection clipboard -o',
+      'xsel --clipboard --output',
+    ]) {
       try {
         return execSync(cmd, { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
       } catch {}
@@ -30,7 +42,13 @@ interface LoginModalProps {
   onCancel: () => void;
 }
 
-export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSubmit, onCancel }: LoginModalProps) {
+export function LoginModal({
+  currentBaseUrl,
+  currentModel,
+  currentApiStyle,
+  onSubmit,
+  onCancel,
+}: LoginModalProps) {
   const [step, setStep] = useState(0);
   const [baseUrl, setBaseUrl] = useState(currentBaseUrl || '');
   const [apiKey, setApiKey] = useState('');
@@ -41,9 +59,20 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
 
   const fields = [
     { label: 'Base URL', hint: 'https://api.openai.com/v1', value: baseUrl, setter: setBaseUrl },
-    { label: 'API Key (optional)', hint: 'sk-... or leave blank', value: apiKey, setter: setApiKey, masked: true },
+    {
+      label: 'API Key (optional)',
+      hint: 'sk-... or leave blank',
+      value: apiKey,
+      setter: setApiKey,
+      masked: true,
+    },
     { label: 'Model (optional)', hint: 'gpt-4o', value: model, setter: setModel },
-    { label: 'API Style (optional)', hint: '1 for openai, 2 for anthropic', value: apiStyle, setter: setApiStyle },
+    {
+      label: 'API Style (optional)',
+      hint: '1 for openai, 2 for anthropic',
+      value: apiStyle,
+      setter: setApiStyle,
+    },
   ];
 
   const current = fields[step];
@@ -53,7 +82,9 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
   }, [step]);
 
   usePaste((event) => {
-    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    const text = safeDisplayText(new TextDecoder().decode(event.bytes))
+      .replace(/\r\n/g, '\n')
+      .trimEnd();
     if (!text) return;
     const insertAt = cursor;
     current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
@@ -72,9 +103,9 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
     if (name === 'tab') {
       evt.preventDefault();
       if (evt.shift) {
-        setStep(prev => (prev <= 0 ? fields.length - 1 : prev - 1));
+        setStep((prev) => (prev <= 0 ? fields.length - 1 : prev - 1));
       } else {
-        setStep(prev => (prev + 1) % fields.length);
+        setStep((prev) => (prev + 1) % fields.length);
       }
       return;
     }
@@ -82,21 +113,27 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
     if (name === 'return') {
       evt.preventDefault();
       if (step < fields.length - 1) {
-        setStep(prev => prev + 1);
+        setStep((prev) => prev + 1);
       } else {
-        onSubmit(baseUrl, apiKey, model || undefined);
+        let finalApiStyle = apiStyle.trim().toLowerCase();
+        if (finalApiStyle === '1') finalApiStyle = 'openai';
+        if (finalApiStyle === '2') finalApiStyle = 'anthropic';
+        onSubmit(baseUrl, apiKey, model || undefined, finalApiStyle || undefined);
       }
       return;
     }
 
-    if (name === 'v' && evt.ctrl) {
+    if ((name === 'v' || name === 'V') && evt.ctrl) {
       evt.preventDefault();
-      readClipboard().then(text => {
-        if (!text) return;
-        const insertAt = cursor;
-        current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
-        setCursor(insertAt + text.length);
-      }).catch(() => {});
+      readClipboard()
+        .then((text) => {
+          const clean = safeDisplayText(text).replace(/\r\n/g, '\n').trimEnd();
+          if (!clean) return;
+          const insertAt = cursor;
+          current.setter((prev: string) => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
+          setCursor(insertAt + clean.length);
+        })
+        .catch(() => {});
       return;
     }
 
@@ -105,20 +142,20 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
       if (cursor > 0) {
         const val = current.value;
         current.setter(val.slice(0, cursor - 1) + val.slice(cursor));
-        setCursor(prev => prev - 1);
+        setCursor((prev) => prev - 1);
       }
       return;
     }
 
     if (name === 'left') {
       evt.preventDefault();
-      setCursor(prev => Math.max(0, prev - 1));
+      setCursor((prev) => Math.max(0, prev - 1));
       return;
     }
 
     if (name === 'right') {
       evt.preventDefault();
-      setCursor(prev => Math.min(current.value.length, prev + 1));
+      setCursor((prev) => Math.min(current.value.length, prev + 1));
       return;
     }
 
@@ -146,23 +183,11 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
       return;
     }
 
-    if (evt.ctrl && (name === 'v' || name === 'V')) {
-      evt.preventDefault();
-      readClipboard().then(text => {
-        if (text) {
-          const insertAt = cursor;
-          current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
-          setCursor(insertAt + text.length);
-        }
-      });
-      return;
-    }
-
     if (name === 'space' || name === ' ') {
       evt.preventDefault();
       const val = current.value;
       current.setter(val.slice(0, cursor) + ' ' + val.slice(cursor));
-      setCursor(prev => prev + 1);
+      setCursor((prev) => prev + 1);
       return;
     }
 
@@ -170,7 +195,7 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
       evt.preventDefault();
       const val = current.value;
       current.setter(val.slice(0, cursor) + evt.name + val.slice(cursor));
-      setCursor(prev => prev + 1);
+      setCursor((prev) => prev + 1);
     }
   });
 
@@ -189,7 +214,9 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
     return (
       <box flexDirection="row">
         <text fg={theme.text}>{before}</text>
-        <text fg={theme.cursor} attributes={TextAttributes.BOLD}>│</text>
+        <text fg={theme.cursor} attributes={TextAttributes.BOLD}>
+          │
+        </text>
         <text fg={theme.text}>{after || ' '}</text>
       </box>
     );
@@ -203,14 +230,16 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
       left={Math.floor((termWidth - modalWidth) / 2)}
       width={modalWidth}
       backgroundColor={theme.bgPanel}
-      border={["top", "bottom", "left", "right"]}
+      border={['top', 'bottom', 'left', 'right']}
       borderColor={theme.borderActive}
       paddingTop={1}
       paddingBottom={1}
       paddingLeft={2}
       paddingRight={2}
     >
-      <text fg={theme.primary} attributes={TextAttributes.BOLD}>Manually enter API Key</text>
+      <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+        Manually enter API Key
+      </text>
       <box height={1} />
 
       {fields.map((field, idx) => {
@@ -218,7 +247,10 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
         const hasValue = field.value.length > 0;
         return (
           <box key={idx} flexDirection="column" marginBottom={1}>
-            <text fg={isActive ? theme.primary : theme.textMuted} attributes={isActive ? TextAttributes.BOLD : TextAttributes.NONE}>
+            <text
+              fg={isActive ? theme.primary : theme.textMuted}
+              attributes={isActive ? TextAttributes.BOLD : TextAttributes.NONE}
+            >
               {field.label}
             </text>
             <box
@@ -228,7 +260,7 @@ export function LoginModal({ currentBaseUrl, currentModel, currentApiStyle, onSu
               paddingTop={1}
               paddingBottom={1}
               marginTop={1}
-              border={isActive ? ["top", "bottom", "left", "right"] : undefined}
+              border={isActive ? ['top', 'bottom', 'left', 'right'] : undefined}
               borderColor={isActive ? theme.primary : undefined}
             >
               {isActive ? (

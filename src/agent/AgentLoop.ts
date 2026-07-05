@@ -57,8 +57,15 @@ function buildPersistedMessage(
   return msg;
 }
 
-const WRITE_TOOLS = new Set(['file_edit', 'write_file', 'terminal']);
+const WRITE_TOOLS = new Set([
+  'file_edit',
+  'write_file',
+  'terminal',
+  'delete_file',
+  'delete_folder',
+]);
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
+const SESSION_KEY_TOOLS = new Set(['ask_user', 'delete_file', 'delete_folder']);
 
 type ErrorType =
   | 'rate_limit'
@@ -170,6 +177,7 @@ export class AgentLoop {
   private contextManager: ContextManager;
   private memoryEngine: MemoryEngine;
   private researchPipeline?: ResearchPipeline;
+  private sessionKey = 'default';
   private interrupted = false;
   private ledger = new TokenLedger();
   private abortController = new AbortController();
@@ -311,13 +319,53 @@ export class AgentLoop {
     this.ledger.add('userInput', text);
   }
 
+  setResearchMode(mode: ResearchDepth): void {
+    this.config.researchMode = mode;
+  }
+
+  private looksLikeResearchTask(userMessage: string): boolean {
+    return /\b(research|investigate|compare|sources?|citation|paper|study|literature|forum|reddit|youtube|twitter|x\b|news|market|trend|deep dive)\b/i.test(
+      userMessage
+    );
+  }
+
+  private looksLikeComplexTask(userMessage: string): boolean {
+    return /\b(audit|review|fix|debug|implement|refactor|build|migrate|analy[sz]e|security|bugs?|codebase|repo|tests?|architecture|multi[- ]?agent)\b/i.test(
+      userMessage
+    );
+  }
+
+  private selectExecutionMode(userMessage: string): 'single' | 'research' | 'multiagent' {
+    const mode = this.getResearchMode();
+    if (mode === 'low') return 'single';
+    if (mode === 'medium') return this.multiAgentMode ? 'multiagent' : 'single';
+    if (this.looksLikeResearchTask(userMessage)) return 'research';
+    if (this.multiAgentMode || this.looksLikeComplexTask(userMessage)) return 'multiagent';
+    return 'single';
+  }
+
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     this.abortController = new AbortController();
 
-    if (this.multiAgentMode && this.multiAgent) {
+    const executionMode = images?.length ? 'single' : this.selectExecutionMode(userMessage);
+    if (executionMode === 'research') {
+      yield* this.runResearch(userMessage);
+      return;
+    }
+    if (executionMode === 'multiagent') {
+      if (!this.multiAgent) this.multiAgent = new MultiAgentSystem(this.config, this.registry);
       yield* this.runMultiAgent(userMessage);
       return;
+    }
+
+    const mode = this.getResearchMode();
+    if (mode === 'medium' && this.looksLikeResearchTask(userMessage)) {
+      this.messages.push({
+        role: 'system',
+        content:
+          '[Depth: medium] Use light research discipline: state uncertainty, prefer sources/tools when useful, but stay single-agent unless explicitly asked for deep research.',
+      });
     }
 
     const msg: Message = { role: 'user', content: userMessage };
@@ -1073,11 +1121,8 @@ export class AgentLoop {
             const call = readOnlyCalls[0];
             yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
             try {
-              if (call.name === 'ask_user') {
-                call.arguments._sessionKey = 'default';
-              }
-              if (call.name === 'ask_user') {
-                call.arguments._sessionKey = 'default';
+              if (SESSION_KEY_TOOLS.has(call.name)) {
+                call.arguments._sessionKey = this.sessionKey;
               }
               const result = await withTimeout(
                 this.registry.execute(call.name, call.arguments),
@@ -1160,8 +1205,8 @@ export class AgentLoop {
             const results = await Promise.all(
               readOnlyCalls.map(async (call) => {
                 try {
-                  if (call.name === 'ask_user') {
-                    call.arguments._sessionKey = 'default';
+                  if (SESSION_KEY_TOOLS.has(call.name)) {
+                    call.arguments._sessionKey = this.sessionKey;
                   }
                   const result = await withTimeout(
                     this.registry.execute(call.name, call.arguments),
@@ -1204,6 +1249,10 @@ export class AgentLoop {
             this.interrupted = false;
             yield { type: 'error', data: 'Interrupted before tool execution.' };
             return;
+          }
+
+          if (SESSION_KEY_TOOLS.has(call.name)) {
+            call.arguments._sessionKey = this.sessionKey;
           }
 
           yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
@@ -1293,9 +1342,35 @@ export class AgentLoop {
   private async *runMultiAgent(userMessage: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     this.messages.push({ role: 'user', content: userMessage });
+    this.ledger.add('userInput', userMessage);
 
     try {
-      const result = await this.multiAgent!.run(userMessage);
+      const pendingEvents: AgentEvent[] = [];
+      let result: Awaited<ReturnType<MultiAgentSystem['run']>> | undefined;
+      let runError: any;
+      let done = false;
+      this.multiAgent!.run(userMessage, {
+        onEvent: (event) => pendingEvents.push(event),
+      })
+        .then((value) => {
+          result = value;
+        })
+        .catch((error) => {
+          runError = error;
+        })
+        .finally(() => {
+          done = true;
+        });
+
+      while (!done || pendingEvents.length > 0) {
+        while (pendingEvents.length > 0) {
+          yield pendingEvents.shift()!;
+        }
+        if (!done) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      if (runError) throw runError;
+      if (!result) throw new Error('Multi-agent produced no result');
 
       if (this.interrupted) {
         this.interrupted = false;
@@ -1321,6 +1396,7 @@ export class AgentLoop {
 
   async *runResearch(query: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
+    this.ledger.add('userInput', query);
 
     if (!this.researchPipeline) {
       this.researchPipeline = new ResearchPipeline(this.config);
@@ -1372,6 +1448,10 @@ export class AgentLoop {
     const before = this.messages.length;
     this.messages = await this.contextManager.compact(this.messages);
     return before - this.messages.length;
+  }
+
+  setSessionKey(sessionKey: string): void {
+    this.sessionKey = sessionKey || 'default';
   }
 
   setProvider(config: Partial<AurixConfig>): void {

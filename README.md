@@ -1,469 +1,447 @@
-# AURIX
+# AURIX Agent
+
+<p align="center">
+  <img src="https://www.image2url.com/r2/default/images/1783253521423-c6c0dcbf-3529-48f2-9399-415773d6c6a3.png" alt="AURIX Agent" width="760" />
+</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT" />
   <img src="https://img.shields.io/npm/v/aurix-ai?style=for-the-badge&color=cb3837&logo=npm&logoColor=white" alt="npm" />
   <img src="https://img.shields.io/badge/runtime-Node.js%20%7C%20Bun-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Runtime" />
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/native-Rust-dea584?style=for-the-badge&logo=rust&logoColor=white" alt="Rust" />
-  <img src="https://img.shields.io/badge/interface-Terminal%20%2B%20Chat-7c3aed?style=for-the-badge" alt="Interface" />
+  <img src="https://img.shields.io/badge/interface-Terminal%20%2B%20Gateway-7c3aed?style=for-the-badge" alt="Interface" />
 </p>
 
 <p align="center">
-  <b>Open-source terminal AI agent that codes, researches, browses, and solves — with real hands.</b>
+  <b>The open-source AI agent that does not just chat — it opens browsers, edits repos, runs tools, solves verification widgets, hunts bugs, and finishes workflows.</b>
 </p>
 
 <p align="center">
-  AURIX is a developer-first AI workspace that lives in your terminal.<br/>
-  It inspects repos, edits files, runs commands, performs cited research, automates stealth browsers<br/>
-  with built-in CAPTCHA solving, generates documents — and stays accessible from Discord, Telegram, and WhatsApp.
+  AURIX is a terminal-native autonomous workspace for builders, researchers, CTF players, and automation power users.<br/>
+  Bring your own model endpoint, launch the TUI, and let the agent operate inside your real environment.
+</p>
+
+<p align="center">
+  <a href="#quick-install"><b>Quick Install</b></a> ·
+  <a href="#why-aurix"><b>Why AURIX</b></a> ·
+  <a href="#standout-features"><b>Features</b></a> ·
+  <a href="#bug-hunt-skills"><b>Bug Hunt</b></a> ·
+  <a href="#research-social-intelligence"><b>Social Research</b></a> ·
+  <a href="#configuration"><b>Config</b></a>
 </p>
 
 ---
 
-<!--
-  TODO: Add terminal demo GIF here
-  Record with: asciinema rec demo.cast && agg demo.cast demo.gif
-  Or use: terminalizer record demo && terminalizer render demo
--->
-
-![AURIX Demo](docs/assets/aurix-demo.png)
-
-## What is AURIX?
-
-AURIX is an **Autonomous Multi-Agent AI Workspace**. It is not a chat wrapper — it is an AI that has hands, eyes, and memory. 
-
-**It can automatically control your social media, upload content, conduct deep research on it, and solve any CAPTCHA with hybrid AI audio-visual models.**
-
-Instead of just generating text, AURIX operates directly inside your environment to close the execution loop. It comes packed with **46+ built-in tools**, a **Rust-powered token counter** for accurate context management, a **stealth browser engine** with CAPTCHA solving, and **100+ CTF/security skills** for offensive security testing.
-
-1. **It Reads & Browses:** Navigates your folders, reads your codebase, searches the web, and automates a stealth Chromium browser (CloakBrowser) that solves CAPTCHAs including image challenges, sliders, and FunCaptcha.
-2. **It Thinks:** Delegates complex tasks to a swarm of sub-agents. Accurate BPE token counting via a native Rust module ensures context is never wasted.
-3. **It Acts:** Writes files, runs shell commands, creates Git commits, manages Docker containers, queries databases, drags sliders, and clicks image tiles.
-4. **It Verifies:** If a test fails or a build crashes, AURIX reads the error log and fixes the code autonomously.
-5. **It Hunts:** Ships with 100+ CTF and penetration testing skills covering web exploitation, binary pwn, crypto, reverse engineering, forensics, OSINT, and AI/ML security.
-
-## Standout Features
-
-### Stealth Browser with CAPTCHA Solving
-
-AURIX ships with **CloakBrowser** — a patched Chromium with source-level anti-detection that passes reCAPTCHA scoring, Cloudflare Turnstile, and fingerprint checks. The built-in CAPTCHA solver handles:
-
-| CAPTCHA Type | Method | Success Rate |
-|---|---|---|
-| **reCAPTCHA v2** | Hybrid solver: image grid AI vision + audio bypass (Whisper STT) with human-like clicking | **95%+** hybrid mode |
-| **hCaptcha** | Same image grid solving flow | ~80% with vision model |
-| **Cloudflare Turnstile** | Managed challenge auto-click | ~90% |
-| **FunCaptcha (Arkose Labs / Microsoft)** | Puzzle type detection + rotation, drag-drop, image-match solving | ~75% |
-| **GeeTest / MTCaptcha** | Slider drag with human-like easing + micro-jitter | ~85% |
-| **Text CAPTCHA** | Screenshot + OCR via AI vision | ~95% |
-
-**NEW: Hybrid Audio + Image Solver** — AURIX now supports a hybrid captcha solving mode:
-- **Image mode**: AI vision analyzes grid tiles, picks matches, clicks with human-like behavior
-- **Audio mode**: Clicks audio button, downloads audio challenge, transcribes with Whisper (local or Groq API), types answer
-- **Hybrid mode** (default): Tries image first, falls back to audio if image fails
-- Auto-detects non-vision models and switches to audio mode automatically
-- Supports Groq Whisper API (free 2000 req/day) or local Whisper installation
-
-```yaml
-# config.yaml
-captchaAudio: "hybrid"    # "image" / "audio" / "hybrid"
-groqApiKey: gsk_xxx       # Get free key: https://console.groq.com/docs/speech-to-text
-```
-
-**Best model for CAPTCHA:** Use **Gemini** — Google owns both reCAPTCHA and Gemini, so Gemini understands reCAPTCHA's image challenges better than any other model. Any vision-capable model works. Non-vision models auto-switch to audio mode.
-
-New browser actions: `captcha-grid`, `click-tile`, `captcha-verify`, `drag-to`, `hold-click` — all with human-like mouse behavior (eased curves, random delays, micro-jitter).
-
-### Rust-Powered Token Counter
-
-Token counting was wildly inaccurate (`Math.ceil(text.length / 4)` underestimates by 30-60% for code). Now uses a **native Rust BPE tokenizer** via napi-rs:
-
-- **tiktoken-rs** with `cl100k_base` (GPT-4) and `o200k_base` (GPT-4o) encodings
-- Accurate context management — no more premature overflow or wasted context window
-- Real API usage tracking from `response.usage.promptTokens` / `completionTokens`
-- Automatic JS fallback if Rust toolchain unavailable
-
-### Bug Hunt Skill — 100+ CTF & Security Skills
-
-Bundled with comprehensive offensive security skills covering every CTF category:
-
-| Category | Files | Covers |
-|---|---|---|
-| **Web** | 20 | SQLi, XSS, SSTI, SSRF, JWT, prototype pollution, file upload RCE, 500+ techniques |
-| **Pwn** | 18 | Buffer overflow, ROP, heap, format string, kernel exploitation, seccomp bypass |
-| **Crypto** | 16 | RSA, AES, ECC, PRNG, ZKP, lattice, Coppersmith, padding oracle |
-| **Reverse** | 18 | ELF/PE analysis, VMs, WASM, obfuscation, game clients |
-| **Forensics** | 14 | Disk images, memory dumps, PCAP, steganography, event logs |
-| **Misc** | 12 | Jails, encodings, RF/SDR, esoteric languages, game theory |
-| **Malware** | 3 | C2 traffic, packers, .NET analysis |
-| **OSINT** | 3 | Social media, geolocation, DNS, public records |
-| **AI/ML** | 3 | Adversarial examples, prompt injection, model extraction |
-
-## What's New in v3.0.0
-
-### Advanced Git Workflow Tool
-Full Git and GitHub workflow management directly from the terminal or chat gateway:
-
-| Action | Capabilities |
-|---|---|
-| **Branch** | create, switch, list, delete, merge — local git operations |
-| **PR Review** | approve, request changes, comment — GitHub PR reviews via API |
-| **Release** | create (tag + GitHub release), list releases |
-| **Merge Conflict** | detect conflicts, show diffs, abort merge/rebase |
-| **CI Actions** | list workflow runs, check CI status per branch |
-| **Stats** | top contributors, repo activity & health dashboard |
-
-```text
-/git_advanced action=branch sub_action=create name=feature/new-thing
-/git_advanced action=pr-review sub_action=approve pr_number=42
-/git_advanced action=release sub_action=create tag=v1.0.0
-/git_advanced action=merge-conflict sub_action=detect
-/git_advanced action=actions sub_action=status branch_filter=main
-/git_advanced action=stats sub_action=contributors
-```
-
-### Full-Color ANSI Phoenix Logo
-The iconic AURIX phoenix now renders in full RGB color gradient — teal wings dissolving into warm orange flame. True original artwork embedded directly in the terminal.
-
-### Gateway Stability & Bug Fixes
-- **Race condition guard**: concurrent message handling per user prevented
-- **Proper cleanup**: `/reset` now interrupts running agent before creating new context
-- **Graceful exit**: agent, gateway, and MCP all properly torn down on exit
-- **stdin drain**: fixed residual data corruption between readline sessions
-- **Provider fixes**: error swallowing eliminated, abort signals propagated to all API paths
-- **Slim dependency arrays**: TUI input box no longer re-renders on every state change
-
-### Clipboard Everywhere
-Windows, macOS, and Linux clipboard fully supported:
-- `clip.exe` for Windows, `pbcopy`/`pbpaste` for macOS, `wl-copy`/`xclip` for Linux
-- OSC 52 terminal protocol fallback for remote sessions
-- `Ctrl+V` paste handler in all input fields
-
-### Lite Mode
-Minimal interactive mode with `@inquirer/prompts` — launch with `aurix --lite` for a clean prompt-only interface with full ANSI phoenix branding.
-
-## What's New in v2.12.0
-
-.0
-
-### Autonomous Email Verification & OTP Extraction
-AURIX can now autonomously sign up for services requiring email verification:
-- **TempMail API integration**: Generates throwaway email addresses on the fly
-- **Inbox Polling & Auto-Extraction**: Waits for incoming emails and uses Regex to automatically extract 4-8 digit OTPs or verification links — no need for the LLM to read bloated HTML emails
-- **Browser Actions**: Exposed via `get-temp-email` and `wait-email` browser tools
-
-### Interactive Human-in-the-Loop (HITL) Prompting
-When AURIX needs real user credentials (not throwaway) or encounters an MFA prompt, it pauses execution without wasting tokens:
-- **CLI Mode**: Pauses terminal execution and shows an interactive prompt asking you to paste the OTP.
-- **Gateway Mode**: When running on Telegram, Discord, or WhatsApp, the agent stops and sends you a message ("Send your OTP for login"). It resumes only when you reply.
-- **Under the hood**: Driven by the new `ask_user` tool that suspends the Promise loop.
-
-### Human-like Browser Behaviors
-Further reducing bot-detection across Arkose and Cloudflare:
-- **Human-like Scroll**: Ease-out cubic animation with variable steps and a 20% chance of overshooting the target and correcting back.
-- **Human-like Typing (`humanType`)**: Types with dynamic character delays, 5% QWERTY-proximity typo probability, and natural backspace corrections. 
-- **Persona-Anchored Fingerprinting**: 5 realistic hardware combinations (e.g. Windows RTX 3080 Gamer, MacBook Pro M1) instead of randomized fingerprints.
-
-### Hybrid CAPTCHA Solver (Image + Audio)
-The biggest upgrade yet — AURIX now solves CAPTCHAs using a **hybrid approach**:
-- **Image grid solver** with enhanced preprocessing (normalize, sharpen, saturation boost) for better small-object detection
-- **Audio bypass** using Whisper STT (Groq API or local) to transcribe audio challenges
-- **3x3 flip solver** with canvas-based flip detection and multi-round re-clicking
-- **4x4 grid solver** with grid-level analysis and per-tile fallback
-- **Non-vision model auto-detection** — automatically switches to audio mode if your model doesn't support vision
-- **Telegram status** now shows `using_tools: $command` instead of generic "Writing response..."
-
-```bash
-# Install with hybrid captcha support
-npm i -g aurix-ai
-
-# Setup Groq API key for audio bypass (free 2000 req/day)
-# Get key at: https://console.groq.com/docs/speech-to-text
-aurix setup
-```
-
-### Telegram Tools Fix
-- All "features" renamed to "tools" for consistency
-- Status messages now show `using_tools: $tool_name` format
-- Unknown commands properly handled as tool invocations
-
-## What's New in v2.9.x
-
-### MCP Server Manager (`/mcp`)
-Full **Model Context Protocol** integration — connect external tool servers directly into AURIX:
-
-```text
-/mcp              # Open interactive TUI manager
-/mcp presets      # Browse built-in server presets (GitHub, Gmail, PostgreSQL, etc.)
-/mcp catalog      # Search online MCP server catalog
-/mcp connect      # Add a server from presets
-/mcp reload       # Restart all running MCP servers
-```
-
-- **Subprocess transport** — JSON-RPC 2.0 over stdio, servers run as child processes
-- **Interactive TUI** — Arrow-key navigation, space toggle enable/disable, add/remove servers
-- **Auto-registration** — MCP tools are registered as AURIX tools on startup
-- **10 built-in presets** — GitHub, Filesystem, PostgreSQL, SQLite, Brave Search, Puppeteer, Slack, Memory, Fetch, Sequential Thinking
-- **Online catalog** — Browse and search from the official MCP server registry
-
-### Memory Enrichment
-When you save something to memory, AURIX **rephrases it with an LLM** before storing — making memories 2-5x richer with implicit context:
-
-```text
-You say: "kenapa pupuk ga boleh kebanyakan"
-Stored:  "User menanyakan tentang batas dosis pemupukan pada tanaman —
-          kelebihan pupuk menyebabkan burn akar, akumulasi garam tanah,
-          dan gangguan penyerapan air akibat osmotic stress"
-```
-
-- Same language preserved (Indonesian in → Indonesian out)
-- Adds domain context, scope, caveats that were implicit
-- Self-contained — makes sense when recalled months later
-- Fallback to raw input if LLM enrichment fails
-
-### Update Notifications
-Automatic version check against npm registry on startup. If a newer version exists:
-
-```text
-╭──────────────────────────────────────────────╮
-│  New version available!  2.9.1 → 2.9.7      │
-│  Run: npm update -g aurix-ai                │
-╰──────────────────────────────────────────────╯
-```
-
-- Cached for 24 hours (no spam, no API hammering)
-- Non-blocking — doesn't slow down startup
-
-### OS-Aware System Prompt
-AURIX now detects your operating system and adjusts its command cheatsheet:
-- **Windows:** Blocks Linux commands (`ls`, `grep`, `cat`, `find`) — uses PowerShell equivalents
-- **macOS:** BSD-flavored hints (different `sed`, `find`, `xargs` behavior)
-- **Linux:** Standard GNU coreutils
-
-### Windows Fixes
-- **No more about:blank** — 3-attempt navigation retry + removed random proxy injection
-- **No more --no-sandbox warning** — monkey-patch strips flag from all Chromium launches
-- **OpenTUI FFI** — auto-probes `node:ffi` availability, conditional flag injection
-- **Copy/paste** — bracketed paste mode + ESC buffering in setup wizard
-
-### Other v2.9.x Improvements
-- **46+ tools** including new captcha training data for improved accuracy
-- **Modular captcha solver** — split into separate modules for better maintainability
-- **Session browser** — resume past sessions from the TUI
-- **Theme system** — 6+ color themes with border style customization
-
-## Real-World Use Cases
-
-### The "Hands-Free" Developer
-> **You:** *"Look at `auth.ts`. There's a bug where JWT tokens expire too early. Fix it, run the test suite, and if it passes, push it."*
-> **AURIX:** Reads the file, edits the code, runs tests, sees an error, fixes it, runs again, executes `git push`.
-
-### The Deep Researcher
-> **You:** *"Write a 5-page PDF report on how Vercel alternatives are perceived on Reddit and HackerNews."*
-> **AURIX:** Spawns a 13-agent research pipeline. Scrapes forums, debates claims, compiles data into markdown, converts to styled PDF.
-
-### The Browser Automator
-> **You:** *"Go to this site, fill the registration form, solve whatever CAPTCHA pops up, and submit."*
-> **AURIX:** Opens stealth browser, fills form, detects reCAPTCHA image challenge, screenshots each tile, uses vision to pick matching images, clicks verify.
-
-### The CTF Player
-> **You:** *"Here's a challenge file. Find the flag."*
-> **AURIX:** Triages the file, categorizes it (crypto? web? pwn?), loads the matching Bug Hunt sub-skill, applies specialized techniques, captures the flag.
-
-## Key Features
-
-- **Terminal-First UI (TUI):** Beautiful, interactive CLI built with OpenTUI (React-based).
-- **Multi-Platform Gateway:** Access from Terminal, Discord, Telegram, or WhatsApp. Memory and context persist everywhere.
-- **MCP Server Manager:** Connect external tool servers (GitHub, databases, APIs) via `/mcp` with interactive TUI.
-- **Memory Enrichment:** LLM rephrases memories before storing — 2-5x richer recall with implicit context preserved.
-- **Self-Extending:** `> install skill from github.com/user/awesome-skill` — clones, validates, and rebuilds without restarting.
-- **Accurate Token Counting:** Native Rust BPE tokenizer prevents context waste.
-- **Stealth Browser:** CloakBrowser with source-level Chromium patches, human-like behavior, and full CAPTCHA solving (86% reCAPTCHA v2 success rate).
-- **Auto-Update Check:** Notifies you when a new version is available on npm.
-- **OS-Aware:** Detects your platform and adjusts commands (no `ls` on Windows, no `dir` on Linux).
-- **1000 Iteration Limit:** Agents can work on complex tasks without hitting premature limits.
-
-## How It Works Under the Hood
-
-AURIX is powered by a LangGraph-based architecture that orchestrates multiple specialized AI agents:
-
-1. **The Orchestrator (Supervisor Agent):** Analyzes your request and delegates to specialist agents.
-2. **The Specialists:** Code Reviewer, Security Analyst, Deep Researcher, CTF Player — working in parallel.
-3. **The Execution Engine:** 46+ built-in tools including a stealth browser, Rust token counter, and Docker manager.
-4. **The Verification Loop:** A Critic Agent reviews output before returning. If execution fails, the loop retries with exponential backoff.
-
-## Quick Start
-
-### Requirements
-
-- **Node.js 22+** or [Bun](https://bun.sh) v1.0+
-- API key for at least one LLM provider (OpenAI, Anthropic, or others)
-- Rust toolchain (optional — improves token counting accuracy)
-- Python 3.12+ (optional, for research-forums skill)
-
-### Install via npm (Recommended)
-
-The fastest way to get started. Works on any machine with Node.js 22+.
+## Quick Install
 
 ```bash
 npm install -g aurix-ai
-```
-
-Then run:
-```bash
-aurix setup     # Configure LLM provider + API key (first time only)
-aurix           # Launch the terminal AI workspace
-```
-
-That's it. The `aurix` command is now available globally in your terminal.
-
-To update later:
-```bash
-npm update -g aurix-ai
-```
-
-### Install via Git Clone (For Development)
-
-Use this method if you want to modify the source code or contribute.
-
-```bash
-git clone https://github.com/DekaPrayoga/AurixAgent.git
-cd AurixAgent
-npm install         # installs dependencies + builds Rust token counter
-npm run build       # compiles TypeScript
-npm link            # links `aurix` command to your PATH
-```
-
-After linking, `aurix` works from any directory:
-```bash
 aurix setup
 aurix
 ```
 
-### Building the Rust Token Counter (Optional)
+That is the whole path: install the CLI, configure your model endpoint, then start the terminal workspace.
 
-The npm package ships with a pre-built `.node` binary (7.2 MB). If you install from source and have Rust installed, the postinstall script automatically builds it via napi-rs.
-
-**Why does the Rust build directory take ~150 MB?** The `target/release/deps/` folder contains ~147 MB of intermediate `.rlib` compilation files — one for every crate in the dependency tree (tiktoken-rs embeds the full BPE vocabulary of 100k+ tokens). The final compiled binary is only 7.2 MB, and that's the only file included in the npm package.
-
-If Rust is not available, the agent falls back to a JS-based token counter automatically — no functionality is lost, just slightly less accurate counting.
+For development:
 
 ```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Then rebuild the native module
-cd native/token-counter
-npx napi build --release --platform
+git clone https://github.com/DekaPrayoga/AurixAgent.git
+cd AurixAgent
+npm install
+npm run build
+npm link
+aurix
 ```
 
-## Usage
+Need a simple prompt-only mode?
 
-### 1. Initial Setup
 ```bash
-aurix setup        # Configure LLM provider, API key, model
+aurix --lite
 ```
 
-### 2. Start Interactive Session
+Want AURIX in chat apps?
+
 ```bash
-aurix              # Launch the terminal AI workspace
+aurix gateway
 ```
 
-### 3. Start Multi-Platform Gateway
-```bash
-aurix gateway      # Run as Discord/Telegram/WhatsApp bot
+---
+
+## Why AURIX?
+
+Most AI coding tools stop at suggestions. AURIX is built to **operate**.
+
+| If you want... | AURIX gives you... |
+|---|---|
+| An AI that can actually use your machine | Terminal execution, file editing, repo search, build/test loops, and tool calls. |
+| Browser automation that can continue past verification prompts | CloakBrowser automation with screenshot observation, human-like input, CAPTCHA/grid/audio/slider flows. |
+| Security and CTF help that is not generic | A full Bug Hunt skill pack for web, pwn, crypto, reverse, forensics, OSINT, malware, misc, AI/ML, and writeups. |
+| Research that goes beyond one search result | Web search, scraping, forum/social research, synthesis, reports, and depth-based review/debate. |
+| Trading and market analysis workflows | Stock/crypto/DeFi skills plus a `trading` tool for analysis, technical indicators, news, portfolio, comparison, and risk views. |
+| Decisions that need disagreement | Council/debate patterns, supporter/skeptic/judge research agents, and native multi-agent routing. |
+| An agent you can reach outside the terminal | Discord, Telegram, and WhatsApp gateway support. |
+| No lock-in to one hosted model | OpenAI-compatible, Anthropic-compatible, and custom endpoint configuration. |
+| Extensible tools | MCP server manager plus a large local skill system. |
+
+AURIX is for people who want an agent that can **see, click, type, read, edit, run, investigate, remember, and report back**.
+
+---
+
+## What Can It Do?
+
+```text
+You:  Fix the failing auth tests and patch the bug.
+AURIX: Reads the repo → edits code → runs tests → reads errors → fixes again.
+
+You:  Open this signup page and complete the verification step.
+AURIX: Opens CloakBrowser → fills fields → solves image/audio/slider challenge → submits.
+
+You:  Solve this CTF web challenge.
+AURIX: Loads Bug Hunt → maps routes → checks auth/injection/upload/JWT paths → writes exploit notes.
+
+You:  Research what people say about this product across Reddit, X, YouTube, TikTok, HN, GitHub, Polymarket, and the web.
+AURIX: Runs social research → clusters evidence → ranks signals → writes a source-backed brief.
+
+You:  Analyze NVDA vs AMD with technicals, news, risk, and crypto/DeFi context.
+AURIX: Uses trading + finance skills → gathers market data → compares signals → highlights risk, not financial advice.
+
+You:  This product decision is debatable — convene a council.
+AURIX: Splits voices into Architect, Skeptic, Pragmatist, and Critic → surfaces disagreement → gives a verdict.
+
+You:  /depth xhigh — audit this project from Telegram.
+AURIX: Applies deeper routing for that gateway user and returns a reviewed result.
 ```
 
-### Other Commands
+---
+
+## Standout Features
+
+### 1. Stealth Browser + CAPTCHA / Verification Solving
+
+AURIX ships with a Playwright-powered browser tool backed by **CloakBrowser**. It is designed for realistic browser automation: persistent profiles, visual page observation, human-like mouse paths, natural typing, scrolling, drag/drop, and autonomous handling of interactive verification widgets.
+
+| Capability | What AURIX does |
+|---|---|
+| **Image grid challenges** | Screenshots tiles, asks a vision model to identify targets, clicks selected tiles with human-like movement, and verifies. |
+| **Audio challenges** | Opens audio mode, retrieves or listens to the challenge, transcribes it through the configured audio path, and submits the answer. |
+| **Hybrid mode** | Tries image solving first, then falls back to audio when needed. |
+| **Sliders / drag widgets** | Uses eased mouse paths, overshoot correction, micro-jitter, and hold/drag actions. |
+| **FunCaptcha / Arkose-style widgets** | Detects puzzle style and applies rotation, drag/drop, image-match, or interaction flows. |
+| **Turnstile-style managed prompts** | Observes the widget and performs the required click/interaction flow when possible. |
+| **Human behavior** | Warmup movement, natural delays, typo correction, scroll easing, random pauses, and persistent browser profile. |
+
+Browser actions include:
+
+```text
+navigate, click, fill, type, screenshot, snapshot,
+signup-assist, signin-assist,
+detect-captcha, solve-captcha, captcha-grid, click-tile, captcha-verify,
+slider-analyze, drag-to, hold-click
+```
+
+Hybrid CAPTCHA configuration:
+
+```yaml
+# ~/.aurix/config.yaml
+captchaAudio: "hybrid"      # image | audio | hybrid
+visionModel: "your-vision-model"
+visionBaseUrl: "https://your-openai-compatible-endpoint/v1"
+visionApiKey: "..."
+```
+
+> Best results come from a strong vision-capable model. If your main model is text-only, configure a separate `visionModel` for browser screenshots.
+
+### 2. Bug Hunt Skills
+
+AURIX includes a real local **Bug Hunt skill system** for CTFs, authorized security testing, security labs, and defensive research. Instead of generic security advice, AURIX can route into category-specific playbooks and technique notes.
+
+| Skill Area | What it covers |
+|---|---|
+| **Web exploitation** | SQLi, XSS, SSTI, SSRF, XXE, JWT/JWE, OAuth/OIDC, SAML, file upload bugs, auth bypass, request smuggling, prototype pollution, GraphQL, parser tricks, known CVE patterns. |
+| **Pwn / binary exploitation** | Buffer overflow, ROP, heap exploitation, format strings, seccomp, shellcoding, ELF triage. |
+| **Crypto** | RSA, AES modes, ECC, PRNG weakness, padding oracles, lattice/Coppersmith-style attacks, ZKP and challenge-specific math. |
+| **Reverse engineering** | ELF/PE analysis, stripped binaries, VMs, WASM, obfuscation, game/client reversing. |
+| **Forensics** | PCAP, disk images, memory dumps, steganography, logs, browser artifacts, timeline reconstruction. |
+| **OSINT** | Username/email/phone/domain/IP pivots, geolocation, DNS/WHOIS, public web traces, social-media investigation. |
+| **Malware** | C2 traffic analysis, packers, .NET, obfuscated scripts, shellcode triage. |
+| **AI/ML security** | Prompt injection challenges, adversarial examples, model extraction concepts, jail/challenge analysis. |
+| **Writeups** | Turn solved challenges into clean, reproducible writeups. |
+
+Pre-install CTF tooling when you want a ready lab box:
+
 ```bash
-aurix sessions     # List previous sessions
+bash skills/bug-hunt/install_ctf_tools.sh all
+```
+
+Use only where you are allowed to test: CTFs, lab boxes, authorized bug bounty targets, internal audits, and defensive investigations.
+
+### 3. Research + Social Intelligence
+
+AURIX research is not limited to generic web search. The skill tree includes **social-researching** for finding what people actually say across social platforms, plus deep research, fact-checking, citation checks, claim verification, summarization, and video analysis.
+
+| Research lane | Coverage |
+|---|---|
+| **Social research** | Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the wider web. |
+| **Deep research** | Multi-source planning, source gathering, deep-reading, synthesis, citations, and reports. |
+| **Fact / claim checks** | Claim extraction, citation verification, skeptical review, and source-backed verdicts. |
+| **Video research** | Useful when the topic includes YouTube/TikTok/video claims or creator sentiment. |
+| **Market / product intelligence** | Competitive research, user sentiment, investor/market signals, and source attribution. |
+
+The higher `/depth` levels activate more review behavior in the native research pipeline: supporter, skeptic, debate system, judge, citation guardian, logic critic, writer, and final reviewer.
+
+### 4. Trading, Stocks, Crypto, and DeFi Analysis
+
+AURIX includes both a `trading` tool and finance skills. It can analyze tickers, market news, technical indicators, stock comparisons, crypto/on-chain context, DeFi protocol risks, and portfolio-style summaries.
+
+| Finance lane | What it does |
+|---|---|
+| **Trading analysis** | Symbol analysis, sentiment/news, technical indicators, comparison, portfolio, risk, and report actions. |
+| **Stocks** | Fundamental + technical analysis, earnings/guidance context, valuation and sector risk framing. |
+| **Crypto** | Project research, wallet/on-chain context, token risk notes, market data, contract caution. |
+| **DeFi** | TVL, protocol metrics, audit status, smart-contract/admin/upgradeability risks. |
+| **Prediction markets / market intelligence** | Non-advisory planning, oracle/venue research, and risk review workflows where the skill pack is available. |
+
+AURIX should frame this as analysis and risk context, not financial advice.
+
+### 5. Native Multi-Agent + Debatable Decisions
+
+For bigger tasks, AURIX can route work through specialist agents while keeping them inside the native Aurix runtime: same provider config, same tools, same timeout behavior, same progress events.
+
+```text
+/multiagent        Toggle native multi-agent routing
+/depth high        Prefer deeper routing for research/complex engineering tasks
+/depth xhigh       Add stronger verification/debate for high-value tasks
+/depth max         Force deep routing for research and complex builds/audits
+/depth ultra       Maximum depth with final synthesis/review
+/fast              Return to low-depth fast single-agent mode
+```
+
+AURIX also ships skill patterns for **council-style decisions** and team orchestration:
+
+| Pattern | Useful when |
+|---|---|
+| **Research debate** | Claims need supporter/skeptic debate, judging, citation checking, and final review. |
+| **Council** | A decision is genuinely debatable and needs Architect, Skeptic, Pragmatist, and Critic voices. |
+| **Team orchestration** | Multi-agent work needs ownership, work items, merge gates, handoffs, and evidence. |
+| **Parallel execution** | Independent lanes can run faster without losing correctness. |
+| **Autonomous loops** | Long-running pipelines need sequential or DAG-like agent workflows. |
+
+What this means in practice:
+
+- code tasks can get implementation + review style passes,
+- research tasks can use deeper source gathering and synthesis,
+- complex audits can route through verifier/judge-style flows,
+- product decisions can expose dissent before choosing,
+- tool progress is visible instead of hidden behind a black box.
+
+### 6. Multi-Platform Gateway
+
+AURIX is not locked to one terminal window. Run it as a bot and keep working from chat apps:
+
+| Interface | Best for |
+|---|---|
+| **Terminal TUI** | Coding sessions, repo edits, browser automation, local tools. |
+| **Lite mode** | Fast prompt-only sessions. |
+| **Discord** | Server/team workflows and remote task control. |
+| **Telegram** | Mobile control and personal automation. |
+| **WhatsApp** | Always-on assistant access through a familiar chat app. |
+
+```bash
+aurix gateway
+```
+
+Gateway mode supports per-user sessions, context continuity, command handling, and tool status updates.
+
+### 7. MCP + Local Skill System
+
+AURIX supports the **Model Context Protocol** and a large local skill directory.
+
+```text
+/mcp              Open interactive MCP manager
+/mcp presets      Browse built-in server presets
+/mcp catalog      Search MCP server catalog
+/mcp connect      Add a server
+/mcp reload       Restart MCP servers
+/skills           List loaded local skills
+/addskills        Enable the skill_loader tool
+```
+
+The local `skills/` tree currently contains **330+ skill files**, including Bug Hunt, trading/finance, social research, deep research, debate/council workflows, multi-agent orchestration, engineering patterns, testing, deployment, research, and automation skills.
+
+---
+
+## Command Map
+
+### CLI entrypoints
+
+```bash
+aurix              # Launch full TUI
+aurix --lite       # Launch lite prompt mode
+aurix setup        # Configure provider/model/key
+aurix gateway      # Start Discord/Telegram/WhatsApp gateway
+aurix --continue   # Continue latest session
 aurix --resume ID  # Resume a specific session
-aurix update       # Update to latest version
-aurix --help       # Show all commands
 ```
+
+### In-app slash commands
+
+| Command | Purpose |
+|---|---|
+| `/help` | Show command help. |
+| `/status` | Show current model/session/tool status. |
+| `/model` | View or switch model. |
+| `/tools` | List available tools. |
+| `/context` | Show context usage. |
+| `/clear` | Clear visible chat. |
+| `/reset` | Reset the current agent context. |
+| `/theme` | Change TUI theme. |
+| `/border` | Change border style. |
+| `/browserui` / `/gui` | Browser UI helpers. |
+| `/mcp` | Manage MCP servers. |
+| `/github` | GitHub integration helpers. |
+| `/gmail` | Gmail/email integration helpers. |
+| `/depth` / `/effort` | Change reasoning/research depth. |
+| `/deep-research` | Run explicit deep research flow. |
+| `/multiagent` | Toggle native multi-agent routing. |
+| `/fast` | Switch back to low-depth fast mode. |
+| `/skills` / `/skill` | Browse skills or adjust skill visibility. |
+| `/todo` | Manage todo items. |
+| `/rules` | Manage session/project rules. |
+| `/sessions` | Browse/resume sessions. |
+| `/save` / `/export` / `/copy` | Save, export, or copy output. |
+| `/reload-mcp` | Restart MCP servers and reload tools. |
+| `/permissions` | Inspect permission settings. |
+| `/exit` | Quit. |
+
+---
+
+## Configuration
+
+Main config file:
+
+```text
+~/.aurix/config.yaml
+```
+
+Example:
+
+```yaml
+provider: custom              # openai | anthropic | custom | custom-anthropic
+apiStyle: openai              # openai | anthropic | auto
+baseUrl: "https://your-endpoint/v1"
+apiKey: "..."
+model: "your-model"
+
+researchMode: low             # low | medium | high | xhigh | max | ultra
+themeName: aurix
+captchaAudio: "hybrid"
+
+browser:
+  proxies:
+    - "http://user:pass@host:port"
+
+gateway:
+  discord:
+    enabled: false
+    token: ""
+  telegram:
+    enabled: false
+    token: ""
+  whatsapp:
+    enabled: false
+```
+
+Environment variables override config values.
+
+<!-- AUTO-GENERATED: env-reference -->
+| Variable | Required | Description | Example |
+|---|---:|---|---|
+| `AURIX_PROVIDER` | No | Provider type. | `openai`, `anthropic`, `custom` |
+| `AURIX_API_KEY` | Yes | Main model API key. | `sk-...` |
+| `AURIX_BASE_URL` | No | Base URL for OpenAI-compatible or Anthropic-compatible endpoints. | `https://your-endpoint/v1` |
+| `AURIX_API_STYLE` | No | Force endpoint protocol if auto-detect fails. | `auto`, `openai`, `anthropic` |
+| `AURIX_MODEL` | No | Main model name. | `gpt-4o`, `your-model` |
+| `AURIX_VISION_MODEL` | No | Vision model for screenshots/browser tasks. | `your-vision-model` |
+| `SEARCH_API_KEY` | No | Optional external search provider key. | `...` |
+| `SPOTIFY_ACCESS_TOKEN` / `SPOTIFY_TOKEN` | No | Optional music-control credentials. | `...` |
+| `DISCORD_TOKEN` | No | Discord gateway token. | `...` |
+| `TELEGRAM_TOKEN` | No | Telegram gateway token. | `...` |
+<!-- /AUTO-GENERATED: env-reference -->
+
+---
+
+## Built-in Tool Categories
+
+| Category | Capabilities |
+|---|---|
+| **File & Code** | Read/write/edit/search files, terminal execution, code execution. |
+| **Browser** | CloakBrowser automation, screenshots, snapshots, CAPTCHA/verification solving, sliders, drag/drop. |
+| **Web & Research** | Web search, scraping, social research across Reddit/X/YouTube/TikTok/HN/GitHub/Polymarket, forum research, YouTube helpers, report generation. |
+| **Git & GitHub** | Git operations, PR/issues, releases, CI status, merge-conflict helpers. |
+| **Office** | PDF, Excel, PowerPoint, email. |
+| **DevOps** | Docker, VPS, deploy, cloud provisioning. |
+| **Security / OSINT** | Authorized security testing helpers, CTF skills, OSINT investigation. |
+| **Finance / Blockchain** | Trading analysis, stocks, crypto, DeFi, prediction-market research, EVM/Solana tooling. |
+| **Creative** | GIF search, text humanizer, diagrams. |
+| **Utility** | Maps, notifier, music, todo, memory, archive reader. |
+| **MCP** | External tool servers loaded through Model Context Protocol. |
+
+---
 
 ## Architecture
 
 ```text
 src/
-  agent/       Core agent loop, context, memory, TokenCounter
-  tools/       46+ tools (Browser, Research, Docker, Git, etc.)
+  agent/       Agent loop, context, config, memory, research pipeline, multi-agent runtime
+  cli/         OpenTUI React interface, command palette, input/output panels
+  gateway/     Discord / Telegram / WhatsApp gateway
   mcp/         MCP client, registry, catalog, tool adapter
-  cli/         Terminal UI (React Ink + raw stdin TUI)
-  gateway/     Discord / Telegram / WhatsApp integration
-  providers/   LLM providers (OpenAI, Anthropic, LangChain)
-  skills/      Skill registry and loader
-  utils/       Update check, ASCII logo, helpers
-
-native/
-  token-counter/   Rust BPE tokenizer (tiktoken-rs via napi-rs)
-    Cargo.toml     Rust crate config
-    src/lib.rs     count_tokens(), count_tokens_batch()
+  providers/   OpenAI-compatible, Anthropic-compatible, and custom provider adapters
+  skills/      Local skill registry and loader
+  tools/       Browser, terminal, file ops, git, research, OSINT, office, deploy, cloud, etc.
+  utils/       Update check, terminal sanitization, base URL helpers, ASCII logo
 
 skills/
-  bug-hunt/        100+ CTF & security testing skills
-    ctf-web/       Web exploitation (SQLi, XSS, SSTI, SSRF, JWT...)
-    ctf-pwn/       Binary exploitation (ROP, heap, kernel...)
-    ctf-crypto/    Cryptography (RSA, AES, ECC, PRNG, ZKP...)
-    ctf-reverse/   Reverse engineering (ELF/PE, VMs, WASM...)
-    ctf-forensics/ Forensics (disk, memory, PCAP, stego...)
-    ctf-misc/      Jails, encodings, RF/SDR, game theory
-    ctf-malware/   Malware analysis (C2, packers, .NET)
-    ctf-osint/     OSINT (social media, geolocation, DNS)
-    ctf-ai-ml/     AI/ML security (adversarial, prompt injection)
-    ctf-writeup/   Write-up generator
+  bug-hunt/    CTF and authorized security-testing skill pack
+
+bin/
+  aurix.js     CLI launcher
+
+scripts/
+  build.cjs    Build script
 ```
 
-## The Arsenal: 46+ Built-in Tools
+---
 
-| Category | Capabilities |
-| --- | --- |
-| **File & Code** | Read, write, edit, search files, terminal exec, code sandbox |
-| **Browser** | Stealth Chromium (CloakBrowser), CAPTCHA solving (reCAPTCHA, hCaptcha, FunCaptcha, Turnstile, GeeTest, sliders), drag-to, hold-click, persistent profiles |
-| **Web** | Web search, scraper, YouTube |
-| **Office** | PDF, Excel, PowerPoint generation, SMTP Email |
-| **DevOps** | Docker, VPS management, deployments, cloud provisioning |
-| **Finance** | Trading analysis, EVM/Solana blockchain tools |
-| **Security** | Bug Hunt skills (100+ CTF techniques), OSINT, vulnerability scanning |
-| **Creative** | GIF search, text humanizer, architecture diagrams |
-| **Utility** | Maps, notifier, music player, todo, memory |
-| **Git** | PR/issue creation & management, Advanced Git workflow (branch, merge conflict, release, CI, stats) |
-| **MCP** | Full MCP server manager with interactive TUI, subprocess transport, auto-tool registration, online catalog |
-| **Planning** | Project planning, Kanban, story decomposition |
+## Development
 
-## Self-Extension
+<!-- AUTO-GENERATED: package-scripts -->
+| Command | Description |
+|---|---|
+| `npm run build` | Compile TypeScript with `scripts/build.cjs`. |
+| `npm run dev` | Run `src/index.tsx` through `tsx`. |
+| `npm run start` | Run the built app from `dist/index.js`. |
+| `npm run prepare` | Build during package preparation. |
+| `npm run postinstall` | Run package postinstall setup. |
+| `npm run lint` | Run ESLint on `src/**/*.ts`. |
+| `npm run format` | Format TypeScript files with Prettier. |
+<!-- /AUTO-GENERATED: package-scripts -->
 
-AURIX can install new skills from any GitHub repository at runtime:
+Project facts:
 
-```text
-> install skill from github.com/user/awesome-skill
-```
+- npm package: `aurix-ai`
+- CLI binary: `aurix`
+- Runtime target: Node.js/Bun-compatible TypeScript
+- Build output: `dist/`
+- Config directory: `~/.aurix/`
+- Browser profile: `~/.aurix-browser-profile`
+- License: MIT
 
-It clones, validates, registers, and rebuilds automatically. No restart needed.
+---
 
-## Supported LLM Providers
+## Star the Repo
 
-- **Google Gemini** — Recommended for CAPTCHA solving (Google owns reCAPTCHA + Gemini)
-- OpenAI (GPT-4, GPT-4o, etc.)
-- Anthropic (Claude 3.5, Claude 4)
-- Any OpenAI-compatible endpoint
-- LangChain integrations
-
-> **Tip:** For best CAPTCHA solving results, use a vision-capable model with 700B+ parameters. Gemini excels at reCAPTCHA since Google built both systems.
-
-## Environment Variables
-
-```bash
-cp .env.example .env
-```
-
-Key variables:
-- `OPENAI_API_KEY` — OpenAI access
-- `ANTHROPIC_API_KEY` — Anthropic access
-- `DISCORD_TOKEN` — Discord bot gateway
-- `TELEGRAM_BOT_TOKEN` — Telegram gateway
-- `BRAVE_API_KEY` — Enhanced web search (optional)
+If AURIX looks useful, give it a ⭐ on GitHub. It helps more developers find the project, try the agent, report bugs, and contribute new tools/skills.
 
 ## License
 

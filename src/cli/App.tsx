@@ -26,7 +26,13 @@ import {
   type BorderStyle,
 } from './theme.js';
 import { orchestratorEvents } from '../tools/SpawnAgent.js';
-import { createSlashCommands, findCommand, formatCommandHelp, parseSlash } from './commands.js';
+import {
+  auditCommandCoverage,
+  createSlashCommands,
+  findCommand,
+  formatCommandHelp,
+  parseSlash,
+} from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { CONFIG_PATH, saveConfig } from '../agent/Config.js';
@@ -34,6 +40,7 @@ import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
 import { logoLines } from '../utils/ascii-logo.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import { mcpManager } from '../mcp/McpRegistry.js';
 import {
   loadTodos as loadTodosFromFile,
@@ -44,6 +51,140 @@ import {
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 type ResearchDepth = (typeof VALID_DEPTHS)[number];
+
+const HANDLED_COMMANDS = new Set([
+  'addskills',
+  'background',
+  'border',
+  'browser',
+  'browserui',
+  'btw',
+  'bundles',
+  'busy',
+  'clear',
+  'codex-runtime',
+  'compact',
+  'config',
+  'copy',
+  'cost',
+  'cron',
+  'curator',
+  'debug',
+  'deep',
+  'deep-research',
+  'deny',
+  'diff',
+  'disable',
+  'discord',
+  'doctor',
+  'editor',
+  'effort',
+  'exit',
+  'export',
+  'fast',
+  'focus',
+  'footer',
+  'fork',
+  'github',
+  'gmail',
+  'goal',
+  'gui',
+  'handoff',
+  'help',
+  'history',
+  'image',
+  'indicator',
+  'init',
+  'insights',
+  'kanban',
+  'login',
+  'mcp',
+  'memory',
+  'model',
+  'move',
+  'multiagent',
+  'new',
+  'paste',
+  'permissions',
+  'personality',
+  'platform',
+  'platforms',
+  'plugin',
+  'plugins',
+  'profile',
+  'proxy',
+  'queue',
+  'reasoning',
+  'recap',
+  'redraw',
+  'reload',
+  'reload-mcp',
+  'reload-skills',
+  'research-forums',
+  'reset',
+  'restart',
+  'resume',
+  'retry',
+  'review',
+  'rewind',
+  'rollback',
+  'rules',
+  'save',
+  'code-review',
+  'security-review',
+  'sessions',
+  'setup',
+  'simplify',
+  'skill',
+  'skills',
+  'skin',
+  'snapshot',
+  'status',
+  'statusbar',
+  'stash',
+  'steer',
+  'stop',
+  'subgoal',
+  'tag',
+  'telegram',
+  'theme',
+  'todo',
+  'tools',
+  'toolsets',
+  'undo',
+  'update',
+  'usage',
+  'variant',
+  'verify',
+  'vision',
+  'voice',
+  'warp',
+  'whatsapp',
+  'whoami',
+  'yolo',
+]);
+
+function describeDepthMode(mode: ResearchDepth): string {
+  const descriptions: Record<ResearchDepth, string> = {
+    low: 'Single-agent normal execution.',
+    medium: 'Single-agent execution with light research discipline for research-like prompts.',
+    high: 'Research prompts route to the research pipeline; complex coding/audit prompts route to native multi-agent.',
+    xhigh: 'High routing plus debate/verifier stages where the research pipeline supports them.',
+    max: 'Forces real pipeline/multi-agent routing for research and complex tasks.',
+    ultra:
+      'Maximum research pipeline/final-review or native multi-agent synthesis for complex tasks.',
+  };
+  return descriptions[mode];
+}
+
+function normalizeApiStyleInput(value?: string): AurixConfig['apiStyle'] | undefined {
+  const style = value?.trim().toLowerCase();
+  if (!style) return undefined;
+  if (style === '1') return 'openai';
+  if (style === '2') return 'anthropic';
+  if (style === 'openai' || style === 'anthropic' || style === 'auto') return style;
+  return undefined;
+}
 
 interface AppProps {
   config: AurixConfig;
@@ -81,8 +222,8 @@ export function App({ config, registry, resumeId }: AppProps) {
   const [whatsappError, setWhatsappError] = useState<string | undefined>();
   const [showWhatsApp, setShowWhatsApp] = useState(false);
   const gatewayRef = React.useRef<any>(null);
-  const [permissionMode, setPermissionMode] = useState<'ask' | 'bypass'>(
-    registry.getPermissionMode() === 'bypass' ? 'bypass' : 'ask'
+  const [permissionMode, setPermissionMode] = useState<'ask' | 'bypass' | 'deny'>(
+    registry.getPermissionMode()
   );
   const agentRef = React.useRef<AgentLoop | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -192,12 +333,16 @@ export function App({ config, registry, resumeId }: AppProps) {
 
   const resumedRef = React.useRef(false);
   const resumeSessionIdRef = React.useRef<string | undefined>(resumeId);
-  if (resumeId && !resumedRef.current) {
+
+  const agent = agentRef.current;
+
+  useEffect(() => {
+    if (!resumeId || resumedRef.current) return;
     resumedRef.current = true;
-    const count = agentRef.current.loadSession(resumeId);
+    const count = agentRef.current?.loadSession(resumeId) || 0;
     if (count > 0) {
       resumeSessionIdRef.current = resumeId;
-      const loaded = agentRef.current.getMessages();
+      const loaded = agentRef.current?.getMessages() || [];
       setMessages(
         loaded.map((m) => ({
           role: m.role as 'user' | 'assistant' | 'tool' | 'system',
@@ -215,9 +360,7 @@ export function App({ config, registry, resumeId }: AppProps) {
         },
       ]);
     }
-  }
-
-  const agent = agentRef.current;
+  }, [resumeId]);
   useEffect(() => {
     const onStart = (data: any) => {
       setSubagents(new Array(data.total).fill({ status: 'queued' }));
@@ -253,6 +396,10 @@ export function App({ config, registry, resumeId }: AppProps) {
   const skillCount = skills.length;
   const commands = useMemo(
     () => createSlashCommands({ toolCount, skillCount, registry }),
+    [toolCount, skillCount, registry]
+  );
+  const allCommands = useMemo(
+    () => createSlashCommands({ toolCount, skillCount, registry }, { includeHidden: true }),
     [toolCount, skillCount, registry]
   );
 
@@ -461,12 +608,24 @@ export function App({ config, registry, resumeId }: AppProps) {
 
       const slash = parseSlash(text);
       if (slash) {
-        const command = findCommand(commands, slash.name);
+        const command = findCommand(allCommands, slash.name);
         const commandName = command?.name || slash.name;
 
         if (!command && !commandName.startsWith('tool:')) {
           addAssistant(
             `Unknown command: /${slash.name}\n\nType /help or press Ctrl+P for available commands.`
+          );
+          return;
+        }
+
+        const notImplemented = (name: string, reason: string) => {
+          addAssistant(`Not implemented yet: /${name}. ${reason}`);
+        };
+
+        if (command?.status === 'not-implemented') {
+          notImplemented(
+            commandName,
+            'This command is hidden from help until it has a real implementation.'
           );
           return;
         }
@@ -505,7 +664,9 @@ export function App({ config, registry, resumeId }: AppProps) {
           }
           setResearchMode(mode);
           config.researchMode = mode;
-          addAssistant(`Research depth set to: ${mode}`);
+          agent.setResearchMode(mode);
+          saveConfig(config);
+          addAssistant(`Research depth set to: ${mode}\n${describeDepthMode(mode)}`);
           return;
         }
 
@@ -526,27 +687,9 @@ export function App({ config, registry, resumeId }: AppProps) {
         if (commandName === 'multiagent') {
           const enabled = agent.toggleMultiAgent();
           if (enabled) {
-            addAssistant(`Multi-agent mode ON — 12 specialists active:
-
-**Coding Team:**
-  web-dev        Full-stack web applications
-  frontend       React components, CSS, responsive UI
-  backend        APIs, databases, auth, server logic
-  ui-designer    Design systems, layouts, UX
-  code-reviewer  Code quality, bug detection, best practices
-  cybersecurity  Security audits, vulnerability assessment
-
-**Academic Team:**
-  researcher     Deep web research, source verification
-  journal-writer Academic papers, citations, methodology
-  data-analyst   Statistics, data visualization, trends
-  editor         Proofreading, formatting, style compliance
-
-**Meta Agents:**
-  user-advocate  Ensures output meets user needs
-  judge          Final evaluator, quality control
-
-Supervisor auto-routes tasks to the right specialist(s).`);
+            addAssistant(
+              `Native multi-agent routing ON.\n\nAurix will select specialists per task and show route/tool progress when they actually run. Simple prompts may still run direct. Use /agents to inspect mode.`
+            );
           } else {
             addAssistant('Multi-agent mode OFF. Using single-agent direct mode.');
           }
@@ -577,8 +720,11 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         }
 
         if (commandName === 'compact') {
+          const removed = await agent.compactMessages();
           addAssistant(
-            'Context compaction is automatic at 75%. Use /reset for a hard fresh context.'
+            removed > 0
+              ? `Context compacted: removed ${removed} message(s) from active context.`
+              : 'Context compaction ran; nothing needed removal.'
           );
           return;
         }
@@ -697,7 +843,15 @@ Supervisor auto-routes tasks to the right specialist(s).`);
             `Model: ${agent.getModel()}`,
             `Base URL: ${baseUrl || '(default)'}`,
           ];
-          addAssistant(`AURIX Doctor\n${checks.map((c) => `  ✓ ${c}`).join('\n')}`);
+          const audit = auditCommandCoverage(allCommands, HANDLED_COMMANDS, ['tool:*']);
+          const commandAudit =
+            `Command audit:\n` +
+            `  Missing visible handlers: ${audit.missingHandler.length ? audit.missingHandler.join(', ') : 'none'}\n` +
+            `  Handler-only commands: ${audit.hiddenHandler.length ? audit.hiddenHandler.join(', ') : 'none'}\n` +
+            `  Visible stubs: ${audit.stubVisible.length ? audit.stubVisible.join(', ') : 'none'}`;
+          addAssistant(
+            `AURIX Doctor\n${checks.map((c) => `  ✓ ${c}`).join('\n')}\n\n${commandAudit}`
+          );
           return;
         }
 
@@ -721,9 +875,37 @@ Supervisor auto-routes tasks to the right specialist(s).`);
         }
 
         if (commandName === 'skill') {
+          const arg = slash.args?.trim() || '';
+          if (arg.startsWith('new ')) {
+            const name = arg
+              .slice(4)
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, '-')
+              .replace(/-+/g, '-');
+            if (!name) {
+              addAssistant('Usage: /skill new <name>');
+              return;
+            }
+            const root = process.env.AURIX_HOME || process.cwd();
+            const dir = path.join(root, 'skills', 'custom', name);
+            const file = path.join(dir, 'SKILL.md');
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            if (!fs.existsSync(file)) {
+              fs.writeFileSync(
+                file,
+                `---\nname: ${name}\ndescription: Custom AURIX skill.\ntags: [custom]\n---\n\n# ${name}\n\nUse this skill when the task needs the ${name} workflow.\n`,
+                'utf-8'
+              );
+            }
+            addAssistant(
+              `Skill scaffold ready:\n${file}\n\nRun /skills ${name} to see it after restart.`
+            );
+            return;
+          }
+
           const { setSkillLimit, getSkillCounts, getSkillLimit } =
             await import('../tools/SkillLoader.js');
-          const arg = slash.args?.trim() || '';
 
           if (!arg || arg === 'status') {
             const counts = getSkillCounts();
@@ -736,7 +918,8 @@ Supervisor auto-routes tasks to the right specialist(s).`);
                 `  Visible: ${counts.visible}\n` +
                 `  Limit: ${limit === null ? 'no limit' : limit + ' additional'}\n\n` +
                 `Usage: /skill <number> — limit additional skills\n` +
-                `       /skill off — remove limit (show all)`
+                `       /skill off — remove limit (show all)\n` +
+                `       /skill new <name> — create a local skill scaffold`
             );
             return;
           }
@@ -790,16 +973,20 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           }
           setResearchMode(mode);
           config.researchMode = mode;
-          addAssistant(`Research effort set to: ${mode}`);
+          agent.setResearchMode(mode);
+          saveConfig(config);
+          addAssistant(`Research effort set to: ${mode}\n${describeDepthMode(mode)}`);
           return;
         }
 
         if (commandName === 'fast') {
           setResearchMode('low');
           config.researchMode = 'low';
+          agent.setResearchMode('low');
           if (agent.isMultiAgent()) agent.toggleMultiAgent();
+          saveConfig(config);
           addAssistant(
-            'Switched to fast mode (low depth, single-agent). Use /deep for max research.'
+            'Switched to fast mode: low depth, single-agent normal execution. Use /deep for max research.'
           );
           return;
         }
@@ -809,14 +996,20 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           if (wasDeep) {
             setResearchMode('medium');
             config.researchMode = 'medium';
+            agent.setResearchMode('medium');
             agent.toggleMultiAgent();
-            addAssistant('Deep research OFF. Back to medium depth, single-agent.');
+            saveConfig(config);
+            addAssistant(
+              'Deep research OFF. Back to medium depth: single-agent with light research discipline.'
+            );
           } else {
             setResearchMode('ultra');
             config.researchMode = 'ultra';
+            agent.setResearchMode('ultra');
             if (!agent.isMultiAgent()) agent.toggleMultiAgent();
+            saveConfig(config);
             addAssistant(
-              `DEEP RESEARCH ON\n  Depth: ultra (max reasoning)\n  Multi-agent: ON (coder, researcher, creative, sysadmin specialists)\n  Auto-compact: ON at 75%\n  Memory consolidation: every 10 minutes\n\nAll queries will use maximum depth with specialist routing.`
+              `DEEP RESEARCH ON\n  Depth: ultra\n  Research prompts: full ResearchPipeline with final review\n  Complex code/audit prompts: native multi-agent routing with selected specialists\n  Auto-compact: ON at 75%\n\nQueries now route by task type instead of only changing a label.`
             );
           }
           return;
@@ -901,7 +1094,10 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           const dir = path.dirname(exportPath);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
           const content = messages
-            .map((m) => `## ${m.role}${m.toolName ? ` (${m.toolName})` : ''}\n\n${m.content}`)
+            .map(
+              (m) =>
+                `## ${m.role}${m.toolName ? ` (${m.toolName})` : ''}\n\n${safeDisplayText(m.content)}`
+            )
             .join('\n\n---\n\n');
           fs.writeFileSync(
             exportPath,
@@ -952,7 +1148,10 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           const dir = path.dirname(exportPath);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
           const content = messages
-            .map((m) => `## ${m.role}${m.toolName ? ` (${m.toolName})` : ''}\n\n${m.content}`)
+            .map(
+              (m) =>
+                `## ${m.role}${m.toolName ? ` (${m.toolName})` : ''}\n\n${safeDisplayText(m.content)}`
+            )
             .join('\n\n---\n\n');
           fs.writeFileSync(
             exportPath,
@@ -1059,6 +1258,15 @@ Supervisor auto-routes tasks to the right specialist(s).`);
             }
           } catch {}
           addAssistant(`Copied ${assistantMsgs.length} message(s) to clipboard.`);
+          return;
+        } else if (commandName === 'rewind') {
+          if (messages.some((m) => m.role === 'user' && m.checkpointId)) {
+            setShowRewind(true);
+          } else {
+            addAssistant(
+              'No rewind checkpoints available yet. Send a message that creates a checkpoint first.'
+            );
+          }
           return;
         } else if (commandName === 'recap') {
           outboundText =
@@ -1168,7 +1376,12 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           addAssistant('All background processes killed.');
           return;
         } else if (commandName === 'compress') {
-          addAssistant('Context compaction is automatic at 75%. Use /compact for manual trigger.');
+          const removed = await agent.compactMessages();
+          addAssistant(
+            removed > 0
+              ? `Context compressed: removed ${removed} message(s) from active context.`
+              : 'Context compression ran; nothing needed removal.'
+          );
           return;
         } else if (commandName === 'usage') {
           const stats = agent.getContextStats();
@@ -1181,16 +1394,12 @@ Supervisor auto-routes tasks to the right specialist(s).`);
           return;
         } else if (commandName === 'agents' || commandName === 'tasks') {
           if (agent.isMultiAgent()) {
-            addAssistant(`Multi-agent ON — 12 specialists:
-
-Coding: web-dev, frontend, backend, ui-designer, code-reviewer, cybersecurity
-Academic: researcher, journal-writer, data-analyst, editor
-Meta: user-advocate, judge
-
-Supervisor auto-routes to the best specialist(s) for each task.`);
+            addAssistant(
+              `Native multi-agent routing is ON.\nSpecialists are selected per task; Aurix will report the selected route when a prompt actually runs.`
+            );
           } else {
             addAssistant(
-              `Single-agent direct mode.\nEnable multi-agent with: /multiagent\n\n12 specialists available:\n  Coding: web-dev, frontend, backend, ui-designer, code-reviewer, cybersecurity\n  Academic: researcher, journal-writer, data-analyst, editor\n  Meta: user-advocate, judge`
+              `Single-agent direct mode.\nEnable native multi-agent routing with: /multiagent\nSpecialists are available but not active until selected for a task.`
             );
           }
           return;
@@ -1362,7 +1571,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
             const mode = args.slice(5).trim();
             if (mode === 'ask' || mode === 'bypass' || mode === 'deny') {
               registry.setPermissionMode(mode);
-              setPermissionMode(mode === 'deny' ? 'ask' : mode);
+              setPermissionMode(mode);
               addAssistant(`Permission mode set to: ${mode}`);
               return;
             }
@@ -1430,34 +1639,6 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
             .join('\n');
           addAssistant(
             `Loaded skills: ${skills.length}\nCategories: ${categories || '(none)'}\n\n${list || 'No matching skills.'}`
-          );
-          return;
-        }
-
-        if (commandName === 'skill') {
-          const [sub, ...rest] = slash.args.split(/\s+/);
-          if (sub !== 'new' || rest.length === 0) {
-            addAssistant('Usage: /skill new <name>');
-            return;
-          }
-          const name = rest
-            .join('-')
-            .toLowerCase()
-            .replace(/[^a-z0-9-]/g, '-')
-            .replace(/-+/g, '-');
-          const root = process.env.AURIX_HOME || process.cwd();
-          const dir = path.join(root, 'skills', 'custom', name);
-          const file = path.join(dir, 'SKILL.md');
-          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          if (!fs.existsSync(file)) {
-            fs.writeFileSync(
-              file,
-              `---\nname: ${name}\ndescription: Custom AURIX skill.\ntags: [custom]\n---\n\n# ${name}\n\nUse this skill when the task needs the ${name} workflow.\n`,
-              'utf-8'
-            );
-          }
-          addAssistant(
-            `Skill scaffold ready:\n${file}\n\nRun /skills ${name} to see it after restart.`
           );
           return;
         }
@@ -1988,7 +2169,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 {
                   role: 'tool',
                   content: event.data,
-                  toolName: `langgraph:${event.toolName}`,
+                  toolName: `route:${event.toolName || 'native'}`,
                   timestamp: new Date(),
                 },
               ]);
@@ -2049,16 +2230,16 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
       setIsProcessing(false);
       setActiveTool(undefined);
     },
-    [isProcessing, commands, doExit]
+    [isProcessing, commands, allCommands, doExit]
   ); // commands & doExit are stable (memoized); isProcessing gates submission
 
   const isHome = showBanner && messages.length === 0 && !isProcessing;
   const ctxStats = agent.getContextStats();
   const tokenStats = agent.getTokenStats();
-  const mode: 'auto' | 'ask' = permissionMode === 'bypass' ? 'auto' : 'ask';
+  const mode: 'auto' | 'ask' | 'deny' = permissionMode === 'bypass' ? 'auto' : permissionMode;
   const cycleMode = useCallback(() => {
     const current = registry.getPermissionMode();
-    const next = current === 'bypass' ? 'ask' : 'bypass';
+    const next = current === 'bypass' ? 'ask' : current === 'ask' ? 'deny' : 'bypass';
     registry.setPermissionMode(next);
     setPermissionMode(next);
   }, [registry]);
@@ -2188,29 +2369,35 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                   <LoginModal
                     currentBaseUrl={config.baseUrl}
                     currentModel={config.model}
-                    onSubmit={(newBaseUrl, newApiKey, newModel) => {
+                    currentApiStyle={config.apiStyle}
+                    onSubmit={(newBaseUrl, newApiKey, newModel, newApiStyle) => {
+                      const patch: Partial<AurixConfig> = {};
+                      const apiStyle = normalizeApiStyleInput(newApiStyle);
                       if (newBaseUrl) {
                         config.baseUrl = newBaseUrl;
+                        patch.baseUrl = newBaseUrl;
                         setBaseUrl(newBaseUrl);
                       }
                       if (newApiKey) {
                         config.apiKey = newApiKey;
+                        patch.apiKey = newApiKey;
                       }
                       if (newModel) {
                         config.model = newModel;
+                        patch.model = newModel;
                       }
-                      agent.setProvider({
-                        baseUrl: newBaseUrl || undefined,
-                        apiKey: newApiKey || undefined,
-                        model: newModel || undefined,
-                      });
+                      if (apiStyle) {
+                        config.apiStyle = apiStyle;
+                        patch.apiStyle = apiStyle;
+                      }
+                      if (Object.keys(patch).length > 0) agent.setProvider(patch);
                       saveConfig(config);
                       setShowLogin(false);
                       setMessages((prev) => [
                         ...prev,
                         {
                           role: 'assistant',
-                          content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? newApiKey.slice(0, 8) + '...' : '(skipped)'}\n  Model: ${newModel || agent.getModel()}`,
+                          content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? 'updated' : '(unchanged)'}\n  API Style: ${apiStyle || config.apiStyle || '(unchanged)'}\n  Model: ${newModel || agent.getModel()}`,
                           timestamp: new Date(),
                         },
                       ]);
@@ -2305,7 +2492,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                             ...prev,
                             {
                               role: 'assistant',
-                              content: `Discord bot connected! Token: ${token.slice(0, 8)}...`,
+                              content: 'Discord bot connected and token saved.',
                               timestamp: new Date(),
                             },
                           ]);
@@ -2325,7 +2512,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                             ...prev,
                             {
                               role: 'assistant',
-                              content: `Telegram bot connected! Token: ${token.slice(0, 8)}...`,
+                              content: 'Telegram bot connected and token saved.',
                               timestamp: new Date(),
                             },
                           ]);

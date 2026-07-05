@@ -1,10 +1,12 @@
 import { AskUserManager, setGlobalAskCallback } from '../tools/AskUser.js';
 import { EventEmitter } from 'events';
+import fs from 'fs';
 import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
 import { loadConfig, saveConfig } from '../agent/Config.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import type { ToolRegistry } from '../tools/Registry.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 function cryptoRandomId(): string {
   return crypto.randomBytes(6).toString('hex');
@@ -14,7 +16,7 @@ function cryptoRandomId(): string {
 // Strips all markdown formatting: bold, headers, code blocks, backticks, etc.
 function stripMarkdown(text: string): string {
   return (
-    text
+    safeDisplayText(text)
       // Remove code blocks (```...```)
       .replace(/```[\s\S]*?```/g, (match) => {
         // Extract code content without the fences
@@ -109,7 +111,6 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
 *Advanced:*
   /compress — Compress context
   /agents — Show active agents
-  /queue <text> — Queue a message
   /btw <text> — Add context while agent is working
 
 💡 *RESEARCH DEPTH:*
@@ -169,6 +170,37 @@ Type !ai start for all commands.
 Example: !ai make me a python script`;
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const KNOWN_COMMANDS = new Set([
+  'start',
+  'help',
+  'reset',
+  'cancel',
+  'title',
+  'resume',
+  'save',
+  'status',
+  'history',
+  'model',
+  'baseurl',
+  'apikey',
+  'depth',
+  'fast',
+  'tools',
+  'skills',
+  'review',
+  'plan',
+  'research',
+  'research-forums',
+  'summarize',
+  'pdf',
+  'pptx',
+  'xlsx',
+  'compress',
+  'agents',
+  'btw',
+  'proxy',
+  'login',
+]);
 
 const STATUS_EMOJIS: Record<string, string> = {
   thinking: '❄️',
@@ -270,12 +302,30 @@ function formatToolStatus(toolName: string, args?: Record<string, unknown>): str
 }
 
 function cleanResponse(text: string): string {
-  return text
+  return safeDisplayText(text)
     .replace(/\$([^\s$][^$\n]*[^\s$])\$/g, '')
-    .replace(/```(?:bash|sh|shell)\n[\s\S]*?```/gm, '')
-    .replace(/>\s.*$/gm, '')
+    .replace(/^>\s?/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+const SENDABLE_FILE_RE =
+  /(?:Screenshot saved(?: to)?|Screenshot|saved(?: to)?|Saved to|Output(?: file)?|File):\s*([^\s\n]+\.(?:png|jpg|jpeg|gif|webp|pdf|pptx|xlsx|docx|zip|txt|json))/gi;
+
+function extractSendableFiles(text: string): string[] {
+  const files = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = SENDABLE_FILE_RE.exec(text)) !== null) {
+    const file = match[1].replace(/[)\].,;]+$/, '');
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).isFile()) files.add(file);
+    } catch {}
+  }
+  return [...files];
+}
+
+function gatewayText(text: string): string {
+  return stripMarkdown(cleanResponse(text));
 }
 
 export class Gateway extends EventEmitter {
@@ -286,6 +336,7 @@ export class Gateway extends EventEmitter {
   private firstTimeUsers = new Set<string>();
   private userDepths = new Map<string, string>();
   private startTime: number;
+  private processing = new Set<string>();
   private activeProcessing = new Set<string>();
   private lastContext = new Map<
     string,
@@ -344,7 +395,7 @@ export class Gateway extends EventEmitter {
             }
           }
 
-          let promptText = `❓ **Question from agent:**\n${question}\n\n*(Please reply to answer)*`;
+          let promptText = `❓ Question from agent:\n${question}\n\nPlease reply to answer.`;
           if (toolOptions && toolOptions.length > 0 && platform.name !== 'telegram') {
             // For platforms that don't support inline keyboards (like discord or whatsapp currently), append options to text
             promptText +=
@@ -352,7 +403,7 @@ export class Gateway extends EventEmitter {
           }
 
           platform
-            .send(promptText, ctx.channelId, ctx.replyTo, sendOptions)
+            .send(gatewayText(promptText), ctx.channelId, ctx.replyTo, sendOptions)
             .catch((e) => console.error(e));
         }
       }
@@ -368,6 +419,7 @@ export class Gateway extends EventEmitter {
     let agent = this.agents.get(key);
     if (!agent) {
       agent = new AgentLoop(this.config, this.registry);
+      agent.setSessionKey(key);
       this.agents.set(key, agent);
     }
     return agent;
@@ -408,7 +460,9 @@ export class Gateway extends EventEmitter {
       if (trimmed.toLowerCase().startsWith('!ai')) {
         const rest = trimmed.slice(3).trim();
         const parts = rest.split(/\s+/);
-        return { cmd: (parts[0] || '').toLowerCase(), args: parts.slice(1).join(' ') };
+        const first = (parts[0] || '').toLowerCase();
+        if (!first || !KNOWN_COMMANDS.has(first)) return { cmd: '', args: rest };
+        return { cmd: first, args: parts.slice(1).join(' ') };
       }
       return { cmd: '', args: trimmed };
     }
@@ -432,13 +486,12 @@ export class Gateway extends EventEmitter {
 
     // Allow /btw and /cancel through even while agent is processing
     if (cmd !== 'btw' && cmd !== 'cancel') {
-      if ((this as any).__processing?.[agentKey]) return;
+      if (this.processing.has(agentKey)) return;
     }
 
     // Guard: prevent concurrent processing for the same user
     // (queue processing via setImmediate can race with a new message)
-    if (!(this as any).__processing) (this as any).__processing = new Set<string>();
-    (this as any).__processing.add(agentKey);
+    this.processing.add(agentKey);
     try {
       if (AskUserManager.isWaiting(agentKey)) {
         AskUserManager.submitAnswer(agentKey, msg.content.trim());
@@ -640,9 +693,8 @@ export class Gateway extends EventEmitter {
         agent.setProvider({ apiKey: args });
         this.config.apiKey = args;
         saveConfig(this.config);
-        const masked = args.slice(0, 8) + '...' + args.slice(-4);
         console.log(`[Gateway] API key updated`);
-        await platform.send(`✅ API key updated (${masked})`, msg.channelId, msg.replyTo);
+        await platform.send(`✅ API key updated.`, msg.channelId, msg.replyTo);
         return;
       }
 
@@ -650,13 +702,17 @@ export class Gateway extends EventEmitter {
         const mode = args.toLowerCase();
         if (VALID_DEPTHS.includes(mode)) {
           this.userDepths.set(agentKey, mode);
+          const agent = this.getAgent(agentKey);
+          agent.setResearchMode(mode as any);
+          this.config.researchMode = mode as any;
+          saveConfig(this.config);
           const desc: Record<string, string> = {
-            low: 'Quick single-agent answers',
-            medium: 'Research + sources',
-            high: 'Full team + citations (multi-agent)',
-            xhigh: '+ Debate system',
-            max: '+ Logic critic',
-            ultra: '+ Final review loop (publication-grade)',
+            low: 'Single-agent normal execution',
+            medium: 'Single-agent with light research discipline',
+            high: 'Research prompts use pipeline; complex tasks use native multi-agent',
+            xhigh: 'High routing plus debate/verifier stages when applicable',
+            max: 'Force real research/multi-agent routing for eligible prompts',
+            ultra: 'Maximum pipeline/final review or native multi-agent synthesis',
           };
           await platform.send(
             `✅ Research depth: ${mode}\n${desc[mode]}`,
@@ -802,6 +858,9 @@ export class Gateway extends EventEmitter {
           return;
         }
 
+        this.agents.get(agentKey)?.interrupt();
+        this.activeProcessing.delete(agentKey);
+        this.messageQueue.delete(agentKey);
         this.agents.delete(agentKey);
         const agent = this.getAgent(agentKey);
         const count = agent.loadSession(name);
@@ -838,13 +897,22 @@ export class Gateway extends EventEmitter {
       }
 
       if (cmd === 'fast') {
-        await platform.send('⚡ Fast mode toggled.', msg.channelId, msg.replyTo);
+        this.userDepths.set(agentKey, 'low');
+        const agent = this.getAgent(agentKey);
+        agent.setResearchMode('low' as any);
+        this.config.researchMode = 'low' as any;
+        saveConfig(this.config);
+        await platform.send(
+          '⚡ Fast mode: low depth, single-agent normal execution.',
+          msg.channelId,
+          msg.replyTo
+        );
         return;
       }
 
       if (cmd === 'agents') {
         await platform.send(
-          '🤖 Active agents: Main agent running. Use /depth high+ for multi-agent.',
+          '🤖 Native routing: specialists are selected per task when /depth high+ or multi-agent routing applies. No fake always-on agents.',
           msg.channelId,
           msg.replyTo
         );
@@ -912,6 +980,8 @@ export class Gateway extends EventEmitter {
       const taggedPrompt = `${platformTag}${forwardTag}${attachTag} ${userPrompt}`;
 
       const agent = this.getAgent(agentKey);
+      const selectedDepth = this.userDepths.get(agentKey);
+      if (selectedDepth) agent.setResearchMode(selectedDepth as any);
       this.activeProcessing.add(agentKey);
 
       try {
@@ -938,23 +1008,37 @@ export class Gateway extends EventEmitter {
               else if (args.url) snippet = String(args.url).slice(0, 200);
               else snippet = JSON.stringify(args).slice(0, 200);
             }
-            const newStatus = `❄️ ${toolName}${snippet ? ': ' + snippet : ''}`;
+            const newStatus = gatewayText(`❄️ ${toolName}${snippet ? ': ' + snippet : ''}`);
             if (newStatus !== lastToolStatus) {
               await platform.send(newStatus, msg.channelId, msg.replyTo);
               lastToolStatus = newStatus;
               lastStatusUpdate = Date.now();
             }
+          } else if (event.type === 'tool_end') {
+            const files = extractSendableFiles(event.data);
+            for (const file of files) {
+              if (platform.sendFile) {
+                await platform.sendFile(
+                  file,
+                  msg.channelId,
+                  `${event.toolName || 'tool'} output`,
+                  msg.replyTo
+                );
+              } else {
+                await platform.send(gatewayText(`File ready: ${file}`), msg.channelId, msg.replyTo);
+              }
+            }
           } else if (event.type === 'text') {
             fullResponse += event.data;
           } else if (event.type === 'error') {
-            await platform.send(`❌ ${event.data}`, msg.channelId, msg.replyTo);
+            await platform.send(gatewayText(`❌ ${event.data}`), msg.channelId, msg.replyTo);
           } else if (event.type === 'compact') {
-            await platform.send(`📦 ${event.data}`, msg.channelId, msg.replyTo);
+            await platform.send(gatewayText(`📦 ${event.data}`), msg.channelId, msg.replyTo);
           }
         }
 
         if (fullResponse) {
-          const cleaned = stripMarkdown(cleanResponse(fullResponse));
+          const cleaned = gatewayText(fullResponse);
           const maxLen = platform.name === 'discord' ? 1900 : 4000;
           const chunks = splitMessage(cleaned, maxLen);
           for (const chunk of chunks) {
@@ -974,7 +1058,7 @@ export class Gateway extends EventEmitter {
         await platform.send(`❌ Error: ${e.message}`, msg.channelId, msg.replyTo);
       } finally {
         this.activeProcessing.delete(agentKey);
-        (this as any).__processing?.delete(agentKey);
+        this.processing.delete(agentKey);
       }
 
       this.emit('response', { msg, response: 'sent' });
@@ -986,7 +1070,7 @@ export class Gateway extends EventEmitter {
         setImmediate(() => this.handleMessage(queued));
       }
     } finally {
-      (this as any).__processing?.delete(agentKey);
+      this.processing.delete(agentKey);
     }
   }
 

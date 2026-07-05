@@ -3,6 +3,7 @@ import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 interface CommandPaletteProps {
   commands: SlashCommand[];
@@ -41,7 +42,7 @@ export function CommandPalette({ commands, onSelect, onCancel }: CommandPaletteP
   const filtered = React.useMemo(() => {
     if (!filter) return commands;
     return commands
-      .map(c => ({ c, s: fuzzyScore(filter, `${c.name} ${c.description}`) }))
+      .map(c => ({ c, s: fuzzyScore(filter, `${c.name} ${safeDisplayText(c.description)}`) }))
       .filter(x => x.s >= 0)
       .sort((a, b) => a.s - b.s)
       .map(x => x.c);
@@ -122,7 +123,7 @@ export function CommandPalette({ commands, onSelect, onCancel }: CommandPaletteP
         return (
           <text key={c.name} fg={isSel ? theme.primary : theme.text}>
             {isSel ? '> ' : '  '}/{c.name}{hint}
-            <span style={{ fg: theme.textMuted }}>  {c.description.slice(0, 40)}</span>
+            <span style={{ fg: theme.textMuted }}>  {safeDisplayText(c.description).slice(0, 40)}</span>
           </text>
         );
       })}

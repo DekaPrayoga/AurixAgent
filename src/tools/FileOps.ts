@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { Tool } from './Registry.js';
 import { getCheckpointEngine } from '../agent/Checkpoint.js';
+import { AskUserManager, globalAskCallback } from './AskUser.js';
 
 export const readFileTool: Tool = {
   name: 'read_file',
@@ -46,6 +47,78 @@ export const writeFileTool: Tool = {
     getCheckpointEngine()?.trackBeforeEdit(filePath);
     fs.writeFileSync(filePath, args.content as string, 'utf-8');
     return `Written ${(args.content as string).length} bytes to ${filePath}`;
+  },
+};
+
+async function confirmDelete(
+  sessionKey: string,
+  kind: 'file' | 'folder',
+  targetPath: string
+): Promise<boolean> {
+  const answer = await AskUserManager.ask(
+    sessionKey,
+    `Delete ${kind}?\n${targetPath}\n\nReply yes to delete, no to cancel.`,
+    ['yes', 'no'],
+    (question, options) => globalAskCallback(sessionKey, question, options)
+  );
+  return /^(yes|y|ok|confirm|delete)$/i.test(answer.trim());
+}
+
+export const deleteFileTool: Tool = {
+  name: 'delete_file',
+  description: `Delete a single file after explicit user confirmation. Use this instead of rm/del/Remove-Item for file deletion. Never use terminal rm for deleting files.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to delete' },
+      confirmed: {
+        type: 'boolean',
+        description: 'Set true only when user already explicitly approved deletion',
+      },
+    },
+    required: ['path'],
+  },
+  async execute(args) {
+    const filePath = path.resolve(args.path as string);
+    if (!fs.existsSync(filePath)) return `File not found: ${filePath}`;
+    if (!fs.statSync(filePath).isFile())
+      return `Not a file: ${filePath}. Use delete_folder for directories.`;
+    const sessionKey = (args._sessionKey as string) || 'default';
+    if (!args.confirmed && !(await confirmDelete(sessionKey, 'file', filePath))) {
+      return `Deletion cancelled for file: ${filePath}`;
+    }
+    getCheckpointEngine()?.trackBeforeEdit(filePath);
+    fs.unlinkSync(filePath);
+    return `Deleted file: ${filePath}`;
+  },
+};
+
+export const deleteFolderTool: Tool = {
+  name: 'delete_folder',
+  description: `Delete a folder/directory recursively after explicit user confirmation. Use this instead of rm -rf/rmdir for folder deletion. Never use terminal rm -rf for deleting folders.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Folder path to delete' },
+      confirmed: {
+        type: 'boolean',
+        description: 'Set true only when user already explicitly approved deletion',
+      },
+    },
+    required: ['path'],
+  },
+  async execute(args) {
+    const folderPath = path.resolve(args.path as string);
+    if (!fs.existsSync(folderPath)) return `Folder not found: ${folderPath}`;
+    if (!fs.statSync(folderPath).isDirectory())
+      return `Not a folder: ${folderPath}. Use delete_file for files.`;
+    const sessionKey = (args._sessionKey as string) || 'default';
+    if (!args.confirmed && !(await confirmDelete(sessionKey, 'folder', folderPath))) {
+      return `Deletion cancelled for folder: ${folderPath}`;
+    }
+    getCheckpointEngine()?.trackBeforeEdit(folderPath);
+    fs.rmSync(folderPath, { recursive: true, force: true });
+    return `Deleted folder: ${folderPath}`;
   },
 };
 

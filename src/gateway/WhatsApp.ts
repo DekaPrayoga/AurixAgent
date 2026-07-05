@@ -24,6 +24,10 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
   private dbPath: string;
   private onQR?: (qr: string) => void;
   private onConnected?: () => void;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private reconnectAttempts = 0;
+  private reconnecting = false;
+  private closed = false;
 
   constructor(options?: { dbPath?: string; onQR?: (qr: string) => void; onConnected?: () => void }) {
     super();
@@ -33,6 +37,16 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
   }
 
   async connect(): Promise<void> {
+    this.closed = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this.socket) {
+      try { this.socket.ev?.removeAllListeners?.(); } catch {}
+      try { this.socket.end?.(undefined); } catch {}
+      this.socket = undefined;
+    }
     try {
       const { default: makeWASocket, DisconnectReason } = await import('@whiskeysockets/baileys');
       const pino = (await import('pino')).default;
@@ -56,13 +70,15 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
 
         if (connection === 'open') {
           console.log(`  WhatsApp: connected`);
+          this.reconnectAttempts = 0;
+          this.reconnecting = false;
           if (this.onConnected) this.onConnected();
         }
 
         if (connection === 'close') {
           const reason = lastDisconnect?.error?.output?.statusCode;
-          if (reason !== DisconnectReason.loggedOut) {
-            this.connect();
+          if (reason !== DisconnectReason.loggedOut && !this.closed) {
+            this.scheduleReconnect();
           } else {
             console.log('  WhatsApp: logged out, need to re-scan QR');
           }
@@ -122,9 +138,33 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
     }
   }
 
+  private scheduleReconnect(): void {
+    if (this.reconnecting || this.closed) return;
+    this.reconnecting = true;
+    this.reconnectAttempts += 1;
+    const base = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempts, 5));
+    const jitter = Math.floor(Math.random() * 1000);
+    const delay = base + jitter;
+    console.log(`  WhatsApp: reconnecting in ${delay}ms`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnecting = false;
+      this.connect().catch((e) => {
+        console.error(`  WhatsApp reconnect error: ${e.message}`);
+        this.scheduleReconnect();
+      });
+    }, delay);
+  }
+
   async disconnect(): Promise<void> {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     if (this.socket) {
+      try { this.socket.ev?.removeAllListeners?.(); } catch {}
       this.socket.end(undefined);
+      this.socket = undefined;
     }
   }
 
@@ -132,11 +172,11 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
     if (!this.socket) return;
 
     try {
-      const options: any = {};
+      const sendOptions: any = { ...(options || {}) };
       if (replyTo) {
-        options.quoted = { key: { remoteJid: channelId, id: replyTo, fromMe: false } };
+        sendOptions.quoted = { key: { remoteJid: channelId, id: replyTo, fromMe: false } };
       }
-      await this.socket.sendMessage(channelId, { text: content }, options);
+      await this.socket.sendMessage(channelId, { text: content }, sendOptions);
     } catch (e: any) {
       console.error(`  WhatsApp send error: ${e.message}`);
     }
@@ -163,11 +203,11 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
       message = { document: buffer, fileName: filename, mimetype, caption };
     }
 
-    const options: any = {};
+    const sendOptions: any = {};
     if (replyTo) {
-      options.quoted = { key: { remoteJid: channelId, id: replyTo, fromMe: false } };
+      sendOptions.quoted = { key: { remoteJid: channelId, id: replyTo, fromMe: false } };
     }
 
-    await this.socket.sendMessage(channelId, message, options);
+    await this.socket.sendMessage(channelId, message, sendOptions);
   }
 }

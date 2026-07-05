@@ -3,6 +3,7 @@ import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { theme } from './theme.js';
 import type { ChatMessage } from './ChatArea.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 interface OutputPanelProps {
   messages: ChatMessage[];
@@ -14,7 +15,7 @@ export function OutputPanel({ messages, onClose }: OutputPanelProps) {
   const [scrollOffset, setScrollOffset] = useState(0);
 
   const toolMessages = React.useMemo(() => {
-    return messages.filter(m => m.role === 'tool' || (m.role === 'assistant' && m.toolName));
+    return messages.filter((m) => m.role === 'tool' || (m.role === 'assistant' && m.toolName));
   }, [messages]);
 
   const totalLines = toolMessages.length;
@@ -29,22 +30,22 @@ export function OutputPanel({ messages, onClose }: OutputPanelProps) {
     }
     if (name === 'up') {
       evt.preventDefault();
-      setScrollOffset(prev => Math.min(prev + 1, Math.max(0, totalLines - 1)));
+      setScrollOffset((prev) => Math.min(prev + 1, Math.max(0, totalLines - 1)));
       return;
     }
     if (name === 'down') {
       evt.preventDefault();
-      setScrollOffset(prev => Math.max(0, prev - 1));
+      setScrollOffset((prev) => Math.max(0, prev - 1));
       return;
     }
     if (name === 'pageup') {
       evt.preventDefault();
-      setScrollOffset(prev => Math.min(prev + 10, Math.max(0, totalLines - 1)));
+      setScrollOffset((prev) => Math.min(prev + 10, Math.max(0, totalLines - 1)));
       return;
     }
     if (name === 'pagedown') {
       evt.preventDefault();
-      setScrollOffset(prev => Math.max(0, prev - 10));
+      setScrollOffset((prev) => Math.max(0, prev - 10));
       return;
     }
   });
@@ -63,8 +64,12 @@ export function OutputPanel({ messages, onClose }: OutputPanelProps) {
       borderColor={theme.border}
     >
       <box flexDirection="row" justifyContent="space-between" paddingX={1}>
-        <text fg={theme.accent} attributes={TextAttributes.BOLD}>Tool Outputs</text>
-        <text attributes={TextAttributes.DIM}>{totalLines} items | ESC to close | ↑↓ to scroll</text>
+        <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+          Tool Outputs
+        </text>
+        <text attributes={TextAttributes.DIM}>
+          {totalLines} items | ESC to close | ↑↓ to scroll
+        </text>
       </box>
       <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={1}>
         {visible.length === 0 ? (
@@ -72,15 +77,21 @@ export function OutputPanel({ messages, onClose }: OutputPanelProps) {
         ) : (
           visible.map((msg, i) => (
             <box key={i} flexDirection="column" marginBottom={1}>
-              <text fg={theme.tool} attributes={TextAttributes.BOLD}>{msg.toolName || 'tool'}</text>
-              <text>{msg.content.slice(0, 500)}</text>
-              {msg.content.length > 500 && <text attributes={TextAttributes.DIM}>... (truncated)</text>}
+              <text fg={theme.tool} attributes={TextAttributes.BOLD}>
+                {msg.toolName || 'tool'}
+              </text>
+              <text>{safeDisplayText(msg.content).slice(0, 500)}</text>
+              {safeDisplayText(msg.content).length > 500 && (
+                <text attributes={TextAttributes.DIM}>... (truncated)</text>
+              )}
             </box>
           ))
         )}
       </box>
       <box flexDirection="row" justifyContent="center" paddingX={1}>
-        <text attributes={TextAttributes.DIM}>Scroll: {scrollOffset}/{Math.max(0, totalLines - visibleLines)}</text>
+        <text attributes={TextAttributes.DIM}>
+          Scroll: {scrollOffset}/{Math.max(0, totalLines - visibleLines)}
+        </text>
       </box>
     </box>
   );

@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import readline from 'readline';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 const teal = chalk.hex('#fab283');
 const orange = chalk.hex('#9d7cd8');
@@ -31,15 +32,11 @@ export function drawInputScreen(opts: {
   masked?: boolean;
   extra?: string[];
 }): Promise<string> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     console.log();
     const titleLine = teal.bold(opts.title);
     const hintLine = dim(opts.hint);
-    const lines = [
-      titleLine,
-      '',
-      hintLine,
-    ];
+    const lines = [titleLine, '', hintLine];
     if (opts.extra) {
       lines.push('', ...opts.extra);
     }
@@ -70,7 +67,10 @@ export function drawInputScreen(opts: {
     let escBuf = '';
     let escTimer: NodeJS.Timeout | null = null;
     const clearEscTimer = () => {
-      if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = null;
+      }
     };
     const flushEsc = () => {
       clearEscTimer();
@@ -94,7 +94,11 @@ export function drawInputScreen(opts: {
       // Show cursor with underline at cursor position
       let display = '';
       for (let i = 0; i < text.length; i++) {
-        const inSelection = selStart >= 0 && selEnd >= 0 && i >= Math.min(selStart, selEnd) && i < Math.max(selStart, selEnd);
+        const inSelection =
+          selStart >= 0 &&
+          selEnd >= 0 &&
+          i >= Math.min(selStart, selEnd) &&
+          i < Math.max(selStart, selEnd);
         if (i === cursor) {
           display += '\x1b[4m' + (text[i] || ' ') + '\x1b[24m'; // underline cursor
         } else if (inSelection) {
@@ -116,23 +120,25 @@ export function drawInputScreen(opts: {
         const endIdx = ch.indexOf('\x1b[201~', startIdx);
         if (endIdx !== -1) {
           // Full bracketed paste in one chunk — strip \r and trailing \n
-          const pasted = ch.slice(startIdx, endIdx).replace(/\r/g, '').replace(/\n$/, '');
+          const pasted = safeDisplayText(ch.slice(startIdx, endIdx))
+            .replace(/\r/g, '')
+            .replace(/\n$/, '');
           buf += pasted;
           renderLine();
           return;
         } else {
           // Start marker found but no end marker yet — accumulate
-          buf += ch.slice(startIdx).replace(/\r/g, '');
+          buf += safeDisplayText(ch.slice(startIdx)).replace(/\r/g, '');
           renderLine();
           // Switch to paste accumulator mode
           const onPaste = (p: string) => {
             const pEnd = p.indexOf('\x1b[201~');
             if (pEnd === -1) {
-              buf += p.replace(/\r/g, '');
+              buf += safeDisplayText(p).replace(/\r/g, '');
               renderLine();
               return;
             }
-            buf += p.slice(0, pEnd).replace(/\r/g, '').replace(/\n$/, '');
+            buf += safeDisplayText(p.slice(0, pEnd)).replace(/\r/g, '').replace(/\n$/, '');
             stdin.removeListener('data', onPaste);
             stdin.on('data', onData);
             renderLine();
@@ -154,11 +160,11 @@ export function drawInputScreen(opts: {
           const onPaste = (p: string) => {
             const endIdx = p.indexOf('\x1b[201~');
             if (endIdx === -1) {
-              buf += p;
+              buf += safeDisplayText(p);
               renderLine();
               return;
             }
-            buf += p.slice(0, endIdx);
+            buf += safeDisplayText(p.slice(0, endIdx));
             stdin.removeListener('data', onPaste);
             stdin.on('data', onData);
             renderLine();
@@ -174,35 +180,63 @@ export function drawInputScreen(opts: {
           escBuf = '';
 
           // Arrow keys: Left=\x1b[D, Right=\x1b[C, Home=\x1b[H, End=\x1b[F
-          if (seq === '\x1b[D') { cursor = Math.max(0, cursor - 1); selStart = selEnd = -1; renderLine(); return; } // Left
-          if (seq === '\x1b[C') { cursor = Math.min(buf.length, cursor + 1); selStart = selEnd = -1; renderLine(); return; } // Right
-          if (seq === '\x1b[H') { cursor = 0; selStart = selEnd = -1; renderLine(); return; } // Home
-          if (seq === '\x1b[F') { cursor = buf.length; selStart = selEnd = -1; renderLine(); return; } // End
+          if (seq === '\x1b[D') {
+            cursor = Math.max(0, cursor - 1);
+            selStart = selEnd = -1;
+            renderLine();
+            return;
+          } // Left
+          if (seq === '\x1b[C') {
+            cursor = Math.min(buf.length, cursor + 1);
+            selStart = selEnd = -1;
+            renderLine();
+            return;
+          } // Right
+          if (seq === '\x1b[H') {
+            cursor = 0;
+            selStart = selEnd = -1;
+            renderLine();
+            return;
+          } // Home
+          if (seq === '\x1b[F') {
+            cursor = buf.length;
+            selStart = selEnd = -1;
+            renderLine();
+            return;
+          } // End
 
           // Shift+arrows: Shift+Left=\x1b[1;2D, Shift+Right=\x1b[1;2C, Shift+Home=\x1b[1;2H, Shift+End=\x1b[1;2F
-          if (seq === '\x1b[1;2D') { // Shift+Left
+          if (seq === '\x1b[1;2D') {
+            // Shift+Left
             if (selStart < 0) selStart = cursor;
             cursor = Math.max(0, cursor - 1);
             selEnd = cursor;
-            renderLine(); return;
+            renderLine();
+            return;
           }
-          if (seq === '\x1b[1;2C') { // Shift+Right
+          if (seq === '\x1b[1;2C') {
+            // Shift+Right
             if (selStart < 0) selStart = cursor;
             cursor = Math.min(buf.length, cursor + 1);
             selEnd = cursor;
-            renderLine(); return;
+            renderLine();
+            return;
           }
-          if (seq === '\x1b[1;2H') { // Shift+Home
+          if (seq === '\x1b[1;2H') {
+            // Shift+Home
             if (selStart < 0) selStart = cursor;
             cursor = 0;
             selEnd = cursor;
-            renderLine(); return;
+            renderLine();
+            return;
           }
-          if (seq === '\x1b[1;2F') { // Shift+End
+          if (seq === '\x1b[1;2F') {
+            // Shift+End
             if (selStart < 0) selStart = cursor;
             cursor = buf.length;
             selEnd = cursor;
-            renderLine(); return;
+            renderLine();
+            return;
           }
 
           // Other escape sequences — discard
@@ -219,9 +253,14 @@ export function drawInputScreen(opts: {
       if (c === 22) {
         // Ctrl+V — paste from clipboard (raw mode sends 0x16 instead of clipboard content)
         if (readClipboardFn) {
-          readClipboardFn().then(clip => {
-            if (clip) { buf += clip; renderLine(); }
-          }).catch(() => {});
+          readClipboardFn()
+            .then((clip) => {
+              if (clip) {
+                buf += safeDisplayText(clip);
+                renderLine();
+              }
+            })
+            .catch(() => {});
         }
         return;
       }
@@ -282,7 +321,7 @@ export function drawInputScreen(opts: {
       // Accept printable chars, including multi-byte UTF-8 (pasted chunks).
       // Filter out control chars except tab (which we treat as space).
       if (c >= 32 || ch === '\t') {
-        buf += ch === '\t' ? '    ' : ch;
+        buf += ch === '\t' ? '    ' : safeDisplayText(ch);
         renderLine();
       }
     }
@@ -314,7 +353,7 @@ export function drawSelector(opts: {
   multi?: boolean;
   extra?: string[];
 }): Promise<string | string[]> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
     let active = 0;
@@ -332,7 +371,10 @@ export function drawSelector(opts: {
     let escBuf = '';
     let escTimer: NodeJS.Timeout | null = null;
     const clearEscTimer = () => {
-      if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+      if (escTimer) {
+        clearTimeout(escTimer);
+        escTimer = null;
+      }
     };
 
     const cleanup = () => {
@@ -354,14 +396,16 @@ export function drawSelector(opts: {
       console.clear();
       const lines = [teal.bold(opts.title), ''];
       if (opts.extra) {
-        opts.extra.forEach(line => lines.push(dim('  ' + line)));
+        opts.extra.forEach((line) => lines.push(dim('  ' + line)));
         lines.push('');
       }
       opts.items.forEach((item, i) => {
         const isActive = i === active;
         const checked = opts.multi ? (selected.has(item.id) ? green('[x]') : dim('[ ]')) + ' ' : '';
         const pointer = isActive ? teal('›') : dim(' ');
-        const num = isActive ? orange.bold(String(i + 1).padStart(2)) : orange(String(i + 1).padStart(2));
+        const num = isActive
+          ? orange.bold(String(i + 1).padStart(2))
+          : orange(String(i + 1).padStart(2));
         const label = isActive ? bright.bold(item.label) : bright(item.label);
         const desc = item.desc ? dim(' -- ' + item.desc) : '';
         lines.push(`  ${pointer} ${num}  ${checked}${label}${desc}`);
@@ -372,9 +416,11 @@ export function drawSelector(opts: {
         lines.push(`  ${skipActive ? teal('›') : dim(' ')} ${teal(' 0')}  ${dim('Skip for now')}`);
       }
       lines.push('');
-      lines.push(opts.multi
-        ? dim('  ↑/↓ or tab move · space toggle · a all · enter confirm · mouse click · esc back')
-        : dim('  ↑/↓ or tab move · enter confirm · mouse click · esc back'));
+      lines.push(
+        opts.multi
+          ? dim('  ↑/↓ or tab move · space toggle · a all · enter confirm · mouse click · esc back')
+          : dim('  ↑/↓ or tab move · enter confirm · mouse click · esc back')
+      );
       drawBox(lines, 76);
     };
 
@@ -408,19 +454,27 @@ export function drawSelector(opts: {
 
     function onData(ch: string) {
       // Windows console arrow keys: 0x00 or 0xE0 followed by scan code
-      if (ch.charCodeAt(0) === 0 || ch.charCodeAt(0) === 0xE0) {
+      if (ch.charCodeAt(0) === 0 || ch.charCodeAt(0) === 0xe0) {
         // Next byte will be the scan code — buffer it
         escBuf = ch;
         clearEscTimer();
-        escTimer = setTimeout(() => { escBuf = ''; }, 300);
+        escTimer = setTimeout(() => {
+          escBuf = '';
+        }, 300);
         return;
       }
-      if (escBuf.length === 1 && (escBuf.charCodeAt(0) === 0 || escBuf.charCodeAt(0) === 0xE0)) {
+      if (escBuf.length === 1 && (escBuf.charCodeAt(0) === 0 || escBuf.charCodeAt(0) === 0xe0)) {
         clearEscTimer();
         const scanCode = ch.charCodeAt(0);
         escBuf = '';
-        if (scanCode === 0x48 || scanCode === 0x53) { move(-1); return; } // Up or Page Up
-        if (scanCode === 0x50 || scanCode === 0x51) { move(1); return; }  // Down or Page Down
+        if (scanCode === 0x48 || scanCode === 0x53) {
+          move(-1);
+          return;
+        } // Up or Page Up
+        if (scanCode === 0x50 || scanCode === 0x51) {
+          move(1);
+          return;
+        } // Down or Page Down
         return; // Other Windows keys — ignore
       }
 
@@ -442,15 +496,34 @@ export function drawSelector(opts: {
           return;
         }
         // Arrow keys
-        if (escBuf === '\x1b[A') { clearEscTimer(); escBuf = ''; move(-1); return; }
-        if (escBuf === '\x1b[B') { clearEscTimer(); escBuf = ''; move(1); return; }
-        if (escBuf === '\x1b[Z') { clearEscTimer(); escBuf = ''; move(-1); return; }
+        if (escBuf === '\x1b[A') {
+          clearEscTimer();
+          escBuf = '';
+          move(-1);
+          return;
+        }
+        if (escBuf === '\x1b[B') {
+          clearEscTimer();
+          escBuf = '';
+          move(1);
+          return;
+        }
+        if (escBuf === '\x1b[Z') {
+          clearEscTimer();
+          escBuf = '';
+          move(-1);
+          return;
+        }
         // Mouse report: ESC < params M/m
         const mouseMatch = /\x1b\[<(\d+);(\d+);(\d+)([mM])/.exec(escBuf);
         if (mouseMatch) {
           clearEscTimer();
           escBuf = '';
-          const mouse = { x: Number(mouseMatch[2]), y: Number(mouseMatch[3]), action: mouseMatch[4] === 'M' ? 'press' as const : 'release' as const };
+          const mouse = {
+            x: Number(mouseMatch[2]),
+            y: Number(mouseMatch[3]),
+            action: mouseMatch[4] === 'M' ? ('press' as const) : ('release' as const),
+          };
           if (mouse.action === 'press') {
             const itemRowStart = 5;
             const idx = mouse.y - itemRowStart;
@@ -518,13 +591,19 @@ export function drawSelector(opts: {
 
       if (opts.multi && ch.toLowerCase() === 'a') {
         if (selected.size === opts.items.length) selected.clear();
-        else opts.items.forEach(item => selected.add(item.id));
+        else opts.items.forEach((item) => selected.add(item.id));
         repaint();
         return;
       }
 
-      if (ch === 'k') { move(-1); return; }
-      if (ch === 'j') { move(1); return; }
+      if (ch === 'k') {
+        move(-1);
+        return;
+      }
+      if (ch === 'j') {
+        move(1);
+        return;
+      }
 
       if (/[0-9]/.test(ch)) {
         if (ch === '0' && opts.allowSkip) {
@@ -544,10 +623,22 @@ export function drawSelector(opts: {
     // Cross-platform keypress handler (arrow keys work on Windows/Linux/macOS)
     const onKeypress = (_ch: string | undefined, key: readline.Key | undefined) => {
       if (!key) return;
-      if (key.name === 'up') { move(-1); return; }
-      if (key.name === 'down') { move(1); return; }
-      if (key.name === 'pageup') { move(-1); return; }
-      if (key.name === 'pagedown') { move(1); return; }
+      if (key.name === 'up') {
+        move(-1);
+        return;
+      }
+      if (key.name === 'down') {
+        move(1);
+        return;
+      }
+      if (key.name === 'pageup') {
+        move(-1);
+        return;
+      }
+      if (key.name === 'pagedown') {
+        move(1);
+        return;
+      }
     };
 
     repaint();
@@ -577,7 +668,7 @@ function parseMouse(input: string): { x: number; y: number; action: 'press' | 'r
 }
 
 export function drawConfirm(opts: { title: string; message: string }): Promise<boolean> {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     console.log();
     const lines = [
       teal.bold(opts.title),

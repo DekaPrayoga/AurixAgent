@@ -2,18 +2,19 @@ import type { Tool } from './Registry.js';
 
 export class AskUserManager {
   // Key: sessionKey/agentKey, Value: Promise resolver callback
-  private static pendings = new Map<string, (answer: string) => void>();
+  private static pendings = new Map<string, { resolve: (answer: string) => void; reject: (error: Error) => void }>();
 
   /**
    * Prompts the user and waits for their response.
    * This suspends the execution until the user replies.
    */
   static async ask(sessionKey: string, question: string, options: string[] | undefined, askCallback: (q: string, o?: string[]) => void): Promise<string> {
-    return new Promise((resolve) => {
-      if (this.pendings.has(sessionKey)) {
-        this.pendings.get(sessionKey)!('Aborted: New question asked');
+    return new Promise((resolve, reject) => {
+      const existing = this.pendings.get(sessionKey);
+      if (existing) {
+        existing.reject(new Error('New question asked'));
       }
-      this.pendings.set(sessionKey, resolve);
+      this.pendings.set(sessionKey, { resolve, reject });
       askCallback(question, options);
     });
   }
@@ -29,10 +30,10 @@ export class AskUserManager {
    * Provides the answer to the pending question and resumes execution
    */
   static submitAnswer(sessionKey: string, answer: string): boolean {
-    const resolve = this.pendings.get(sessionKey);
-    if (resolve) {
+    const pending = this.pendings.get(sessionKey);
+    if (pending) {
       this.pendings.delete(sessionKey);
-      resolve(answer);
+      pending.resolve(answer);
       return true;
     }
     return false;

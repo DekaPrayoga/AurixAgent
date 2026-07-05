@@ -1,6 +1,10 @@
 let entered = false;
 let originalBg: string | null = null;
 
+function isSafeHexColor(value: string | null): value is string {
+  return !!value && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
 function write(s: string): void {
   process.stdout.write(s);
 }
@@ -43,7 +47,7 @@ export function enterAltScreen(): void {
 
   const restore = () => {
     if (!entered) return;
-    if (originalBg) {
+    if (isSafeHexColor(originalBg)) {
       write(`\x1b]11;${originalBg}\x1b\\`);
       write(`\x1b]11;${originalBg}\x07`);
     }
@@ -65,7 +69,7 @@ export function enterAltScreen(): void {
 export function leaveAltScreen(): void {
   if (!entered) return;
   if (!process.stdout.isTTY) return;
-  if (originalBg) {
+  if (isSafeHexColor(originalBg)) {
     write(`\x1b]11;${originalBg}\x1b\\`);
     write(`\x1b]11;${originalBg}\x07`);
   }

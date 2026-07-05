@@ -63,7 +63,10 @@ export class DiscordPlatform extends EventEmitter implements Platform {
 
       if (message.attachments?.size > 0) {
         for (const [, att] of message.attachments) {
-          if (att.contentType?.startsWith('image/') || att.name?.match(/\.(jpg|jpeg|png|gif|webp|bmp)$/i)) {
+          if (
+            att.contentType?.startsWith('image/') ||
+            att.name?.match(/\.(jpg|jpeg|png|gif|webp|bmp)$/i)
+          ) {
             try {
               const fs = await import('fs');
               const res = await fetch(att.url);
@@ -72,7 +75,11 @@ export class DiscordPlatform extends EventEmitter implements Platform {
                 const ext = att.name?.match(/\.\w+$/)?.[0] || '.jpg';
                 const localPath = `/tmp/aurix-discord-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
                 fs.writeFileSync(localPath, buffer);
-                attachments.push({ type: 'image', url: localPath, filename: att.name || localPath });
+                attachments.push({
+                  type: 'image',
+                  url: localPath,
+                  filename: att.name || localPath,
+                });
               }
             } catch {}
           }
@@ -96,13 +103,12 @@ export class DiscordPlatform extends EventEmitter implements Platform {
       console.log(`  Discord: logged in as ${this.client.user.tag}`);
       try {
         const rest = new REST({ version: '10' }).setToken(this.token);
-        await rest.put(
-          Routes.applicationCommands(this.client.user.id),
-          { body: DISCORD_COMMANDS.map(c => ({
+        await rest.put(Routes.applicationCommands(this.client.user.id), {
+          body: DISCORD_COMMANDS.map((c) => ({
             name: c.name,
             description: c.description,
-          })) }
-        );
+          })),
+        });
         console.log('  Discord: slash commands registered');
       } catch (e: any) {
         console.error(`  Discord: failed to register slash commands (${e.message})`);
@@ -125,18 +131,23 @@ export class DiscordPlatform extends EventEmitter implements Platform {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased()) return;
 
-      const options: any = { content };
-      if (replyTo) {
-        options.messageReference = { messageId: replyTo };
+      const sendOptions: any = { ...(options || {}), content };
+      if (replyTo && !sendOptions.messageReference) {
+        sendOptions.messageReference = { messageId: replyTo };
       }
 
-      await channel.send(options);
+      await channel.send(sendOptions);
     } catch (e: any) {
       console.error(`  Discord send error: ${e.message}`);
     }
   }
 
-  async sendFile(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void> {
+  async sendFile(
+    filePath: string,
+    channelId: string,
+    caption?: string,
+    replyTo?: string
+  ): Promise<void> {
     if (!this.client) throw new Error('Discord client not connected');
 
     const fs = await import('fs');

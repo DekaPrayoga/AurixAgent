@@ -22,7 +22,13 @@ import { loadConfig } from './agent/Config.js';
 import { runSetup } from './agent/Setup.js';
 import { ToolRegistry } from './tools/Registry.js';
 import { terminalTool } from './tools/Terminal.js';
-import { readFileTool, writeFileTool, searchFilesTool } from './tools/FileOps.js';
+import {
+  readFileTool,
+  writeFileTool,
+  searchFilesTool,
+  deleteFileTool,
+  deleteFolderTool,
+} from './tools/FileOps.js';
 import { fileEditTool } from './tools/FileEdit.js';
 import { mcpManageTool } from './tools/McpManage.js';
 import { mcpManager } from './mcp/McpRegistry.js';
@@ -71,6 +77,8 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(readFileTool);
   registry.register(writeFileTool);
   registry.register(searchFilesTool);
+  registry.register(deleteFileTool);
+  registry.register(deleteFolderTool);
   registry.register(fileEditTool);
   registry.register(mcpManageTool);
   for (const t of githubTools) registry.register(t);
@@ -226,12 +234,6 @@ async function main() {
 
   if (isSetup || (!config.apiKey && !isContinue && !resumeId)) {
     config = await runSetup(isContinue);
-  }
-
-  if (config.langsmith?.apiKey) {
-    process.env.LANGCHAIN_API_KEY = config.langsmith.apiKey;
-    process.env.LANGCHAIN_PROJECT = config.langsmith.project;
-    process.env.LANGCHAIN_TRACING_V2 = 'true';
   }
 
   applyTheme(config);

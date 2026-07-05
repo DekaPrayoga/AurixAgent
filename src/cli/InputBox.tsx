@@ -9,6 +9,7 @@ import { theme } from './theme.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 import { filterFiles } from './fileList.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 function runCmd(
   cmd: string,
@@ -255,20 +256,24 @@ interface InputBoxProps {
   model?: string;
   contextPct?: number;
   cwd?: string;
-  mode?: 'auto' | 'ask';
+  mode?: 'auto' | 'ask' | 'deny';
   onModeCycle?: () => void;
   onExit?: () => void;
   onRewind?: () => boolean;
 }
 
-const MODE_LABEL: Record<'auto' | 'ask', string> = {
+const MODE_LABEL: Record<'auto' | 'ask' | 'deny', string> = {
   auto: 'Auto',
   ask: 'Ask',
+  deny: 'Deny',
 };
-const MODE_COLOR: Record<'auto' | 'ask', string> = {
+const MODE_COLOR: Record<'auto' | 'ask' | 'deny', string> = {
   auto: theme.ok,
   ask: theme.secondary,
+  deny: theme.error,
 };
+
+const MAX_VISIBLE_SUGGESTIONS = 8;
 
 let pasteInProgress = false;
 let lastPasteStart = -1;
@@ -333,7 +338,7 @@ export function InputBox({
   usePaste((event) => {
     if (disabled) return;
     pasteInProgress = true;
-    const text = decodePasteBytes(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+    const text = safeDisplayText(decodePasteBytes(event.bytes)).replace(/\r\n/g, '\n').trimEnd();
     pasteInProgress = false;
 
     if (text) {
@@ -374,8 +379,8 @@ export function InputBox({
 
   const suggestions = useMemo(() => {
     if (commandQuery === null || commands.length === 0) return [];
-    return filterSlashCommands(commands, commandQuery, home ? 20 : 30);
-  }, [commandQuery, commands, home]);
+    return filterSlashCommands(commands, commandQuery, commands.length);
+  }, [commandQuery, commands]);
 
   const suggestionsVisible = suggestions.length > 0;
   useEffect(() => {
@@ -537,7 +542,7 @@ export function InputBox({
           }
           return readClipboard().then((text) => {
             if (!text) return;
-            const clean = text.replace(/\r\n/g, '\n').trimEnd();
+            const clean = safeDisplayText(text).replace(/\r\n/g, '\n').trimEnd();
             const lines = clean.split('\n');
             if (lines.length >= 2 || clean.length > 200) {
               const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
@@ -881,9 +886,19 @@ export function InputBox({
 }
 
 function FileSuggestions({ files, selected }: { files: string[]; selected: number }) {
+  const start = Math.max(
+    0,
+    Math.min(
+      selected - Math.floor(MAX_VISIBLE_SUGGESTIONS / 2),
+      Math.max(0, files.length - MAX_VISIBLE_SUGGESTIONS)
+    )
+  );
+  const visible = files.slice(start, start + MAX_VISIBLE_SUGGESTIONS);
+
   return (
     <box flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={1}>
-      {files.map((file, index) => {
+      {visible.map((file, offset) => {
+        const index = start + offset;
         const isSelected = index === selected;
         return (
           <box key={file}>
@@ -897,7 +912,9 @@ function FileSuggestions({ files, selected }: { files: string[]; selected: numbe
         );
       })}
       <box>
-        <text fg={theme.border}>{'─'.repeat(40)}</text>
+        <text fg={theme.border}>
+          {'─'.repeat(40)} {files.length > visible.length ? `${selected + 1}/${files.length}` : ''}
+        </text>
       </box>
     </box>
   );
@@ -910,9 +927,19 @@ function CommandSuggestions({
   suggestions: SlashCommand[];
   selected: number;
 }) {
+  const start = Math.max(
+    0,
+    Math.min(
+      selected - Math.floor(MAX_VISIBLE_SUGGESTIONS / 2),
+      Math.max(0, suggestions.length - MAX_VISIBLE_SUGGESTIONS)
+    )
+  );
+  const visible = suggestions.slice(start, start + MAX_VISIBLE_SUGGESTIONS);
+
   return (
     <box flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={1}>
-      {suggestions.map((command, index) => {
+      {visible.map((command, offset) => {
+        const index = start + offset;
         const isSelected = index === selected;
         return (
           <box key={command.name}>
@@ -922,12 +949,15 @@ function CommandSuggestions({
             >
               {` /${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''} `}
             </text>
-            <text fg={theme.textMuted}> {command.description}</text>
+            <text fg={theme.textMuted}> {safeDisplayText(command.description)}</text>
           </box>
         );
       })}
       <box>
-        <text fg={theme.border}>{'─'.repeat(40)}</text>
+        <text fg={theme.border}>
+          {'─'.repeat(40)}{' '}
+          {suggestions.length > visible.length ? `${selected + 1}/${suggestions.length}` : ''}
+        </text>
       </box>
     </box>
   );

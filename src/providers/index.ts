@@ -2,7 +2,12 @@ import OpenAI from 'openai';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { AurixConfig } from '../agent/Config.js';
-import { anthropicBaseUrl, anthropicMessagesEndpoint, openAIBaseUrl, openAIEndpoint } from '../utils/base-url.js';
+import {
+  anthropicBaseUrl,
+  anthropicMessagesEndpoint,
+  openAIBaseUrl,
+  openAIEndpoint,
+} from '../utils/base-url.js';
 
 export interface Message {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -44,8 +49,12 @@ export interface Provider {
 // ─── Image Utilities ────────────────────────────────────────────────────────
 
 const IMAGE_MIME: Record<string, string> = {
-  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
 };
 
 // Modifies the global NO_PROXY environment variables to bypass global proxy
@@ -55,7 +64,10 @@ function bypassProxyIfLocal(url: string) {
   if (url.includes('localhost') || url.includes('127.0.0.1')) {
     const currentNoProxy = process.env.NO_PROXY || process.env.no_proxy || '';
     const locals = ['127.0.0.1', 'localhost'];
-    const parts = currentNoProxy.split(',').map(p => p.trim()).filter(Boolean);
+    const parts = currentNoProxy
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
     let updated = false;
     for (const local of locals) {
       if (!parts.includes(local)) {
@@ -118,7 +130,7 @@ export class OpenAIProvider implements Provider {
     try {
       const params: any = {
         model: this.model,
-        messages: clean.map(m => {
+        messages: clean.map((m) => {
           if (m.role === 'tool') {
             return { role: 'tool' as const, content: m.content, tool_call_id: m.toolCallId || '' };
           }
@@ -126,7 +138,7 @@ export class OpenAIProvider implements Provider {
             return {
               role: 'assistant' as const,
               content: m.content || null,
-              tool_calls: m.toolCalls.map(tc => ({
+              tool_calls: m.toolCalls.map((tc) => ({
                 id: tc.id,
                 type: 'function' as const,
                 function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
@@ -134,13 +146,16 @@ export class OpenAIProvider implements Provider {
             };
           }
           if (m.images?.length) {
-            const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
-              { type: 'text', text: m.content },
-            ];
+            const content: Array<
+              { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+            > = [{ type: 'text', text: m.content }];
             for (const imgPath of m.images) {
               const img = imageToBase64(imgPath);
               if (img) {
-                content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+                content.push({
+                  type: 'image_url',
+                  image_url: { url: `data:${img.mediaType};base64,${img.data}` },
+                });
               }
             }
             return { role: m.role as 'user', content };
@@ -158,17 +173,17 @@ export class OpenAIProvider implements Provider {
       }
 
       // Bypass OpenAI SDK completely to avoid proxy-connection issues with local routers
-      const url = this.baseUrl.endsWith('/chat/completions') 
-        ? this.baseUrl 
+      const url = this.baseUrl.endsWith('/chat/completions')
+        ? this.baseUrl
         : `${this.baseUrl}/chat/completions`;
-        
+
       let fetchOpts: any = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
+          Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify(params)
+        body: JSON.stringify(params),
       };
 
       // Force direct connection (bypass global/system proxies)
@@ -187,16 +202,19 @@ export class OpenAIProvider implements Provider {
       if (!fetchRes.ok) {
         const errorText = await fetchRes.text();
         let parsedErr;
-        try { parsedErr = JSON.parse(errorText); } catch {}
-        const errorMsg = parsedErr?.error?.message || parsedErr?.errorMsg || errorText || fetchRes.statusText;
-        
+        try {
+          parsedErr = JSON.parse(errorText);
+        } catch {}
+        const errorMsg =
+          parsedErr?.error?.message || parsedErr?.errorMsg || errorText || fetchRes.statusText;
+
         if (fetchRes.status === 404 || fetchRes.status === 405) {
           if (!this.endpointMode) {
             this.endpointMode = 'completion';
             return this.completionFallback(messages);
           }
         }
-        
+
         if (errorMsg.includes('connect proxy error') || errorMsg.includes('9router')) {
           throw new Error(`9Router Proxy Error: ${errorMsg}\n\nRaw Response:\n${errorText}`);
         }
@@ -206,10 +224,14 @@ export class OpenAIProvider implements Provider {
 
       const isStream = fetchRes.headers.get('content-type')?.includes('text/event-stream');
       let res;
-      
+
       if (!isStream) {
         let text = await fetchRes.text();
-        try { res = JSON.parse(text); } catch { throw new Error('Invalid JSON response: ' + text.slice(0, 100)); }
+        try {
+          res = JSON.parse(text);
+        } catch {
+          throw new Error('Invalid JSON response: ' + text.slice(0, 100));
+        }
       } else {
         // Handle Stream manually! We collect chunks and simulate a full JSON response.
         const reader = fetchRes.body?.getReader();
@@ -252,16 +274,19 @@ export class OpenAIProvider implements Provider {
           }
         }
 
-        const finalToolCalls = Object.keys(toolCallsMap).length > 0
-          ? Object.values(toolCallsMap).sort((a: any, b: any) => a.index - b.index)
-          : null;
+        const finalToolCalls =
+          Object.keys(toolCallsMap).length > 0
+            ? Object.values(toolCallsMap).sort((a: any, b: any) => a.index - b.index)
+            : null;
 
         res = {
-          choices: [{
-            message: { content: fullContent, tool_calls: finalToolCalls },
-            finish_reason: lastChunk?.choices?.[0]?.finish_reason || 'stop'
-          }],
-          usage: usage
+          choices: [
+            {
+              message: { content: fullContent, tool_calls: finalToolCalls },
+              finish_reason: lastChunk?.choices?.[0]?.finish_reason || 'stop',
+            },
+          ],
+          usage: usage,
         };
       }
       this.endpointMode = 'chat';
@@ -271,14 +296,18 @@ export class OpenAIProvider implements Provider {
         this.endpointMode = 'completion';
         return this.completionFallback(messages);
       }
-      
+
       // If it's a 403 or API error, try to extract the real response body from 9router/OpenAI SDK
       let errorMsg = e.message || String(e);
       let rawBody = '';
       if (e.response && e.response.data) {
         try {
-          rawBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data, null, 2);
-          const parsed = typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
+          rawBody =
+            typeof e.response.data === 'string'
+              ? e.response.data
+              : JSON.stringify(e.response.data, null, 2);
+          const parsed =
+            typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
           errorMsg = parsed.error?.message || parsed.errorMsg || JSON.stringify(parsed);
         } catch (_) {}
       } else if (e.error) {
@@ -292,7 +321,9 @@ export class OpenAIProvider implements Provider {
 
       // Fallback extraction for custom OpenAI wrapper errors
       if (errorMsg.includes('errorMsg: connect proxy error')) {
-        throw new Error(`9Router Error: ${errorMsg}. Please check your 9router upstream proxy settings.\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`);
+        throw new Error(
+          `9Router Error: ${errorMsg}. Please check your 9router upstream proxy settings.\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`
+        );
       }
 
       throw new Error(`${errorMsg}\n\nRaw Error:\n${String(e)}\n\nRaw Body:\n${rawBody}`);
@@ -301,7 +332,13 @@ export class OpenAIProvider implements Provider {
 
   private parseChatResponse(res: OpenAI.ChatCompletion): ChatResponse {
     if (!res.choices || res.choices.length === 0) {
-      return { text: '', toolCalls: [], usage: undefined, finishReason: 'no_choices', rawSnippet: JSON.stringify(res).slice(0, 300) };
+      return {
+        text: '',
+        toolCalls: [],
+        usage: undefined,
+        finishReason: 'no_choices',
+        rawSnippet: JSON.stringify(res).slice(0, 300),
+      };
     }
     const choice = res.choices[0];
     const toolCalls: ToolCall[] = [];
@@ -319,14 +356,20 @@ export class OpenAIProvider implements Provider {
     return {
       text: choice.message?.content || '',
       toolCalls,
-      usage: res.usage ? {
-        promptTokens: res.usage.prompt_tokens,
-        completionTokens: res.usage.completion_tokens,
-      } : undefined,
-      finishReason: choice.finish_reason || undefined,
-      rawSnippet: (!choice.message?.content && !choice.message?.tool_calls)
-        ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(0, 300)
+      usage: res.usage
+        ? {
+            promptTokens: res.usage.prompt_tokens,
+            completionTokens: res.usage.completion_tokens,
+          }
         : undefined,
+      finishReason: choice.finish_reason || undefined,
+      rawSnippet:
+        !choice.message?.content && !choice.message?.tool_calls
+          ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(
+              0,
+              300
+            )
+          : undefined,
     };
   }
 
@@ -340,7 +383,7 @@ export class OpenAIProvider implements Provider {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify({
         model: this.model,
@@ -361,19 +404,23 @@ export class OpenAIProvider implements Provider {
 
     if (!res.ok) {
       const err = await res.text();
-      throw new Error(`Completion endpoint failed (${res.status}): ${err}\n\nRaw Response:\n${err}`);
+      throw new Error(
+        `Completion endpoint failed (${res.status}): ${err}\n\nRaw Response:\n${err}`
+      );
     }
 
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     const text = data.choices?.[0]?.text || '';
 
     return {
       text,
       toolCalls: [],
-      usage: data.usage ? {
-        promptTokens: data.usage.prompt_tokens,
-        completionTokens: data.usage.completion_tokens,
-      } : undefined,
+      usage: data.usage
+        ? {
+            promptTokens: data.usage.prompt_tokens,
+            completionTokens: data.usage.completion_tokens,
+          }
+        : undefined,
     };
   }
 }
@@ -412,22 +459,25 @@ export class AnthropicProvider implements Provider {
   }
 
   private async anthropicNative(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
-    const systemMsg = messages.find(m => m.role === 'system');
-    const nonSystem = messages.filter(m => m.role !== 'system');
+    const clean = sanitizeMessages(messages);
+    const systemMsg = clean.find((m) => m.role === 'system');
+    const nonSystem = clean.filter((m) => m.role !== 'system');
 
     const body: Record<string, unknown> = {
       model: this.model,
       max_tokens: this.maxTokens,
       stream: false,
-      messages: nonSystem.map(m => {
+      messages: nonSystem.map((m) => {
         if (m.role === 'tool') {
           return {
             role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: m.toolCallId || '',
-              content: m.content,
-            }],
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: m.toolCallId || '',
+                content: m.content,
+              },
+            ],
           };
         }
         if (m.role === 'assistant' && m.toolCalls?.length) {
@@ -443,7 +493,10 @@ export class AnthropicProvider implements Provider {
           for (const imgPath of m.images) {
             const img = imageToBase64(imgPath);
             if (img) {
-              content.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.data } });
+              content.push({
+                type: 'image',
+                source: { type: 'base64', media_type: img.mediaType, data: img.data },
+              });
             }
           }
           return { role: m.role, content };
@@ -457,7 +510,7 @@ export class AnthropicProvider implements Provider {
     }
 
     if (tools?.length) {
-      body.tools = tools.map(t => ({
+      body.tools = tools.map((t) => ({
         name: t.function.name,
         description: t.function.description,
         input_schema: t.function.parameters,
@@ -488,7 +541,9 @@ export class AnthropicProvider implements Provider {
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Anthropic API error (${res.status}): ${errText}\n\nRaw Response:\n${errText}`);
+      throw new Error(
+        `Anthropic API error (${res.status}): ${errText}\n\nRaw Response:\n${errText}`
+      );
     }
 
     let data: any;
@@ -527,17 +582,27 @@ export class AnthropicProvider implements Provider {
         data = {
           content: [
             ...(textParts.length > 0 ? [{ type: 'text', text: textParts.join('') }] : []),
-            ...toolUses.map(t => ({ type: 'tool_use', id: t.id, name: t.name, input: t.input || {} })),
+            ...toolUses.map((t) => ({
+              type: 'tool_use',
+              id: t.id,
+              name: t.name,
+              input: t.input || {},
+            })),
           ],
           usage: usage || lastMessage?.usage || null,
         };
       }
-      if (!data) throw new Error('Proxy returned SSE stream but no valid message data found. Try a different proxy or add stream:false to your proxy config.');
+      if (!data)
+        throw new Error(
+          'Proxy returned SSE stream but no valid message data found. Try a different proxy or add stream:false to your proxy config.'
+        );
     } else {
       try {
         data = JSON.parse(trimmed);
       } catch {
-        throw new Error(`Proxy returned non-JSON response:\n\n${trimmed}\n\nCheck your proxy URL and model ID.`);
+        throw new Error(
+          `Proxy returned non-JSON response:\n\n${trimmed}\n\nCheck your proxy URL and model ID.`
+        );
       }
     }
     this.endpointMode = 'anthropic';
@@ -555,18 +620,29 @@ export class AnthropicProvider implements Provider {
     return {
       text,
       toolCalls,
-      usage: data.usage ? {
-        promptTokens: data.usage.input_tokens,
-        completionTokens: data.usage.output_tokens,
-      } : undefined,
-      finishReason: data.stop_reason || undefined,
-      rawSnippet: (!text && toolCalls.length === 0)
-        ? JSON.stringify({ stop_reason: data.stop_reason, type: data.type, content: data.content }).slice(0, 300)
+      usage: data.usage
+        ? {
+            promptTokens: data.usage.input_tokens,
+            completionTokens: data.usage.output_tokens,
+          }
         : undefined,
+      finishReason: data.stop_reason || undefined,
+      rawSnippet:
+        !text && toolCalls.length === 0
+          ? JSON.stringify({
+              stop_reason: data.stop_reason,
+              type: data.type,
+              content: data.content,
+            }).slice(0, 300)
+          : undefined,
     };
   }
 
-  private async openAICompatFallback(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+  private async openAICompatFallback(
+    messages: Message[],
+    tools?: ToolDef[]
+  ): Promise<ChatResponse> {
+    const clean = sanitizeMessages(messages);
     const baseUrl = openAIBaseUrl(this.baseUrl);
     bypassProxyIfLocal(baseUrl);
 
@@ -577,7 +653,7 @@ export class AnthropicProvider implements Provider {
 
     const params: OpenAI.ChatCompletionCreateParamsNonStreaming = {
       model: this.model,
-      messages: messages.map(m => {
+      messages: clean.map((m) => {
         if (m.role === 'tool') {
           return { role: 'tool' as const, content: m.content, tool_call_id: m.toolCallId || '' };
         }
@@ -585,7 +661,7 @@ export class AnthropicProvider implements Provider {
           return {
             role: 'assistant' as const,
             content: m.content || null,
-            tool_calls: m.toolCalls.map(tc => ({
+            tool_calls: m.toolCalls.map((tc) => ({
               id: tc.id,
               type: 'function' as const,
               function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
@@ -593,13 +669,16 @@ export class AnthropicProvider implements Provider {
           };
         }
         if (m.images?.length) {
-          const content: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [
-            { type: 'text', text: m.content },
-          ];
+          const content: Array<
+            { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+          > = [{ type: 'text', text: m.content }];
           for (const imgPath of m.images) {
             const img = imageToBase64(imgPath);
             if (img) {
-              content.push({ type: 'image_url', image_url: { url: `data:${img.mediaType};base64,${img.data}` } });
+              content.push({
+                type: 'image_url',
+                image_url: { url: `data:${img.mediaType};base64,${img.data}` },
+              });
             }
           }
           return { role: m.role as 'user', content };
@@ -622,8 +701,12 @@ export class AnthropicProvider implements Provider {
       let rawBody = '';
       if (e.response && e.response.data) {
         try {
-          rawBody = typeof e.response.data === 'string' ? e.response.data : JSON.stringify(e.response.data, null, 2);
-          const parsed = typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
+          rawBody =
+            typeof e.response.data === 'string'
+              ? e.response.data
+              : JSON.stringify(e.response.data, null, 2);
+          const parsed =
+            typeof e.response.data === 'string' ? JSON.parse(e.response.data) : e.response.data;
           errorMsg = parsed.error?.message || parsed.errorMsg || JSON.stringify(parsed);
         } catch (_) {}
       } else if (e.error) {
@@ -638,7 +721,13 @@ export class AnthropicProvider implements Provider {
     }
 
     if (!res.choices || res.choices.length === 0) {
-      return { text: '', toolCalls: [], usage: undefined, finishReason: 'no_choices', rawSnippet: JSON.stringify(res).slice(0, 300) };
+      return {
+        text: '',
+        toolCalls: [],
+        usage: undefined,
+        finishReason: 'no_choices',
+        rawSnippet: JSON.stringify(res).slice(0, 300),
+      };
     }
     const choice = res.choices[0];
     const toolCalls: ToolCall[] = [];
@@ -656,14 +745,20 @@ export class AnthropicProvider implements Provider {
     return {
       text: choice.message?.content || '',
       toolCalls,
-      usage: res.usage ? {
-        promptTokens: res.usage.prompt_tokens,
-        completionTokens: res.usage.completion_tokens,
-      } : undefined,
-      finishReason: choice.finish_reason || undefined,
-      rawSnippet: (!choice.message?.content && !choice.message?.tool_calls)
-        ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(0, 300)
+      usage: res.usage
+        ? {
+            promptTokens: res.usage.prompt_tokens,
+            completionTokens: res.usage.completion_tokens,
+          }
         : undefined,
+      finishReason: choice.finish_reason || undefined,
+      rawSnippet:
+        !choice.message?.content && !choice.message?.tool_calls
+          ? JSON.stringify({ finish_reason: choice.finish_reason, message: choice.message }).slice(
+              0,
+              300
+            )
+          : undefined,
     };
   }
 }
@@ -712,7 +807,9 @@ export class AutoDetectProvider implements Provider {
         this.name = `custom (anthropic-compat)`;
         return result;
       } catch (e: any) {
-        throw new Error(`Auto-detect failed. Set apiStyle to 'openai' or 'anthropic' explicitly. Last error: ${e.message}`);
+        throw new Error(
+          `Auto-detect failed. Set apiStyle to 'openai' or 'anthropic' explicitly. Last error: ${e.message}`
+        );
       }
     }
   }
@@ -754,13 +851,13 @@ function sanitizeMessages(messages: Message[]): Message[] {
     }
   }
 
-  return messages.filter(m => {
+  return messages.filter((m) => {
     if (m.role === 'tool') {
       return m.toolCallId && validCallIds.has(m.toolCallId);
     }
     if (m.role === 'assistant' && m.toolCalls?.length) {
-      const hasResults = m.toolCalls.some(tc =>
-        messages.some(other => other.role === 'tool' && other.toolCallId === tc.id)
+      const hasResults = m.toolCalls.some((tc) =>
+        messages.some((other) => other.role === 'tool' && other.toolCallId === tc.id)
       );
       if (!hasResults) {
         return false;

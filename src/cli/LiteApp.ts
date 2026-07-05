@@ -7,6 +7,7 @@ import { AgentLoop } from '../agent/AgentLoop.js';
 import { ToolRegistry } from '../tools/Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { asciiLogo } from '../utils/ascii-logo.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 const TerminalRenderer = markedTerminal as any;
 marked.setOptions({
@@ -62,18 +63,18 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
       const stream = agent.run(text);
       for await (const event of stream) {
         if (event.type === 'text') {
-          spinner.text = event.data;
+          spinner.text = safeDisplayText(event.data);
         } else if (event.type === 'tool_start') {
           spinner.text = chalk.dim('⚙ ' + event.toolName + '...');
         } else if (event.type === 'tool_end') {
           spinner.text = chalk.yellow('Thinking...');
         } else if (event.type === 'error') {
           spinner.stop();
-          console.log(chalk.red.bold('\n✗ Error: ') + chalk.red(event.data));
+          console.log(chalk.red.bold('\n✗ Error: ') + chalk.red(safeDisplayText(event.data)));
           spinner.start(chalk.yellow('Thinking...'));
         } else if (event.type === 'done') {
           spinner.stop();
-          console.log('\n' + marked.parse(event.data));
+          console.log('\n' + marked.parse(safeDisplayText(event.data)));
           console.log();
         }
       }
