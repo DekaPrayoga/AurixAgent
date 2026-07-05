@@ -252,13 +252,16 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
-  const [tick, setTick] = useState(0);
+  const [spinnerTick, setSpinnerTick] = useState(0);
   const lastEscRef = React.useRef<number>(0);
 
+  // Only animate spinner when input is disabled — avoids render contention
+  // with keystrokes during normal typing (was causing ~500ms input lag)
   useEffect(() => {
-    const id = setInterval(() => setTick(n => n + 1), 530);
+    if (!disabled) return;
+    const id = setInterval(() => setSpinnerTick(n => n + 1), 530);
     return () => clearInterval(id);
-  }, []);
+  }, [disabled]);
 
   useEffect(() => {
     if (process.stdin.isTTY) {
@@ -310,7 +313,7 @@ export function InputBox({ onSubmit, disabled, commands = [], home = false, mode
 
   const frame = () => {
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    return frames[tick % frames.length];
+    return frames[spinnerTick % frames.length];
   };
 
   const commandQuery = value.startsWith('/') && !/\s/.test(value.slice(1))

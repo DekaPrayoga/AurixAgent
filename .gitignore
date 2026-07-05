@@ -65,3 +65,4 @@ test-*.ts
 *.cjs
 *.cmd
 test-run.mjs
+test-*.js
