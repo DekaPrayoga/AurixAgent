@@ -60,3 +60,8 @@ native/token-counter/target/
 training/*.json
 scripts/debug-funcaptcha.ts
 test-*.ts
+
+# AI session junk (debug/patch scripts)
+*.cjs
+*.cmd
+test-run.mjs

@@ -3,7 +3,8 @@ import type { Tool } from './Registry.js';
 
 export const webSearchTool: Tool = {
   name: 'web_search',
-  description: 'Search the web. Configurable engine — DDG (free, default), Serper (Google), or Tavily (AI-optimized). Set in: aurix setup → Search Engine.',
+  description:
+    'Search the web. Configurable engine — DDG (free, default), Serper (Google), or Tavily (AI-optimized). Set in: aurix setup → Search Engine.',
   parameters: {
     type: 'object',
     properties: {
@@ -18,10 +19,17 @@ export const webSearchTool: Tool = {
     const maxResults = (args.max_results as number) || 5;
     const config = loadConfig();
     const engine = config.searchEngine || 'ddg';
-    const apiKey = config.searchApiKey || process.env.SEARCH_API_KEY || process.env.TAVILY_API_KEY || '';
+    const apiKey =
+      config.searchApiKey || process.env.SEARCH_API_KEY || process.env.TAVILY_API_KEY || '';
 
-    if (engine === 'serper') return apiKey ? serperSearch(query, maxResults, apiKey) : noKey('Serper', 'https://serper.dev', 'SEARCH_API_KEY');
-    if (engine === 'tavily') return apiKey ? tavilySearch(query, maxResults, apiKey) : noKey('Tavily', 'https://tavily.com', 'TAVILY_API_KEY');
+    if (engine === 'serper')
+      return apiKey
+        ? serperSearch(query, maxResults, apiKey)
+        : noKey('Serper', 'https://serper.dev', 'SEARCH_API_KEY');
+    if (engine === 'tavily')
+      return apiKey
+        ? tavilySearch(query, maxResults, apiKey)
+        : noKey('Tavily', 'https://tavily.com', 'TAVILY_API_KEY');
     return duckduckgoSearch(query, maxResults);
   },
 };
@@ -41,14 +49,18 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
       `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
       { headers: { 'User-Agent': 'AurixAgent/3.0' } }
     );
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
 
     if (data.AbstractText) {
       results.push(`📌 ${data.AbstractText}\n   Source: ${data.AbstractURL || 'DDG'}`);
     }
 
-    for (const t of (data.RelatedTopics || []).filter((x: any) => x.Text && x.FirstURL).slice(0, maxResults)) {
-      results.push(`${results.length + 1}. ${t.Text?.split(' - ')[0]?.slice(0, 100)}\n   ${t.FirstURL}\n   ${t.Text?.slice(0, 200) || ''}`);
+    for (const t of (data.RelatedTopics || [])
+      .filter((x: any) => x.Text && x.FirstURL)
+      .slice(0, maxResults)) {
+      results.push(
+        `${results.length + 1}. ${t.Text?.split(' - ')[0]?.slice(0, 100)}\n   ${t.FirstURL}\n   ${t.Text?.slice(0, 200) || ''}`
+      );
     }
   } catch {}
 
@@ -61,8 +73,9 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
     const params = new URLSearchParams({ q: query });
     const res = await fetch(`https://html.duckduckgo.com/html/?${params}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
+        'User-Agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        Accept: 'text/html',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -83,7 +96,9 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
         const uddg = url.match(/uddg=([^&]+)/);
         if (uddg) url = decodeURIComponent(uddg[1]);
         if (title && url && !url.startsWith('//duckduckgo.com')) {
-          results.push(`${results.length + 1}. ${title.slice(0, 100)}\n   ${url}\n   ${snippet.slice(0, 200)}`);
+          results.push(
+            `${results.length + 1}. ${title.slice(0, 100)}\n   ${url}\n   ${snippet.slice(0, 200)}`
+          );
         }
       }
       if (results.length >= maxResults) break;
@@ -92,7 +107,13 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
 
   // 3. SearXNG fallback
   if (results.length === 0) {
-    const instances = ['https://searx.be', 'https://search.sapti.me', 'https://searxng.site', 'https://priv.au', 'https://search.hbubli.cc'];
+    const instances = [
+      'https://searx.be',
+      'https://search.sapti.me',
+      'https://searxng.site',
+      'https://priv.au',
+      'https://search.hbubli.cc',
+    ];
     for (const ins of instances) {
       try {
         const r = await fetch(`${ins}/search?q=${encodeURIComponent(query)}&format=json`, {
@@ -100,12 +121,16 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
           signal: AbortSignal.timeout(8000),
         });
         if (!r.ok) continue;
-        const d = await r.json() as any;
+        const d = (await r.json()) as any;
         for (const x of (d.results || []).slice(0, maxResults)) {
-          results.push(`${results.length + 1}. ${x.title}\n   ${x.url}\n   ${(x.content || '').slice(0, 200)}`);
+          results.push(
+            `${results.length + 1}. ${x.title}\n   ${x.url}\n   ${(x.content || '').slice(0, 200)}`
+          );
         }
         if (results.length > 0) break;
-      } catch { continue; }
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -124,16 +149,28 @@ async function serperSearch(query: string, maxResults: number, apiKey: string): 
       body: JSON.stringify({ q: query, num: maxResults }),
       signal: AbortSignal.timeout(12000),
     });
-    if (!res.ok) return `Serper: ${res.status === 403 ? 'Invalid API key. Get one at https://serper.dev' : `HTTP ${res.status}`}`;
-    const data = await res.json() as any;
+    if (!res.ok)
+      return `Serper: ${res.status === 403 ? 'Invalid API key. Get one at https://serper.dev' : `HTTP ${res.status}`}`;
+    const data = (await res.json()) as any;
     const organic = data.organic || [];
     if (!organic.length) return `No results for "${query}".`;
     const parts: string[] = [];
-    if (data.knowledgeGraph) parts.push(`📌 ${data.knowledgeGraph.title}: ${(data.knowledgeGraph.description || '').slice(0, 300)}`);
-    parts.push(...organic.slice(0, maxResults).map((r: any, i: number) =>
-      `${parts.length + 1}. ${r.title}\n   ${r.link}\n   ${(r.snippet || '').slice(0, 250)}`));
+    if (data.knowledgeGraph)
+      parts.push(
+        `📌 ${data.knowledgeGraph.title}: ${(data.knowledgeGraph.description || '').slice(0, 300)}`
+      );
+    parts.push(
+      ...organic
+        .slice(0, maxResults)
+        .map(
+          (r: any, i: number) =>
+            `${parts.length + 1}. ${r.title}\n   ${r.link}\n   ${(r.snippet || '').slice(0, 250)}`
+        )
+    );
     return parts.join('\n\n');
-  } catch (e: any) { return `Serper error: ${e.message}`; }
+  } catch (e: any) {
+    return `Serper error: ${e.message}`;
+  }
 }
 
 // ─── Tavily (AI-optimized) ──────────────────────────────────────────────────
@@ -143,17 +180,31 @@ async function tavilySearch(query: string, maxResults: number, apiKey: string): 
     const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey, query, max_results: maxResults, search_depth: 'basic' }),
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        max_results: maxResults,
+        search_depth: 'basic',
+      }),
       signal: AbortSignal.timeout(12000),
     });
-    if (!res.ok) return `Tavily: ${res.status === 401 ? 'Invalid API key. Get one at https://tavily.com' : `HTTP ${res.status}`}`;
-    const data = await res.json() as any;
+    if (!res.ok)
+      return `Tavily: ${res.status === 401 ? 'Invalid API key. Get one at https://tavily.com' : `HTTP ${res.status}`}`;
+    const data = (await res.json()) as any;
     const results = data.results || [];
     if (!results.length) return `No results for "${query}".`;
     const parts: string[] = [];
     if (data.answer) parts.push(`📌 ${data.answer}`);
-    parts.push(...results.slice(0, maxResults).map((r: any, i: number) =>
-      `${parts.length + 1}. ${r.title}\n   ${r.url}\n   ${(r.content || '').slice(0, 250)}`));
+    parts.push(
+      ...results
+        .slice(0, maxResults)
+        .map(
+          (r: any, i: number) =>
+            `${parts.length + 1}. ${r.title}\n   ${r.url}\n   ${(r.content || '').slice(0, 250)}`
+        )
+    );
     return parts.join('\n\n');
-  } catch (e: any) { return `Tavily error: ${e.message}`; }
+  } catch (e: any) {
+    return `Tavily error: ${e.message}`;
+  }
 }

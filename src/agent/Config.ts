@@ -18,7 +18,18 @@ export interface AurixConfig {
   systemPrompt?: string;
   apiStyle?: 'anthropic' | 'openai' | 'auto';
   researchMode?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
-  themeName?: 'aurix' | 'opencode' | 'amber' | 'violet' | 'mono' | 'pink' | 'ocean' | 'dark' | 'green' | 'sunset' | 'nebula';
+  themeName?:
+    | 'aurix'
+    | 'opencode'
+    | 'amber'
+    | 'violet'
+    | 'mono'
+    | 'pink'
+    | 'ocean'
+    | 'dark'
+    | 'green'
+    | 'sunset'
+    | 'nebula';
   accentColor?: string;
   useGroqAudio?: boolean;
   captchaAudio?: 'image' | 'audio' | 'hybrid' | boolean;
@@ -77,7 +88,8 @@ export function loadConfig(): AurixConfig {
 }
 
 function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
-  const apiStyle = (process.env.AURIX_API_STYLE as AurixConfig['apiStyle']) || file.apiStyle || 'auto';
+  const apiStyle =
+    (process.env.AURIX_API_STYLE as AurixConfig['apiStyle']) || file.apiStyle || 'auto';
   const rawBaseUrl = process.env.AURIX_BASE_URL || file.baseUrl;
   const baseUrl = normalizeBaseUrl(rawBaseUrl, apiStyle);
 
@@ -89,7 +101,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     visionModel: process.env.AURIX_VISION_MODEL || file.visionModel,
     visionBaseUrl: process.env.AURIX_VISION_BASE_URL || file.visionBaseUrl,
     visionApiKey: process.env.AURIX_VISION_API_KEY || file.visionApiKey,
-    visionApiStyle: process.env.AURIX_VISION_API_STYLE as any || file.visionApiStyle,
+    visionApiStyle: (process.env.AURIX_VISION_API_STYLE as any) || file.visionApiStyle,
     maxTokens: file.maxTokens || 4096,
     temperature: file.temperature ?? 0.7,
     systemPrompt: file.systemPrompt,

@@ -2369,12 +2369,7 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 )}
                 <InputBox
                   onSubmit={handleSubmit}
-                  disabled={
-                    !!permissionPrompt ||
-                    showLogin ||
-                    !!connectModal ||
-                    showWhatsApp
-                  }
+                  disabled={!!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
                   commands={commands}
                   model={agent.getModel()}
                   contextPct={ctxStats.estimatedPct}
