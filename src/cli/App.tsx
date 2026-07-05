@@ -441,7 +441,11 @@ export function App({ config, registry, resumeId }: AppProps) {
         return;
       }
 
-      if (isProcessing) return;
+      // During processing, only allow slash commands (e.g. /btw, /help, /model)
+      if (isProcessing) {
+        const preSlash = parseSlash(text);
+        if (!preSlash) return; // block plain text while agent is working
+      }
 
       let outboundText = text;
       const addAssistant = (content: string) => {
@@ -2366,7 +2370,6 @@ Supervisor auto-routes to the best specialist(s) for each task.`);
                 <InputBox
                   onSubmit={handleSubmit}
                   disabled={
-                    (isProcessing && !isAskingUser) ||
                     !!permissionPrompt ||
                     showLogin ||
                     !!connectModal ||

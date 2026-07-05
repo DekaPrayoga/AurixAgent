@@ -426,9 +426,17 @@ export class Gateway extends EventEmitter {
 
     if (!platform) return;
 
+    const text = msg.content.trim();
+    const isWA = this.isWhatsApp(msg);
+    const { cmd, args } = this.normalizeCommand(text, msg.platform);
+
+    // Allow /btw and /cancel through even while agent is processing
+    if (cmd !== 'btw' && cmd !== 'cancel') {
+      if ((this as any).__processing?.[agentKey]) return;
+    }
+
     // Guard: prevent concurrent processing for the same user
     // (queue processing via setImmediate can race with a new message)
-    if ((this as any).__processing?.[agentKey]) return;
     if (!(this as any).__processing) (this as any).__processing = new Set<string>();
     (this as any).__processing.add(agentKey);
     try {
@@ -442,10 +450,6 @@ export class Gateway extends EventEmitter {
         channelId: msg.channelId,
         replyTo: msg.replyTo,
       });
-
-      const text = msg.content.trim();
-      const isWA = this.isWhatsApp(msg);
-      const { cmd, args } = this.normalizeCommand(text, msg.platform);
 
       if (cmd === 'cancel') {
         if (this.activeProcessing.has(agentKey)) {
