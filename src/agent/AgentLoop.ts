@@ -1078,7 +1078,7 @@ export class AgentLoop {
         };
 
         const processResult = (result: string, toolName: string): string => {
-          if (result.length <= 10000) return result;
+          if (result.length <= 10000 || toolName === 'read_file') return result;
           const persisted = persistToolResult(result, toolName);
           if (persisted) return buildPersistedMessage(persisted, result.length);
           const headLen = Math.floor(MAX_RESULT_LEN * 0.4);

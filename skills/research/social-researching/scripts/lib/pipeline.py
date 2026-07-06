@@ -22,6 +22,7 @@ from . import (
     grounding,
     hackernews,
     instagram,
+    nodeloc,
     normalize,
     perplexity,
     pinterest,
@@ -60,6 +61,7 @@ SEARCH_ALIAS = {
     "truth": "truthsocial",
     "web": "grounding",
     "xhs": "xiaohongshu",
+    "nl": "nodeloc",
     "xquik": "xquik",
 }
 
@@ -77,6 +79,7 @@ MOCK_AVAILABLE_SOURCES = [
     "polymarket",
     "grounding",
     "xiaohongshu",
+    "nodeloc",
     "github",
     "perplexity",
     "threads",
@@ -126,6 +129,10 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.append("perplexity")
     if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
+    if requested_sources and "nodeloc" in requested_sources:
+        available.append("nodeloc")
+    elif "nodeloc" in include_sources:
+        available.append("nodeloc")
     if env.is_threads_available(config):
         available.append("threads")
     if requested_sources and "pinterest" in requested_sources and env.is_pinterest_available(config):
@@ -1028,6 +1035,14 @@ def _retrieve_stream(
             from_date,
             to_date,
             env.get_xiaohongshu_api_base(config),
+            depth=depth,
+        ), {}
+    if source == "nodeloc":
+        return nodeloc.search_nodeloc(
+            subquery.search_query,
+            from_date,
+            to_date,
+            config.get("NODELOC_BASE_URL") or nodeloc.DEFAULT_BASE_URL,
             depth=depth,
         ), {}
     if source == "perplexity":

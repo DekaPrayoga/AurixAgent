@@ -110,6 +110,210 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
   );
 }
 
+function charWidth(char: string): number {
+  const code = char.codePointAt(0) || 0;
+  if (code === 0x200d || (code >= 0x0300 && code <= 0x036f) || (code >= 0xfe00 && code <= 0xfe0f)) {
+    return 0;
+  }
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff))
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function displayWidth(text: string): number {
+  return Array.from(text).reduce((sum, char) => sum + charWidth(char), 0);
+}
+
+function truncateDisplay(text: string, width: number): string {
+  let out = '';
+  let used = 0;
+  for (const char of Array.from(text)) {
+    const next = used + charWidth(char);
+    if (next > width) break;
+    out += char;
+    used = next;
+  }
+  return out;
+}
+
+function wrapDisplay(text: string, width: number): string[] {
+  const value = (text || '').trim();
+  if (!value) return [''];
+
+  const words = value.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+
+  const pushHardWrapped = (word: string) => {
+    let remaining = word;
+    while (displayWidth(remaining) > width) {
+      const part = truncateDisplay(remaining, width);
+      lines.push(part);
+      remaining = Array.from(remaining).slice(Array.from(part).length).join('');
+    }
+    current = remaining;
+  };
+
+  for (const word of words) {
+    if (!current) {
+      if (displayWidth(word) > width) pushHardWrapped(word);
+      else current = word;
+      continue;
+    }
+
+    const candidate = `${current} ${word}`;
+    if (displayWidth(candidate) <= width) {
+      current = candidate;
+    } else {
+      lines.push(current);
+      if (displayWidth(word) > width) pushHardWrapped(word);
+      else current = word;
+    }
+  }
+
+  if (current || lines.length === 0) lines.push(current);
+  return lines.slice(0, 6);
+}
+
+function isRuleLine(line: string): boolean {
+  return /^[\s|:─━═—\-]+$/.test(line.trim()) && displayWidth(line.trim()) >= 3;
+}
+
+function parseLabelValue(line: string): { label: string; value: string } | null {
+  const match = line.match(/^\s*([A-Za-z][A-Za-z0-9 /()._$-]{0,32})\s*:\s*(.*)$/);
+  if (!match) return null;
+  return { label: match[1].trim(), value: match[2].trim() };
+}
+
+function collectLabeledTable(
+  lines: string[],
+  start: number
+): { headers: string[]; rows: string[][]; nextIndex: number } | null {
+  const first = parseLabelValue(lines[start] || '');
+  if (!first || first.label.toLowerCase() !== 'provider') return null;
+
+  const blocks: Record<string, string>[] = [];
+  let current: Record<string, string> = {};
+  const headers: string[] = [];
+  let i = start;
+
+  const addHeader = (label: string) => {
+    if (!headers.includes(label)) headers.push(label);
+  };
+
+  const flush = () => {
+    if (Object.keys(current).length > 0) {
+      blocks.push(current);
+      current = {};
+    }
+  };
+
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (raw.trim() === '') break;
+    if (isRuleLine(raw)) {
+      flush();
+      i++;
+      continue;
+    }
+
+    const pair = parseLabelValue(raw);
+    if (!pair) break;
+
+    if (pair.label === first.label && Object.keys(current).length > 0) flush();
+    addHeader(pair.label);
+    current[pair.label] = pair.value || '—';
+    i++;
+  }
+  flush();
+
+  if (blocks.length < 2 || headers.length < 2) return null;
+  const rows = blocks.map((block) => headers.map((header) => block[header] || ''));
+  return { headers, rows, nextIndex: i };
+}
+
+function renderTable(headers: string[], rows: string[][], key: string): React.ReactNode {
+  const colCount = Math.max(headers.length, ...rows.map((r) => r.length));
+  const normalizedHeaders = Array.from(
+    { length: colCount },
+    (_, i) => headers[i] || `Column ${i + 1}`
+  );
+  const normalizedRows = rows.map((row) =>
+    Array.from({ length: colCount }, (_, i) => row[i] || '')
+  );
+  const maxTableWidth = 92;
+  const colWidths = normalizedHeaders.map((h, c) => {
+    let max = displayWidth(h);
+    for (const row of normalizedRows) {
+      const width = displayWidth(row[c] || '');
+      if (width > max) max = width;
+    }
+    return Math.min(Math.max(max, 6), 24);
+  });
+
+  let totalWidth = colWidths.reduce((sum, w) => sum + w + 3, 1);
+  while (totalWidth > maxTableWidth && colWidths.some((w) => w > 10)) {
+    let widest = 0;
+    for (let idx = 1; idx < colWidths.length; idx++) {
+      if (colWidths[idx] > colWidths[widest]) widest = idx;
+    }
+    colWidths[widest] -= 1;
+    totalWidth = colWidths.reduce((sum, w) => sum + w + 3, 1);
+  }
+
+  const padCell = (text: string, width: number) => {
+    const clean = truncateDisplay(text || '', width);
+    return clean + ' '.repeat(Math.max(0, width - displayWidth(clean)));
+  };
+
+  const border = (left: string, mid: string, right: string) =>
+    left + colWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
+
+  const renderRow = (cells: string[], isHeader: boolean, rowKey: string) => {
+    const wrapped = colWidths.map((width, idx) => wrapDisplay(cells[idx] || '', width));
+    const height = Math.max(...wrapped.map((cell) => cell.length), 1);
+    return Array.from({ length: height }, (_, lineIdx) => {
+      const parts = colWidths.map(
+        (width, idx) => ` ${padCell(wrapped[idx][lineIdx] || '', width)} `
+      );
+      const text = '│' + parts.join('│') + '│';
+      return (
+        <text
+          key={`${rowKey}-${lineIdx}`}
+          fg={isHeader ? theme.primary : theme.text}
+          attributes={isHeader ? TextAttributes.BOLD : TextAttributes.NONE}
+        >
+          {text}
+        </text>
+      );
+    });
+  };
+
+  return (
+    <box key={key} flexDirection="column" marginTop={1} marginBottom={1} flexShrink={0}>
+      <text fg={theme.border}>{border('╭', '┬', '╮')}</text>
+      {renderRow(normalizedHeaders, true, 'header')}
+      <text fg={theme.border}>{border('├', '┼', '┤')}</text>
+      {normalizedRows.flatMap((row, r) => renderRow(row, false, `row-${r}`))}
+      <text fg={theme.border}>{border('╰', '┴', '╯')}</text>
+    </box>
+  );
+}
+
 function MarkdownText({ content }: { content: string }) {
   const lines = safeDisplayText(content).split('\n');
   const elements: React.ReactNode[] = [];
@@ -172,53 +376,18 @@ function MarkdownText({ content }: { content: string }) {
             .split('|')
             .slice(1, -1)
             .map((c) => c.trim());
-        const isSeparator = (row: string) => /^\|[\s:-]+\|$/.test(row.replace(/[\s:-|]/g, ''));
-
         const headers = parseRow(tableLines[0]);
         const sepIdx = tableLines.findIndex((r, idx) => idx > 0 && /^[\s|:-]+$/.test(r));
         const dataRows = tableLines.filter((r, idx) => idx !== 0 && idx !== sepIdx).map(parseRow);
-
-        const colCount = headers.length;
-        const colWidths = headers.map((h, c) => {
-          let max = h.length;
-          for (const row of dataRows) {
-            if (row[c] && row[c].length > max) max = row[c].length;
-          }
-          return Math.min(max + 2, 40);
-        });
-
-        const padCell = (text: string, width: number) => {
-          const clean = (text || '').slice(0, width);
-          return clean + ' '.repeat(Math.max(0, width - clean.length));
-        };
-
-        const topBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┬');
-        const midBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┼');
-        const botBorder = colWidths.map((w) => '─'.repeat(w + 2)).join('┴');
-
-        const renderRow = (cells: string[], isHeader: boolean) => {
-          const parts = cells.map((c, idx) => ` ${padCell(c, colWidths[idx])} `);
-          const text = '│' + parts.join('│') + '│';
-          return (
-            <text
-              fg={isHeader ? theme.primary : theme.text}
-              attributes={isHeader ? TextAttributes.BOLD : TextAttributes.NONE}
-            >
-              {text}
-            </text>
-          );
-        };
-
-        elements.push(
-          <box key={`table-${i}`} flexDirection="column" marginTop={1} marginBottom={1}>
-            <text fg={theme.border}>{'╭' + topBorder + '╮'}</text>
-            {renderRow(headers, true)}
-            <text fg={theme.border}>{'├' + midBorder + '┤'}</text>
-            {dataRows.map((row, r) => renderRow(row, false))}
-            <text fg={theme.border}>{'╰' + botBorder + '╯'}</text>
-          </box>
-        );
+        elements.push(renderTable(headers, dataRows, `table-${i}`));
       }
+      continue;
+    }
+
+    const labeledTable = collectLabeledTable(lines, i);
+    if (labeledTable) {
+      elements.push(renderTable(labeledTable.headers, labeledTable.rows, `kv-table-${i}`));
+      i = labeledTable.nextIndex;
       continue;
     }
 
@@ -368,6 +537,48 @@ function ThinkingIndicator() {
   );
 }
 
+function toolColor(name?: string): string {
+  const tool = (name || '').toLowerCase();
+  if (tool.includes('read') || tool.includes('search') || tool.includes('grep')) return theme.info;
+  if (tool.includes('write') || tool.includes('edit') || tool.includes('delete')) return theme.warn;
+  if (tool.includes('terminal') || tool.includes('bash') || tool.includes('code_exec'))
+    return theme.secondary;
+  if (tool.includes('browser') || tool.includes('captcha')) return theme.accent;
+  if (tool.includes('research') || tool.includes('web')) return theme.primary;
+  if (tool.includes('git') || tool.includes('github')) return theme.ok;
+  if (tool.includes('ask')) return theme.thinking;
+  return theme.tool;
+}
+
+function outputLineColor(line: string, fallback: string): string {
+  const lower = line.toLowerCase();
+  if (/\b(error|failed|exception|traceback|fatal|denied)\b/.test(lower)) return theme.error;
+  if (/\b(warn|warning|caution|skipped)\b/.test(lower)) return theme.warn;
+  if (/\b(success|done|written|deleted|created|updated|passed|built|published)\b/.test(lower))
+    return theme.ok;
+  if (/^(\s*(>|\$|npm|bun|node|python|git|pm2)\b)|\b(file|saved|path|output)\b/.test(lower))
+    return theme.info;
+  return fallback;
+}
+
+function ToolOutputText({ content, color }: { content: string; color: string }) {
+  return (
+    <box flexDirection="column">
+      {truncateOutput(content)
+        .split('\n')
+        .map((line, i) => (
+          <text
+            key={i}
+            fg={outputLineColor(line, i === 0 ? color : theme.textMuted)}
+            wrapMode="word"
+          >
+            {line}
+          </text>
+        ))}
+    </box>
+  );
+}
+
 function ToolSpinner({ name, args }: { name: string; args?: Record<string, unknown> }) {
   const [tick, setTick] = useState(0);
   const charsUnicode = ['·', '✢', '*', '✶', '✻', '✽'];
@@ -433,10 +644,12 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
     }
   }
 
+  const color = toolColor(name);
+
   return (
     <box paddingX={2} flexDirection="column">
       <box flexDirection="row">
-        <text fg={theme.tool}>
+        <text fg={color}>
           {frames[tick % frames.length]} {name}
         </text>
         {detail && <text fg={theme.textMuted}> {safeDisplayText(detail)}</text>}
@@ -505,13 +718,14 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
 
 function ToolMessage({ msg }: { msg: ChatMessage }) {
   const content = safeDisplayText(msg.content);
+  const color = toolColor(msg.toolName);
   const diff = parseToolEditOutput(content);
   if (diff) {
     return (
       <box flexDirection="column" flexShrink={0}>
         <box paddingLeft={4} paddingRight={2}>
-          <text fg={theme.tool}>▸ </text>
-          <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
+          <text fg={color}>▸ </text>
+          <text fg={color}>{msg.toolName || 'tool'}</text>
         </box>
         <FileDiff
           filePath={diff.filePath}
@@ -525,13 +739,11 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
   return (
     <box flexDirection="column" paddingLeft={4} paddingRight={2} flexShrink={0}>
       <box>
-        <text fg={theme.tool}>▸ </text>
-        <text fg={theme.toolDim}>{msg.toolName || 'tool'}</text>
+        <text fg={color}>▸ </text>
+        <text fg={color}>{msg.toolName || 'tool'}</text>
       </box>
       <box paddingLeft={2}>
-        <text fg={theme.textMuted} wrapMode="word">
-          {truncateOutput(content)}
-        </text>
+        <ToolOutputText content={content} color={color} />
       </box>
     </box>
   );

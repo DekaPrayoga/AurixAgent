@@ -9,7 +9,8 @@ const ENGINE = path.join(SKILL_DIR, 'scripts', 'social-researching.py');
 
 export const researchForumsTool: Tool = {
   name: 'research_forums',
-  description: 'Deep research across social forums: Reddit, X/Twitter, YouTube, TikTok, Hacker News, Polymarket, GitHub, Instagram, Bluesky, Threads, Pinterest, and the web. Scores results by upvotes, likes, engagement, and real money — not editors. Use for understanding public sentiment, trending topics, community reactions, and what real people actually say about any topic.',
+  description:
+    'Deep research across social forums: Reddit, X/Twitter, YouTube, TikTok, Hacker News, Polymarket, GitHub, Instagram, Bluesky, Threads, Pinterest, and the web. Scores results by upvotes, likes, engagement, and real money — not editors. Use for understanding public sentiment, trending topics, community reactions, and what real people actually say about any topic.',
   parameters: {
     type: 'object',
     properties: {
@@ -19,7 +20,8 @@ export const researchForumsTool: Tool = {
       },
       sources: {
         type: 'string',
-        description: 'Comma-separated sources: reddit,x,youtube,tiktok,hackernews,polymarket,github,instagram,bluesky,threads,pinterest,web (default: all available)',
+        description:
+          'Comma-separated sources: reddit,x,youtube,tiktok,hackernews,polymarket,github,instagram,bluesky,threads,pinterest,web (default: all available)',
       },
       format: {
         type: 'string',
@@ -48,7 +50,7 @@ export const researchForumsTool: Tool = {
     cmdParts.push(`--limit=${limit}`);
 
     if (sources) {
-      cmdParts.push(`--sources=${sources}`);
+      cmdParts.push(`--search=${sources}`);
     }
 
     const cmd = cmdParts.join(' ');
@@ -57,38 +59,51 @@ export const researchForumsTool: Tool = {
       const outputDir = path.join(os.homedir(), '.aurix', 'research', 'forums');
       if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-      exec(cmd, {
-        timeout: 120000,
-        maxBuffer: 10 * 1024 * 1024,
-        cwd: SKILL_DIR,
-        env: {
-          ...process.env,
-          SKILL_DIR,
-          PYTHONPATH: path.join(SKILL_DIR, 'scripts'),
+      exec(
+        cmd,
+        {
+          timeout: 120000,
+          maxBuffer: 10 * 1024 * 1024,
+          cwd: SKILL_DIR,
+          env: {
+            ...process.env,
+            SKILL_DIR,
+            PYTHONPATH: path.join(SKILL_DIR, 'scripts'),
+          },
         },
-      }, (err, stdout, stderr) => {
-        if (err && !stdout) {
-          const errMsg = stderr || err.message;
-          if (errMsg.includes('Python 3.12')) {
-            resolve('Error: research-forums requires Python 3.12+. Install with: apt install python3.12');
+        (err, stdout, stderr) => {
+          if (err && !stdout) {
+            const errMsg = stderr || err.message;
+            if (errMsg.includes('Python 3.12')) {
+              resolve(
+                'Error: research-forums requires Python 3.12+. Install with: apt install python3.12'
+              );
+              return;
+            }
+            if (errMsg.includes('API key') || errMsg.includes('API_KEY')) {
+              resolve(
+                `Note: Some sources need API keys for full results.\nSet in environment: SCRAPECREATORS_API_KEY, XAI_API_KEY, BRAVE_API_KEY, APIFY_API_TOKEN\n\nPartial results:\n${stdout || 'No results available without API keys.'}`
+              );
+              return;
+            }
+            resolve(`Error running research-forums: ${errMsg.slice(0, 500)}`);
             return;
           }
-          if (errMsg.includes('API key') || errMsg.includes('API_KEY')) {
-            resolve(`Note: Some sources need API keys for full results.\nSet in environment: SCRAPECREATORS_API_KEY, XAI_API_KEY, BRAVE_API_KEY, APIFY_API_TOKEN\n\nPartial results:\n${stdout || 'No results available without API keys.'}`);
-            return;
-          }
-          resolve(`Error running research-forums: ${errMsg.slice(0, 500)}`);
-          return;
+
+          const result = stdout.trim();
+          const filename = query.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
+          const outputFile = path.join(
+            outputDir,
+            `${filename}-${Date.now()}.${format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'}`
+          );
+          fs.writeFileSync(outputFile, result);
+
+          const activeSources = sources || 'reddit,x,youtube,hackernews,github,web';
+          resolve(
+            `${result}\n\n---\n📊 Sources searched: ${activeSources}\n💾 Saved: ${outputFile}`
+          );
         }
-
-        const result = stdout.trim();
-        const filename = query.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
-        const outputFile = path.join(outputDir, `${filename}-${Date.now()}.${format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'}`);
-        fs.writeFileSync(outputFile, result);
-
-        const activeSources = sources || 'reddit,x,youtube,hackernews,github,web';
-        resolve(`${result}\n\n---\n📊 Sources searched: ${activeSources}\n💾 Saved: ${outputFile}`);
-      });
+      );
     });
   },
 };

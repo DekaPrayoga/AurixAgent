@@ -181,7 +181,8 @@ AURIX research is not limited to generic web search. The skill tree includes **s
 
 | Research lane | Coverage |
 |---|---|
-| **Social research** | Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the wider web. |
+| **Social research** | Reddit, X, YouTube, TikTok, Hacker News, NodeLoc, Xiaohongshu, Polymarket, GitHub, and the wider web. |
+| **China AI intelligence** | `china_ai_research` crawls public NodeLoc discussions plus available China/social/web sources for recent Chinese AI news and community sentiment. |
 | **Deep research** | Multi-source planning, source gathering, deep-reading, synthesis, citations, and reports. |
 | **Fact / claim checks** | Claim extraction, citation verification, skeptical review, and source-backed verdicts. |
 | **Video research** | Useful when the topic includes YouTube/TikTok/video claims or creator sentiment. |
@@ -376,7 +377,7 @@ Environment variables override config values.
 |---|---|
 | **File & Code** | Read/write/edit/search files, terminal execution, code execution. |
 | **Browser** | CloakBrowser automation, screenshots, snapshots, CAPTCHA/verification solving, sliders, drag/drop. |
-| **Web & Research** | Web search, scraping, social research across Reddit/X/YouTube/TikTok/HN/GitHub/Polymarket, forum research, YouTube helpers, report generation. |
+| **Web & Research** | Web search, scraping, social research across Reddit/X/YouTube/TikTok/HN/NodeLoc/Xiaohongshu/GitHub/Polymarket, China AI research, forum research, YouTube helpers, report generation. |
 | **Git & GitHub** | Git operations, PR/issues, releases, CI status, merge-conflict helpers. |
 | **Office** | PDF, Excel, PowerPoint, email. |
 | **DevOps** | Docker, VPS, deploy, cloud provisioning. |

@@ -48,6 +48,7 @@ import { emailTool } from './tools/Email.js';
 import { cybersecTool } from './tools/Cybersec.js';
 import { researchTool } from './tools/Research.js';
 import { researchForumsTool } from './tools/ResearchForums.js';
+import { chinaAIResearchTool } from './tools/ChinaAIResearch.js';
 import { tradingTool } from './tools/Trading.js';
 import { vpsTool } from './tools/Vps.js';
 import { planningTool } from './tools/Planning.js';
@@ -109,6 +110,7 @@ function createRegistry(features?: string[]): ToolRegistry {
   if (all || f.includes('research')) {
     registry.register(researchTool);
     registry.register(researchForumsTool);
+    registry.register(chinaAIResearchTool);
     registry.register(scraperTool);
     registry.register(youtubeTool);
   }

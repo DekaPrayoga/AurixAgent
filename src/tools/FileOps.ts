@@ -12,18 +12,19 @@ export const readFileTool: Tool = {
     properties: {
       path: { type: 'string', description: 'File path to read' },
       offset: { type: 'number', description: 'Start line (1-based, default: 1)' },
-      limit: { type: 'number', description: 'Max lines to read (default: 200)' },
+      limit: { type: 'number', description: 'Max lines to read (default: full file)' },
     },
     required: ['path'],
   },
   async execute(args) {
     const filePath = path.resolve(args.path as string);
-    const offset = ((args.offset as number) || 1) - 1;
-    const limit = (args.limit as number) || 200;
+    const offset = Math.max(0, ((args.offset as number) || 1) - 1);
 
     if (!fs.existsSync(filePath)) return `File not found: ${filePath}`;
     const content = fs.readFileSync(filePath, 'utf-8');
     const lines = content.split('\n');
+    const rawLimit = Number(args.limit || 0);
+    const limit = rawLimit > 0 ? rawLimit : Math.max(0, lines.length - offset);
     const slice = lines.slice(offset, offset + limit);
     return slice.map((l, i) => `${offset + i + 1} | ${l}`).join('\n');
   },
@@ -45,8 +46,10 @@ export const writeFileTool: Tool = {
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     getCheckpointEngine()?.trackBeforeEdit(filePath);
-    fs.writeFileSync(filePath, args.content as string, 'utf-8');
-    return `Written ${(args.content as string).length} bytes to ${filePath}`;
+    const content = args.content as string;
+    fs.writeFileSync(filePath, content, 'utf-8');
+    const lineCount = content.length === 0 ? 0 : content.replace(/\n$/, '').split('\n').length;
+    return `Written ${lineCount} line${lineCount === 1 ? '' : 's'} to ${filePath}`;
   },
 };
 

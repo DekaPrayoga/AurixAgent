@@ -10,6 +10,30 @@ interface OutputPanelProps {
   onClose: () => void;
 }
 
+function toolColor(name?: string): string {
+  const tool = (name || '').toLowerCase();
+  if (tool.includes('read') || tool.includes('search') || tool.includes('grep')) return theme.info;
+  if (tool.includes('write') || tool.includes('edit') || tool.includes('delete')) return theme.warn;
+  if (tool.includes('terminal') || tool.includes('bash') || tool.includes('code_exec'))
+    return theme.secondary;
+  if (tool.includes('browser') || tool.includes('captcha')) return theme.accent;
+  if (tool.includes('research') || tool.includes('web')) return theme.primary;
+  if (tool.includes('git') || tool.includes('github')) return theme.ok;
+  if (tool.includes('ask')) return theme.thinking;
+  return theme.tool;
+}
+
+function outputLineColor(line: string, fallback: string): string {
+  const lower = line.toLowerCase();
+  if (/\b(error|failed|exception|traceback|fatal|denied)\b/.test(lower)) return theme.error;
+  if (/\b(warn|warning|caution|skipped)\b/.test(lower)) return theme.warn;
+  if (/\b(success|done|written|deleted|created|updated|passed|built|published)\b/.test(lower))
+    return theme.ok;
+  if (/^(\s*(>|\$|npm|bun|node|python|git|pm2)\b)|\b(file|saved|path|output)\b/.test(lower))
+    return theme.info;
+  return fallback;
+}
+
 export function OutputPanel({ messages, onClose }: OutputPanelProps) {
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -75,17 +99,29 @@ export function OutputPanel({ messages, onClose }: OutputPanelProps) {
         {visible.length === 0 ? (
           <text attributes={TextAttributes.DIM}>No tool outputs yet.</text>
         ) : (
-          visible.map((msg, i) => (
-            <box key={i} flexDirection="column" marginBottom={1}>
-              <text fg={theme.tool} attributes={TextAttributes.BOLD}>
-                {msg.toolName || 'tool'}
-              </text>
-              <text>{safeDisplayText(msg.content).slice(0, 500)}</text>
-              {safeDisplayText(msg.content).length > 500 && (
-                <text attributes={TextAttributes.DIM}>... (truncated)</text>
-              )}
-            </box>
-          ))
+          visible.map((msg, i) => {
+            const color = toolColor(msg.toolName);
+            const content = safeDisplayText(msg.content);
+            const preview = content.slice(0, 500);
+            return (
+              <box key={i} flexDirection="column" marginBottom={1}>
+                <text fg={color} attributes={TextAttributes.BOLD}>
+                  {msg.toolName || 'tool'}
+                </text>
+                {preview.split('\n').map((line, lineIdx) => (
+                  <text
+                    key={lineIdx}
+                    fg={outputLineColor(line, lineIdx === 0 ? color : theme.textMuted)}
+                  >
+                    {line}
+                  </text>
+                ))}
+                {content.length > 500 && (
+                  <text attributes={TextAttributes.DIM}>... (truncated)</text>
+                )}
+              </box>
+            );
+          })
         )}
       </box>
       <box flexDirection="row" justifyContent="center" paddingX={1}>

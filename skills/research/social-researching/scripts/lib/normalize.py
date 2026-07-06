@@ -52,6 +52,7 @@ def normalize_source_items(
         "digg": _normalize_digg,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
+        "nodeloc": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
     }

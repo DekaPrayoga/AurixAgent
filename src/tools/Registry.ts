@@ -165,6 +165,7 @@ function classifyRisk(
     name.includes('vps') ||
     name.includes('browser') ||
     name.includes('web_search') ||
+    name.includes('research') ||
     name.includes('scraper')
   ) {
     return 'network';

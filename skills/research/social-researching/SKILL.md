@@ -1,7 +1,7 @@
 ---
 name: social-researching
 version: "3.3.2"
-description: "Deep research what people actually say about any topic across social media. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web."
+description: "Deep research what people actually say about any topic across social media. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, NodeLoc, Xiaohongshu, Polymarket, GitHub, and the web."
 argument-hint: 'social-researching nvidia earnings reaction | social-researching AI video tools | social-researching what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/mvanhorn/social-researching-skill

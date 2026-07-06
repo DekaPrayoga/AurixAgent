@@ -13,6 +13,18 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   private polling: boolean = false;
   private _polling: boolean = false;
   private offset: number = 0;
+  private pendingText = new Map<
+    string,
+    { msg: any; text: string; timer: ReturnType<typeof setTimeout> }
+  >();
+  private pendingPhoto = new Map<
+    string,
+    {
+      msg: any;
+      attachments: { type: string; url?: string; filename?: string }[];
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   constructor(token: string) {
     super();
@@ -45,12 +57,21 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   async disconnect(): Promise<void> {
     this.polling = false;
     this._polling = false;
+    for (const pending of this.pendingText.values()) clearTimeout(pending.timer);
+    for (const pending of this.pendingPhoto.values()) clearTimeout(pending.timer);
+    this.pendingText.clear();
+    this.pendingPhoto.clear();
     try {
       await this.api('deleteWebhook', { drop_pending_updates: false });
     } catch {}
   }
 
-  async send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void> {
+  async send(
+    content: string,
+    channelId: string,
+    replyTo?: string,
+    options?: any
+  ): Promise<{ messageId?: string } | void> {
     const params: Record<string, any> = {
       chat_id: channelId,
       text: content,
@@ -60,21 +81,28 @@ export class TelegramPlatform extends EventEmitter implements Platform {
       params.reply_to_message_id = replyTo;
     }
 
-    if (options && options.reply_markup) {
-      params.reply_markup = options.reply_markup;
+    if (options) {
+      if (options.reply_markup) params.reply_markup = options.reply_markup;
+      if (options.parse_mode) params.parse_mode = options.parse_mode;
+      if (options.disable_web_page_preview !== undefined) {
+        params.disable_web_page_preview = options.disable_web_page_preview;
+      }
     }
 
     try {
-      await this.api('sendMessage', params);
+      const result = await this.api('sendMessage', params);
+      return { messageId: result?.message_id ? String(result.message_id) : undefined };
     } catch (e: any) {
       if (e.message?.includes('parse')) {
-        params.text = escapeMarkdown(content);
+        delete params.parse_mode;
+        params.text = stripTelegramHtml(content);
         try {
-          await this.api('sendMessage', params);
+          const result = await this.api('sendMessage', params);
+          return { messageId: result?.message_id ? String(result.message_id) : undefined };
         } catch (e2: any) {
-          delete params.parse_mode;
           params.text = content;
-          await this.api('sendMessage', params);
+          const result = await this.api('sendMessage', params);
+          return { messageId: result?.message_id ? String(result.message_id) : undefined };
         }
       } else {
         console.error(`  Telegram send error: ${e.message}`);
@@ -82,7 +110,54 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async sendFile(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void> {
+  async edit(content: string, channelId: string, messageId: string, options?: any): Promise<void> {
+    const params: Record<string, any> = {
+      chat_id: channelId,
+      message_id: messageId,
+      text: content,
+    };
+    if (options?.parse_mode) params.parse_mode = options.parse_mode;
+    if (options?.disable_web_page_preview !== undefined) {
+      params.disable_web_page_preview = options.disable_web_page_preview;
+    }
+    try {
+      await this.api('editMessageText', params);
+    } catch (e: any) {
+      const msg = String(e.message || '').toLowerCase();
+      if (msg.includes('not modified')) return;
+      if (msg.includes('parse')) {
+        delete params.parse_mode;
+        params.text = stripTelegramHtml(content);
+        try {
+          await this.api('editMessageText', params);
+        } catch {}
+      }
+    }
+  }
+
+  async react(channelId: string, messageId: string, emoji: string): Promise<void> {
+    try {
+      await this.api('setMessageReaction', {
+        chat_id: channelId,
+        message_id: messageId,
+        reaction: [{ type: 'emoji', emoji }],
+        is_big: false,
+      });
+    } catch {}
+  }
+
+  async typing(channelId: string): Promise<void> {
+    try {
+      await this.api('sendChatAction', { chat_id: channelId, action: 'typing' });
+    } catch {}
+  }
+
+  async sendFile(
+    filePath: string,
+    channelId: string,
+    caption?: string,
+    replyTo?: string
+  ): Promise<void> {
     if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
 
     const ext = path.extname(filePath).toLowerCase().slice(1);
@@ -115,7 +190,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     const url = `https://api.telegram.org/bot${this.token}/${method}`;
     const res = await fetch(url, { method: 'POST', body: form });
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
 
     if (!data.ok) {
       throw new Error(data.description || `Telegram ${method} failed`);
@@ -176,7 +251,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
             const cb = update.callback_query;
             try {
               await this.api('answerCallbackQuery', { callback_query_id: cb.id });
-            } catch(e) {}
+            } catch (e) {}
 
             this.emit('message', {
               platform: 'telegram',
@@ -202,11 +277,15 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           if (msg.forward_from) {
             forwardedFrom = msg.forward_from.username || msg.forward_from.first_name || 'telegram';
           } else if (msg.forward_from_chat) {
-            forwardedFrom = msg.forward_from_chat.username || msg.forward_from_chat.title || 'telegram';
+            forwardedFrom =
+              msg.forward_from_chat.username || msg.forward_from_chat.title || 'telegram';
           } else if (msg.forward_sender_name) {
             forwardedFrom = msg.forward_sender_name;
           } else if (msg.forward_origin) {
-            forwardedFrom = msg.forward_origin.chat?.username || msg.forward_origin.sender_user?.first_name || 'telegram';
+            forwardedFrom =
+              msg.forward_origin.chat?.username ||
+              msg.forward_origin.sender_user?.first_name ||
+              'telegram';
           }
 
           const attachments: { type: string; url?: string; filename?: string }[] = [];
@@ -220,33 +299,105 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           } else if (hasImageDoc) {
             const filePath = await this.downloadTelegramFile(msg.document.file_id);
             if (filePath) {
-              attachments.push({ type: 'image', url: filePath, filename: msg.document.file_name || path.basename(filePath) });
+              attachments.push({
+                type: 'image',
+                url: filePath,
+                filename: msg.document.file_name || path.basename(filePath),
+              });
             }
           }
 
-          this.emit('message', {
-            platform: 'telegram',
-            authorId: String(msg.from?.id || msg.chat.id),
-            authorName: msg.from?.first_name || msg.from?.username || 'Unknown',
-            channelId: String(msg.chat.id),
-            content: text || (attachments.length ? 'Check this image' : ''),
-            replyTo: String(msg.message_id),
-            forwardedFrom,
-            attachments: attachments.length > 0 ? attachments : undefined,
-          } as IncomingMessage);
+          this.enqueueMessage(msg, text, forwardedFrom, attachments);
         }
       } catch (e: any) {
         if (e.message?.includes('Conflict')) {
           // Another bot instance is polling - wait and retry
           console.error(`  Telegram poll conflict - another instance polling. Waiting 10s...`);
-          await new Promise(r => setTimeout(r, 10000));
+          await new Promise((r) => setTimeout(r, 10000));
         } else {
           console.error(`  Telegram poll error: ${e.message}`);
-          await new Promise(r => setTimeout(r, 5000));
+          await new Promise((r) => setTimeout(r, 5000));
         }
       }
     }
     this._polling = false;
+  }
+
+  private emitIncoming(
+    msg: any,
+    text: string,
+    forwardedFrom?: string,
+    attachments?: { type: string; url?: string; filename?: string }[]
+  ): void {
+    this.emit('message', {
+      platform: 'telegram',
+      authorId: String(msg.from?.id || msg.chat.id),
+      authorName: msg.from?.first_name || msg.from?.username || 'Unknown',
+      channelId: String(msg.chat.id),
+      content: text || (attachments?.length ? 'Check this image' : ''),
+      replyTo: String(msg.message_id),
+      forwardedFrom,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    } as IncomingMessage);
+  }
+
+  private enqueueMessage(
+    msg: any,
+    text: string,
+    forwardedFrom?: string,
+    attachments: { type: string; url?: string; filename?: string }[] = []
+  ): void {
+    const key = `${msg.chat.id}:${msg.from?.id || msg.chat.id}`;
+    if (attachments.length > 0) {
+      const existing = this.pendingPhoto.get(key);
+      if (existing) {
+        clearTimeout(existing.timer);
+        existing.attachments.push(...attachments);
+        existing.msg = msg;
+        existing.timer = setTimeout(() => this.flushPhotoBatch(key), 800);
+        return;
+      }
+      this.pendingPhoto.set(key, {
+        msg,
+        attachments: [...attachments],
+        timer: setTimeout(() => this.flushPhotoBatch(key), 800),
+      });
+      return;
+    }
+
+    const delay = text.length <= 320 ? 180 : text.length <= 1024 ? 240 : 350;
+    const existing = this.pendingText.get(key);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.text = `${existing.text}\n${text}`.trim();
+      existing.msg = msg;
+      existing.timer = setTimeout(() => this.flushTextBatch(key), delay);
+      return;
+    }
+    this.pendingText.set(key, {
+      msg,
+      text,
+      timer: setTimeout(() => this.flushTextBatch(key), delay),
+    });
+  }
+
+  private flushTextBatch(key: string): void {
+    const pending = this.pendingText.get(key);
+    if (!pending) return;
+    this.pendingText.delete(key);
+    this.emitIncoming(pending.msg, pending.text);
+  }
+
+  private flushPhotoBatch(key: string): void {
+    const pending = this.pendingPhoto.get(key);
+    if (!pending) return;
+    this.pendingPhoto.delete(key);
+    this.emitIncoming(
+      pending.msg,
+      pending.msg.caption || 'Check these images',
+      undefined,
+      pending.attachments
+    );
   }
 
   private async downloadTelegramFile(fileId: string): Promise<string | null> {
@@ -276,7 +427,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
       body: JSON.stringify(params),
     });
 
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     if (!data.ok) {
       throw new Error(data.description || 'Telegram API error');
     }
@@ -285,6 +436,11 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   }
 }
 
-function escapeMarkdown(text: string): string {
-  return text.replace(/[_*[\]()~`>#+=|{}.!-]/g, '\\$&');
+function stripTelegramHtml(text: string): string {
+  return text
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote)[^>]*>/gi, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }

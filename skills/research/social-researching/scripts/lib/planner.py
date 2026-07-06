@@ -65,6 +65,7 @@ SOURCE_CAPABILITIES = {
     "tiktok": {"video", "video_shortform", "social"},
     "instagram": {"video", "video_shortform", "social"},
     "hackernews": {"discussion", "link"},
+    "nodeloc": {"discussion", "social", "forum", "china", "developer", "news"},
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
