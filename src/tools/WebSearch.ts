@@ -4,7 +4,7 @@ import type { Tool } from './Registry.js';
 export const webSearchTool: Tool = {
   name: 'web_search',
   description:
-    'Search the web. Configurable engine — DDG (free, default), Serper (Google), or Tavily (AI-optimized). Set in: aurix setup → Search Engine.',
+    'Search the web. Configurable engine — DDG (free, default), SearXNG, Serper (Google), or Tavily (AI-optimized). Set in: aurix setup → Search Engine.',
   parameters: {
     type: 'object',
     properties: {
@@ -30,6 +30,7 @@ export const webSearchTool: Tool = {
       return apiKey
         ? tavilySearch(query, maxResults, apiKey)
         : noKey('Tavily', 'https://tavily.com', 'TAVILY_API_KEY');
+    if (engine === 'searxng') return searxngSearch(query, maxResults, config.searchBaseUrl);
     return duckduckgoSearch(query, maxResults);
   },
 };
@@ -137,6 +138,49 @@ async function duckduckgoSearch(query: string, maxResults: number): Promise<stri
   return results.length > 0
     ? results.join('\n\n')
     : `No results for "${query}".\nTry: different keywords, browser tool, or set up Serper/Tavily API (aurix setup → Search Engine).`;
+}
+
+// ─── SearXNG (self-hosted or public instances, no key) ───────────────────────
+
+async function searxngSearch(query: string, maxResults: number, baseUrl?: string): Promise<string> {
+  const instances = baseUrl
+    ? [baseUrl]
+    : [
+        'https://searx.be',
+        'https://search.sapti.me',
+        'https://searxng.site',
+        'https://priv.au',
+        'https://search.hbubli.cc',
+      ];
+
+  for (const raw of instances) {
+    const instance = raw.replace(/\/+$/, '');
+    try {
+      const params = new URLSearchParams({ q: query, format: 'json' });
+      const r = await fetch(`${instance}/search?${params}`, {
+        headers: {
+          'User-Agent': 'AurixAgent/3.0',
+          Accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) continue;
+      const d = (await r.json()) as any;
+      const results = Array.isArray(d.results) ? d.results : [];
+      if (!results.length) continue;
+      return results
+        .slice(0, maxResults)
+        .map(
+          (x: any, i: number) =>
+            `${i + 1}. ${x.title || 'Untitled'}\n   ${x.url || ''}\n   ${(x.content || x.snippet || '').slice(0, 250)}`
+        )
+        .join('\n\n');
+    } catch {
+      continue;
+    }
+  }
+
+  return `No SearXNG results for "${query}".${baseUrl ? `\nCheck searchBaseUrl: ${baseUrl}` : ''}`;
 }
 
 // ─── Serper.dev (Google results) ────────────────────────────────────────────

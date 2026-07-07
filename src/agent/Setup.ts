@@ -114,7 +114,8 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   // Step 11: Web search engine
   const searchEngine = await stepSearchEngine(
     existingConfig.searchEngine,
-    existingConfig.searchApiKey
+    existingConfig.searchApiKey,
+    existingConfig.searchBaseUrl
   );
 
   const resolvedProvider =
@@ -153,6 +154,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     groqApiKey: captchaAudio.groqApiKey,
     searchEngine: searchEngine.engine,
     searchApiKey: searchEngine.apiKey || '',
+    searchBaseUrl: searchEngine.baseUrl,
   };
 
   ensureConfigDir();
@@ -730,10 +732,12 @@ async function stepCaptcha(
 
 async function stepSearchEngine(
   existingEngine?: AurixConfig['searchEngine'],
-  existingApiKey?: string
+  existingApiKey?: string,
+  existingBaseUrl?: string
 ): Promise<{
   engine: AurixConfig['searchEngine'];
   apiKey?: string;
+  baseUrl?: string;
 }> {
   const selected = await drawSelector({
     title: 'Web Search Engine',
@@ -742,6 +746,11 @@ async function stepSearchEngine(
         id: 'ddg',
         label: 'DuckDuckGo (Default)',
         desc: 'Free, no API key — instant answers + web results',
+      },
+      {
+        id: 'searxng',
+        label: 'SearXNG',
+        desc: 'Free metasearch; use public fallback or your own instance',
       },
       {
         id: 'serper',
@@ -763,7 +772,7 @@ async function stepSearchEngine(
   if (!selected || selected === '__skip__' || selected === '__back__') {
     if (existingEngine) {
       drawInfo('Keeping existing search settings.\n');
-      return { engine: existingEngine, apiKey: existingApiKey };
+      return { engine: existingEngine, apiKey: existingApiKey, baseUrl: existingBaseUrl };
     }
     drawInfo('Defaulting to DuckDuckGo (free, no API key).\n');
     return { engine: 'ddg' };
@@ -772,6 +781,22 @@ async function stepSearchEngine(
   if (selected === 'ddg') {
     drawInfo('DuckDuckGo is free and needs no API key.\n');
     return { engine: 'ddg' };
+  }
+
+  if (selected === 'searxng') {
+    const instance = await drawInputScreen({
+      title: 'SearXNG Instance (Optional)',
+      hint: 'Leave blank to use built-in public fallbacks.\nExample: https://search.example.com or http://localhost:8080',
+      label: 'Base URL:',
+      masked: false,
+    });
+    if (instance && instance !== '__back__') {
+      return { engine: 'searxng', baseUrl: instance.replace(/\/+$/, '') };
+    }
+    return {
+      engine: 'searxng',
+      baseUrl: existingEngine === 'searxng' ? existingBaseUrl : undefined,
+    };
   }
 
   const name = selected === 'serper' ? 'Serper.dev' : 'Tavily';
@@ -795,7 +820,7 @@ async function stepSearchEngine(
 
   if (existingEngine === selected && existingApiKey) {
     drawInfo('No new key provided. Keeping existing search API key.\n');
-    return { engine: existingEngine, apiKey: existingApiKey };
+    return { engine: existingEngine, apiKey: existingApiKey, baseUrl: existingBaseUrl };
   }
 
   drawInfo('No key provided. Defaulting to DDG.\n');
