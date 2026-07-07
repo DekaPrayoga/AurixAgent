@@ -46,18 +46,6 @@ function codeBlock(lang: string, code: string, markdown = true): string {
   return `\`\`\`${lang}\n${code}\n\`\`\``;
 }
 
-function redactSensitiveText(text: string): string {
-  return text
-    .replace(/(["']?Authorization["']?\s*:\s*["']?Bearer\s+)[^\s'"`]+/gi, '$1[REDACTED]')
-    .replace(/(["']?Authorization["']?\s*:\s*["']?)[^\n'"`]+/gi, '$1[REDACTED]')
-    .replace(/\bBearer\s+[^\s'"`]+/gi, 'Bearer [REDACTED]')
-    .replace(/sk-[A-Za-z0-9._:-]{16,}/g, '[REDACTED_KEY]')
-    .replace(
-      /\b(api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|secret|password|cookie)\b(["']?\s*[:=]\s*["']?)[^,\s"'}]+/gi,
-      '$1$2[REDACTED]'
-    );
-}
-
 export function formatDuration(durationMs?: number): string {
   if (durationMs === undefined || durationMs < 0 || !Number.isFinite(durationMs)) return '';
   if (durationMs < 1000) return `${durationMs}ms`;
@@ -68,7 +56,7 @@ export function formatDuration(durationMs?: number): string {
 }
 
 export function truncateLines(text: string, maxLines = 30, maxLineLength = 140): string {
-  const lines = redactSensitiveText(safeDisplayText(text))
+  const lines = safeDisplayText(text)
     .split('\n')
     .map((line) => (line.length > maxLineLength ? line.slice(0, maxLineLength - 1) + '…' : line));
   if (lines.length <= maxLines) return lines.join('\n');
@@ -98,9 +86,9 @@ export function renderToolStart(
   const name = input.toolName || 'tool';
   const lower = name.toLowerCase();
   const file = args.file_path || args.path;
-  const query = args.query ? redactSensitiveText(String(args.query)) : '';
-  const url = args.url ? redactSensitiveText(String(args.url)) : '';
-  const target = args.target ? redactSensitiveText(String(args.target)) : '';
+  const query = args.query ? String(args.query) : '';
+  const url = args.url ? String(args.url) : '';
+  const target = args.target ? String(args.target) : '';
   const detail = query || url || target;
 
   if (lower === 'terminal' || lower === 'bash' || lower === 'code_exec') {
@@ -113,8 +101,7 @@ export function renderToolStart(
   if (lower === 'spawn_agent') {
     const role = args.role || args.agent || args.specialist || args.name || 'specialist';
     const task = args.task || args.prompt || query;
-    const safeTask = task ? redactSensitiveText(String(task)).slice(0, 160) : '';
-    return `🤖 ${bold('Spawning Agent', markdown)}\n${redactSensitiveText(String(role))}${safeTask ? `\n${safeTask}` : ''}`;
+    return `🤖 ${bold('Spawning Agent', markdown)}\n${String(role)}${task ? `\n${String(task).slice(0, 160)}` : ''}`;
   }
 
   if (lower === 'mcp_manage') {
@@ -147,8 +134,8 @@ export function renderToolStart(
   if (lower === 'browser') {
     const action = args.action ? String(args.action) : 'action';
     if (action === 'solve-captcha') return `🧩 ${bold('Solving Captcha', markdown)}`;
-    const browserTarget = args.target ? ` → ${redactSensitiveText(String(args.target)).slice(0, 80)}` : '';
-    const value = args.value ? `\n${redactSensitiveText(String(args.value)).slice(0, 120)}` : '';
+    const browserTarget = args.target ? ` → ${String(args.target).slice(0, 80)}` : '';
+    const value = args.value ? `\n${String(args.value).slice(0, 120)}` : '';
     return `🧭 ${bold(`Browser ${action}`, markdown)}${browserTarget}${value}`;
   }
   if (lower === 'read_file' || lower === 'read_archive') {
