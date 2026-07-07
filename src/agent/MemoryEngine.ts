@@ -14,6 +14,7 @@ const MEMORIES_DIR = path.join(os.homedir(), '.aurix', 'memories');
 const SUMMARY_FILE = path.join(MEMORIES_DIR, 'memory_summary.md');
 const RAW_FILE = path.join(MEMORIES_DIR, 'raw_memories.md');
 const MEMORY_FILE = path.join(MEMORIES_DIR, 'MEMORY.md');
+const USER_FILE = path.join(MEMORIES_DIR, 'USER.md');
 const SESSIONS_DIR = path.join(MEMORIES_DIR, 'sessions');
 
 const CREDENTIAL_PATTERNS = [
@@ -26,6 +27,9 @@ const CREDENTIAL_PATTERNS = [
 ];
 
 const MAX_SUMMARY_TOKENS = 2000;
+const MEMORY_CHAR_LIMIT = 2200;
+const USER_CHAR_LIMIT = 1375;
+const ENTRY_DELIMITER = '\n§\n';
 const PURGE_DAYS = 30;
 
 function ensureDirs(): void {
@@ -68,6 +72,110 @@ function trimToTokenBudget(text: string, maxTokens: number): string {
   return result + '\n[... trimmed to fit context window]';
 }
 
+function readEntries(file: string): string[] {
+  if (!fs.existsSync(file)) return [];
+  const content = fs.readFileSync(file, 'utf-8');
+  if (
+    !content.includes(ENTRY_DELIMITER) &&
+    (content.length > 5000 ||
+      /Session learnings|Tools used:|Files modified:|Errors encountered:/i.test(content))
+  ) {
+    return [];
+  }
+
+  return content
+    .split(ENTRY_DELIMITER)
+    .map((entry) => entry.trim())
+    .filter((entry) => Boolean(entry) && !isMemoryNoise(entry));
+}
+
+function renderEntries(title: string, entries: string[], limit: number): string {
+  if (entries.length === 0) return '';
+  const content = entries.join(ENTRY_DELIMITER);
+  const used = content.length;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  return `══════════════════════════════════════════════\n${title} [${pct}% — ${used}/${limit} chars]\n══════════════════════════════════════════════\n${content}`;
+}
+
+function withinCharBudget(entries: string[], next: string, limit: number): boolean {
+  const combined = [...entries, next].join(ENTRY_DELIMITER);
+  return combined.length <= limit;
+}
+
+function appendEntry(file: string, entry: string, limit: number): boolean {
+  const clean = stripCredentials(entry).trim();
+  if (!clean || clean.length > Math.floor(limit * 0.7)) return false;
+  const entries = readEntries(file);
+  if (entries.includes(clean)) return true;
+  if (!withinCharBudget(entries, clean, limit)) return false;
+  fs.writeFileSync(file, [...entries, clean].join(ENTRY_DELIMITER), 'utf-8');
+  return true;
+}
+
+function isMemoryNoise(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    !text.trim() ||
+    text.length > 320 ||
+    lower.includes('[system hint]') ||
+    lower.includes('[critical system]') ||
+    lower.includes('tools used:') ||
+    lower.includes('files modified:') ||
+    lower.includes('errors encountered:') ||
+    lower.includes('error executing') ||
+    lower.includes('traceback') ||
+    lower.includes('syntaxerror') ||
+    lower.includes('typeerror') ||
+    lower.includes('<persisted-output>') ||
+    lower.includes('<body') ||
+    lower.includes('screenshot saved') ||
+    lower.includes('recaptcha-token') ||
+    /^[=\-\s]+$/.test(text)
+  );
+}
+
+function normalizeFact(text: string): string | null {
+  const clean = stripCredentials(text).replace(/\s+/g, ' ').trim();
+  if (isMemoryNoise(clean)) return null;
+  return clean;
+}
+
+function extractCuratedFromLegacySummary(summary: string): { user: string[]; memory: string[] } {
+  const user: string[] = [];
+  const memory: string[] = [];
+  for (const raw of summary.split('\n')) {
+    const line = raw.trim();
+    let kind = 'memory';
+    let value = line;
+
+    const tagged = line.match(
+      /^[-•]?\s*\[(preference|correction|instruction|identity|memory)\]\s*(.+)$/i
+    );
+    if (tagged) {
+      kind = tagged[1].toLowerCase();
+      value = tagged[2];
+    } else {
+      const bullet = line.match(/^[-•]\s+(.+)$/);
+      if (!bullet) continue;
+      value = bullet[1];
+    }
+
+    const fact = normalizeFact(value);
+    if (!fact) continue;
+    const entry = kind === 'correction' ? `Correction from user: ${fact}` : fact;
+    const bucket =
+      kind === 'memory'
+        ? memory
+        : /user|prefer|gw |gue |saya |aku |jangan|gausah|ga usah|biasain|my name|call me/i.test(
+              fact
+            )
+          ? user
+          : memory;
+    if (!bucket.includes(entry)) bucket.push(entry);
+  }
+  return { user: user.slice(0, 6), memory: memory.slice(0, 8) };
+}
+
 export class MemoryEngine {
   constructor(private provider?: Provider) {}
 
@@ -77,9 +185,32 @@ export class MemoryEngine {
 
   loadSummary(): string {
     ensureDirs();
+    const userEntries = readEntries(USER_FILE);
+    const memoryEntries = readEntries(MEMORY_FILE);
+
+    if (userEntries.length > 0 || memoryEntries.length > 0) {
+      return trimToTokenBudget(
+        [
+          renderEntries('USER PROFILE (who the user is)', userEntries, USER_CHAR_LIMIT),
+          renderEntries('MEMORY (durable notes)', memoryEntries, MEMORY_CHAR_LIMIT),
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
+        MAX_SUMMARY_TOKENS
+      );
+    }
+
     if (!fs.existsSync(SUMMARY_FILE)) return '';
-    const content = fs.readFileSync(SUMMARY_FILE, 'utf-8');
-    return trimToTokenBudget(content, MAX_SUMMARY_TOKENS);
+    const legacy = extractCuratedFromLegacySummary(fs.readFileSync(SUMMARY_FILE, 'utf-8'));
+    return trimToTokenBudget(
+      [
+        renderEntries('USER PROFILE (curated from legacy memory)', legacy.user, USER_CHAR_LIMIT),
+        renderEntries('MEMORY (curated from legacy memory)', legacy.memory, MEMORY_CHAR_LIMIT),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      MAX_SUMMARY_TOKENS
+    );
   }
 
   loadFullMemory(): string {
@@ -166,20 +297,31 @@ Examples:
     const sessionFile = path.join(SESSIONS_DIR, `${id}.json`);
 
     const serializable = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
         role: m.role,
         content: stripCredentials(m.content),
         toolCallId: m.toolCallId,
         toolCalls: m.toolCalls,
       }));
 
-    fs.writeFileSync(sessionFile, JSON.stringify({ id, savedAt: new Date().toISOString(), messages: serializable }, null, 2));
+    fs.writeFileSync(
+      sessionFile,
+      JSON.stringify({ id, savedAt: new Date().toISOString(), messages: serializable }, null, 2)
+    );
 
     const facts = this.extractNotableFacts(messages);
     if (facts.length > 0) {
       const memoryFile = path.join(SESSIONS_DIR, `${id}.memory.json`);
-      fs.writeFileSync(memoryFile, JSON.stringify({ sessionId: id, updatedAt: new Date().toISOString(), facts }, null, 2));
+      fs.writeFileSync(
+        memoryFile,
+        JSON.stringify({ sessionId: id, updatedAt: new Date().toISOString(), facts }, null, 2)
+      );
+      for (const fact of facts) {
+        const target = /^\[(identity|preference|correction)\]/.test(fact) ? USER_FILE : MEMORY_FILE;
+        const limit = target === USER_FILE ? USER_CHAR_LIMIT : MEMORY_CHAR_LIMIT;
+        appendEntry(target, fact.replace(/^\[[^\]]+\]\s*/, ''), limit);
+      }
     }
 
     return id;
@@ -188,13 +330,15 @@ Examples:
   listSessions(): { id: string; savedAt: string; messageCount: number; preview: string }[] {
     try {
       ensureDirs();
-      const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.json') && !f.endsWith('.memory.json'));
+      const files = fs
+        .readdirSync(SESSIONS_DIR)
+        .filter((f) => f.endsWith('.json') && !f.endsWith('.memory.json'));
       const out: { id: string; savedAt: string; messageCount: number; preview: string }[] = [];
       for (const file of files) {
         try {
           const raw = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8'));
           const msgs: any[] = Array.isArray(raw.messages) ? raw.messages : [];
-          const firstUser = msgs.find(m => m.role === 'user');
+          const firstUser = msgs.find((m) => m.role === 'user');
           out.push({
             id: raw.id || file.replace(/\.json$/, ''),
             savedAt: raw.savedAt || '',
@@ -216,7 +360,7 @@ Examples:
       const exact = path.join(SESSIONS_DIR, `${sessionId}.${ext}`);
       if (fs.existsSync(exact)) return exact;
 
-      const files = fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith(`.${ext}`));
+      const files = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(`.${ext}`));
       for (const f of files) {
         const fp = path.join(SESSIONS_DIR, f);
         const basename = path.basename(f, `.${ext}`);
@@ -264,57 +408,35 @@ Examples:
     const facts: string[] = [];
 
     for (const msg of messages) {
-      if (msg.role === 'user') {
-        const lower = msg.content.toLowerCase();
-        if (/^(i am|i'm|my name is|call me|prefer|always|never|i like|i use|i work)/i.test(lower)) {
-          facts.push(`[preference] ${stripCredentials(msg.content.slice(0, 300))}`);
-        }
-        if (/remember|keep in mind|note that/i.test(lower)) {
-          facts.push(`[instruction] ${stripCredentials(msg.content.slice(0, 300))}`);
-        }
-        if (/jangan|don't|ga usah|gausa|stop doing|wrong|salah|bukan gitu/i.test(lower)) {
-          facts.push(`[correction] ${stripCredentials(msg.content.slice(0, 300))}`);
-        }
-        if (/pake|gunakan|use .* instead|better to|lebih baik/i.test(lower)) {
-          facts.push(`[preference] ${stripCredentials(msg.content.slice(0, 300))}`);
-        }
-      }
+      if (msg.role !== 'user' || !msg.content) continue;
+      const lower = msg.content.toLowerCase();
+      const clean = normalizeFact(msg.content);
+      if (!clean) continue;
 
-      if (msg.role === 'tool' && msg.content) {
-        const content = msg.content;
-        if (content.includes('Error:') || content.includes('error TS')) {
-          const errorLine = content.split('\n').find(l => l.includes('Error')) || '';
-          if (errorLine.length > 10) {
-            facts.push(`[error-pattern] ${stripCredentials(errorLine.slice(0, 200))}`);
-          }
-        }
-        if (content.includes('Build successful') || content.includes('exit: 0') || content.includes('All tests passed')) {
-          facts.push(`[build-success] ${stripCredentials(content.slice(0, 150))}`);
-        }
-      }
+      const isExplicitMemory = /remember|keep in mind|note that|catat|inget|ingat/i.test(lower);
+      const isCorrection =
+        /jangan|don't|ga usah|gausa|stop doing|wrong|salah|bukan gitu|bukan .*woi/i.test(lower);
+      const isPreference =
+        /\b(i prefer|prefer|i like|i use|i work|gw suka|gue suka|pake|gunakan|lebih baik|biasain)\b/i.test(
+          lower
+        );
+      const isIdentity = /\b(i am|i'm|my name is|call me|nama saya|panggil saya)\b/i.test(lower);
 
-      if (msg.role === 'assistant' && msg.content) {
-        const lower = msg.content.toLowerCase();
-        if (lower.includes('the fix is') || lower.includes('the solution') || lower.includes('resolved by')) {
-          const sentence = msg.content.split(/[.!]\s/).find(s => /fix|solution|resolved/i.test(s)) || '';
-          if (sentence.length > 20) {
-            facts.push(`[fix] ${stripCredentials(sentence.slice(0, 300))}`);
-          }
-        }
-        if (msg.toolCalls?.length) {
-          for (const tc of msg.toolCalls) {
-            if (tc.name === 'file_edit' || tc.name === 'write_file') {
-              const fp = (tc.arguments.file_path || tc.arguments.path || '') as string;
-              if (fp) facts.push(`[file-edited] ${fp}`);
-            }
-          }
-        }
+      if (isExplicitMemory || isCorrection || isPreference || isIdentity) {
+        const label = isCorrection
+          ? 'correction'
+          : isIdentity
+            ? 'identity'
+            : isExplicitMemory && !isPreference
+              ? 'memory'
+              : 'preference';
+        facts.push(`[${label}] ${clean}`);
       }
     }
 
     const seen = new Set<string>();
-    return facts.filter(f => {
-      const key = f.slice(0, 80);
+    return facts.filter((f) => {
+      const key = f.toLowerCase().slice(0, 120);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -322,45 +444,12 @@ Examples:
   }
 
   extractSessionLearnings(messages: Message[]): string {
-    const entries: string[] = [];
-    const filesEdited: string[] = [];
-    const errorsEncountered: string[] = [];
-    const toolsUsed = new Set<string>();
-
-    for (const msg of messages) {
-      if (msg.role === 'assistant' && msg.toolCalls) {
-        for (const tc of msg.toolCalls) {
-          toolsUsed.add(tc.name);
-          if ((tc.name === 'file_edit' || tc.name === 'write_file') && (tc.arguments.file_path || tc.arguments.path)) {
-            filesEdited.push(String(tc.arguments.file_path || tc.arguments.path));
-          }
-        }
-      }
-      if (msg.role === 'tool' && msg.content && (msg.content.includes('Error') || msg.content.includes('error'))) {
-        const firstLine = msg.content.split('\n')[0]?.slice(0, 150) || '';
-        if (firstLine && !errorsEncountered.includes(firstLine)) {
-          errorsEncountered.push(firstLine);
-        }
-      }
-    }
-
-    if (toolsUsed.size > 0) {
-      entries.push(`Tools used: ${[...toolsUsed].join(', ')}`);
-    }
-    if (filesEdited.length > 0) {
-      const unique = [...new Set(filesEdited)].slice(0, 10);
-      entries.push(`Files modified: ${unique.join(', ')}`);
-    }
-    if (errorsEncountered.length > 0) {
-      entries.push(`Errors encountered:\n${errorsEncountered.slice(0, 5).map(e => `  - ${e}`).join('\n')}`);
-    }
-
     const facts = this.extractNotableFacts(messages);
-    if (facts.length > 0) {
-      entries.push(`Learned:\n${facts.slice(0, 10).map(f => `  - ${f}`).join('\n')}`);
-    }
-
-    return entries.join('\n');
+    if (facts.length === 0) return '';
+    return `Learned durable facts:\n${facts
+      .slice(0, 10)
+      .map((f) => `  - ${f}`)
+      .join('\n')}`;
   }
 
   async consolidate(): Promise<void> {
@@ -379,14 +468,20 @@ Examples:
       const res = await this.provider.chat([
         {
           role: 'system',
-          content: `You are a memory consolidation agent. Extract notable facts, preferences, decisions, and context from conversation logs.
+          content: `You are a memory consolidation agent. Extract ONLY durable, high-signal facts for a persistent agent memory.
 
 Rules:
-- Strip any credentials, API keys, or tokens
-- Keep: user preferences, project context, technical decisions, learned facts
-- Remove: trivial exchanges, repeated information, debugging noise
-- Format as concise bullet points grouped by category
-- Be brief — this summary replaces full conversation history`,
+- Strip credentials, API keys, tokens, cookies, and private values.
+- Keep: stable user preferences/corrections, stable project conventions, durable environment facts.
+- Skip: raw data dumps, web/forum/article content, task progress, completed-work logs, temporary TODO state, file counts, tool names, stack traces, browser errors, security findings from one-off reviews, and anything likely stale in 7 days.
+- Do not save "fixed bug X", PR/commit/session outcomes, or website/article claims as memory; those belong in session search.
+- Write compact declarative facts, not instructions. Example: "User prefers direct Indonesian technical style" not "Always answer in Indonesian".
+- Output one fact per bullet, using exactly one of these prefixes so the local importer can route it:
+  - [identity] for who the user is
+  - [preference] for stable user preferences
+  - [correction] for durable user corrections
+  - [memory] for stable project/environment notes
+- Do not add headings or prose outside those bullets.`,
         },
         { role: 'user', content: raw.slice(0, 12000) },
       ]);
@@ -400,35 +495,10 @@ Rules:
 
   async mergeMemories(): Promise<void> {
     ensureDirs();
-
-    const parts: string[] = [];
-
-    if (fs.existsSync(SUMMARY_FILE)) {
-      parts.push(fs.readFileSync(SUMMARY_FILE, 'utf-8'));
-    }
-
-    const sessionFiles = fs.readdirSync(SESSIONS_DIR)
-      .filter(f => f.endsWith('.md') || f.endsWith('.json'))
-      .sort()
-      .slice(-10);
-
-    for (const file of sessionFiles) {
-      const content = fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8');
-      if (file.endsWith('.json')) {
-        try {
-          const parsed = JSON.parse(content);
-          const msgs = (parsed.messages || []).map((m: any) => m.content || '').join('\n');
-          parts.push(msgs.slice(0, 1000));
-        } catch {
-          parts.push(content.slice(0, 1000));
-        }
-      } else {
-        parts.push(content.slice(0, 1000));
-      }
-    }
-
-    const merged = stripCredentials(parts.join('\n\n---\n\n'));
-    fs.writeFileSync(MEMORY_FILE, merged);
+    if (!fs.existsSync(SUMMARY_FILE)) return;
+    const legacy = extractCuratedFromLegacySummary(fs.readFileSync(SUMMARY_FILE, 'utf-8'));
+    for (const entry of legacy.user) appendEntry(USER_FILE, entry, USER_CHAR_LIMIT);
+    for (const entry of legacy.memory) appendEntry(MEMORY_FILE, entry, MEMORY_CHAR_LIMIT);
   }
 
   purgeOldSessions(): void {
@@ -448,15 +518,13 @@ Rules:
 
   searchMemory(query: string): string {
     ensureDirs();
-    if (!fs.existsSync(MEMORY_FILE)) return '';
-
-    const content = fs.readFileSync(MEMORY_FILE, 'utf-8');
-    const lines = content.split('\n');
     const queryLower = query.toLowerCase();
+    const lines = [
+      ...readEntries(USER_FILE).map((entry) => `USER: ${entry}`),
+      ...readEntries(MEMORY_FILE).map((entry) => `MEMORY: ${entry}`),
+    ];
 
-    const matches = lines.filter(line =>
-      line.toLowerCase().includes(queryLower)
-    );
+    const matches = lines.filter((line) => line.toLowerCase().includes(queryLower));
 
     if (matches.length === 0) return '';
     return matches.slice(0, 20).join('\n');
@@ -465,11 +533,18 @@ Rules:
   getStats(): { summarySize: number; rawSize: number; memorySize: number; sessionCount: number } {
     ensureDirs();
     const readSize = (f: string) => {
-      try { return fs.statSync(f).size; } catch { return 0; }
+      try {
+        return fs.statSync(f).size;
+      } catch {
+        return 0;
+      }
     };
 
     const sessionCount = fs.existsSync(SESSIONS_DIR)
-      ? fs.readdirSync(SESSIONS_DIR).filter(f => f.endsWith('.md')).length
+      ? fs
+          .readdirSync(SESSIONS_DIR)
+          .filter((f) => (f.endsWith('.md') || f.endsWith('.json')) && !f.endsWith('.memory.json'))
+          .length
       : 0;
 
     return {

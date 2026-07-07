@@ -72,15 +72,12 @@ export function parseToolEditOutput(
   content: string
 ): { filePath: string; oldLines: string[]; newLines: string[]; lineStart: number } | null {
   const lines = content.split('\n');
-  const firstLine = lines[0] || '';
-  if (
-    !firstLine ||
-    (!firstLine.startsWith('Edited ') &&
-      !firstLine.startsWith('Created ') &&
-      !firstLine.startsWith('Wrote '))
-  )
-    return null;
+  const firstLineIndex = lines.findIndex(
+    (line) => line.startsWith('Edited ') || line.startsWith('Created ') || line.startsWith('Wrote ')
+  );
+  if (firstLineIndex < 0) return null;
 
+  const firstLine = lines[firstLineIndex] || '';
   let afterPrefix = firstLine.replace(/^(Edited|Created|Wrote)\s+/, '');
   const filePath = afterPrefix.split(/\s{2,}/)[0] || afterPrefix.trim();
 

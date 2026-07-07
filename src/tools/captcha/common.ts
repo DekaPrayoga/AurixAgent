@@ -5,8 +5,12 @@ import { fileURLToPath } from 'url';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from 'fs';
 import sharp from 'sharp';
 
-export const TRAINING_DIR = join(dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))), 'training');
+export const TRAINING_DIR = join(
+  dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
+  'training'
+);
 import { loadConfig } from '../../agent/Config.js';
+import { createProvider } from '../../providers/index.js';
 
 export function readFileBase64(path: string): string {
   return readFileSync(path).toString('base64');
@@ -14,21 +18,16 @@ export function readFileBase64(path: string): string {
 
 export async function visionClassify(imageBase64: string, prompt: string): Promise<string> {
   const config = loadConfig();
-  const visionModel = config.visionModel || config.model || 'gpt-4o';
-  const visionBaseUrl = config.visionBaseUrl || config.baseUrl;
-  const visionApiKey = config.visionApiKey || config.apiKey;
-
-  const body = {
-    model: visionModel,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'text', text: prompt },
-        { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } },
-      ],
-    }],
-    max_tokens: 4096,
-  };
+  const provider = createProvider({
+    ...config,
+    provider: config.visionProvider || config.provider,
+    baseUrl: config.visionBaseUrl || config.baseUrl,
+    apiKey: config.visionApiKey || config.apiKey,
+    model: config.visionModel || config.model || 'gpt-4o',
+    apiStyle: config.visionApiStyle || config.apiStyle,
+    maxTokens: 4096,
+    temperature: 0.1,
+  });
 
   const MAX_RETRIES = 3;
   let lastError: Error | null = null;
@@ -36,70 +35,36 @@ export async function visionClassify(imageBase64: string, prompt: string): Promi
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) {
       const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000);
-      await new Promise(r => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, delay));
     }
 
-    const controller = new AbortController();
-    const fetchTimeout = setTimeout(() => controller.abort(), 30_000);
-
     try {
-      const resp = await fetch(`${visionBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(visionApiKey ? { Authorization: `Bearer ${visionApiKey}` } : {}),
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-
-      if (!resp.ok) {
-        const status = resp.status;
-        if (status === 404 || status === 429 || status >= 500) {
-          lastError = new Error(`Vision API error: ${status}`);
-          clearTimeout(fetchTimeout);
-          continue;
-        }
-        throw new Error(`Vision API error: ${status}`);
-      }
-
-      const text = await resp.text();
-      clearTimeout(fetchTimeout);
-
-      if (text.includes('data: ')) {
-        let content = '';
-        for (const line of text.split('\n')) {
-          if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
-            try {
-              const ev = JSON.parse(line.slice(6));
-              const delta = ev.choices?.[0]?.delta;
-              if (delta?.content) content += delta.content;
-              if (delta?.text) content += delta.text;
-              if (ev.choices?.[0]?.message?.content) content += ev.choices[0].message.content;
-            } catch {}
-          }
-        }
-        if (content.trim()) return content.trim();
-        lastError = new Error('Vision API returned empty response');
-        continue;
-      }
-
-      const json = JSON.parse(text);
-      const result = (json.choices?.[0]?.message?.content || '').trim();
+      const response = await Promise.race([
+        provider.chat([
+          {
+            role: 'user',
+            content: prompt,
+            images: [`data:image/png;base64,${imageBase64}`],
+          },
+        ]),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Vision API timeout')), 30_000)
+        ),
+      ]);
+      const result = response.text.trim();
       if (result) return result;
       lastError = new Error('Vision API returned empty response');
-      continue;
     } catch (e: any) {
-      clearTimeout(fetchTimeout);
-      if (e.name === 'AbortError') {
-        lastError = new Error('Vision API timeout');
+      lastError = e instanceof Error ? e : new Error(String(e));
+      if (
+        attempt < MAX_RETRIES &&
+        /404|429|5\d\d|ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|network|timeout|rate limit/i.test(
+          lastError.message
+        )
+      ) {
         continue;
       }
-      if (attempt < MAX_RETRIES && /ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|network/i.test(e.message)) {
-        lastError = e;
-        continue;
-      }
-      throw e;
+      throw lastError;
     }
   }
 
@@ -112,7 +77,7 @@ export async function analyzeTileCrops(
   gridCols: number,
   objectName: string,
   actualTileCount: number,
-  _dbg: (msg: string) => void,
+  _dbg: (msg: string) => void
 ): Promise<number[]> {
   _dbg('analyzeTileCrops: cropping grid into individual tiles...');
 
@@ -127,7 +92,9 @@ export async function analyzeTileCrops(
 
   const tileW = Math.floor(imgW / gridCols);
   const tileH = Math.floor(imgH / gridRows);
-  _dbg(`analyzeTileCrops: image ${imgW}x${imgH}, tile ${tileW}x${tileH}, grid ${gridRows}x${gridCols}`);
+  _dbg(
+    `analyzeTileCrops: image ${imgW}x${imgH}, tile ${tileW}x${tileH}, grid ${gridRows}x${gridCols}`
+  );
 
   const tileCrops: { idx: number; base64: string }[] = [];
 
@@ -138,8 +105,8 @@ export async function analyzeTileCrops(
 
       const left = c * tileW;
       const top = r * tileH;
-      const width = (c === gridCols - 1) ? imgW - left : tileW;
-      const height = (r === gridRows - 1) ? imgH - top : tileH;
+      const width = c === gridCols - 1 ? imgW - left : tileW;
+      const height = r === gridRows - 1 ? imgH - top : tileH;
 
       try {
         let tileBuf = await sharp(gridScreenshotPath)
@@ -171,7 +138,10 @@ export async function analyzeTileCrops(
 
   try {
     for (let i = 0; i < Math.min(3, tileCrops.length); i++) {
-      writeFileSync(join(homedir(), `.aurix-tile-${i}.png`), Buffer.from(tileCrops[i].base64, 'base64'));
+      writeFileSync(
+        join(homedir(), `.aurix-tile-${i}.png`),
+        Buffer.from(tileCrops[i].base64, 'base64')
+      );
     }
   } catch {}
 
@@ -179,25 +149,35 @@ export async function analyzeTileCrops(
   const BATCH_SIZE = 3;
   for (let i = 0; i < tileCrops.length; i += BATCH_SIZE) {
     const batch = tileCrops.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.all(batch.map(async ({ idx, base64 }) => {
-      try {
-        const objLower = objectName.toLowerCase();
-        const hints: Record<string, string> = {
-          bus: 'Buses: large vehicle with ROW of passenger windows, tall rectangular body, destination sign. NOT fire hydrants (small barrel on ground), NOT vans, NOT trucks, NOT cars.',
-          car: 'Cars: passenger vehicle with 4 wheels, windshield, hood, trunk/hatch. Must see actual car body shape. NOT motorcycles, NOT buses, NOT trucks, NOT close-ups of single parts.',
-          motorcycle: 'Motorcycles: 2 wheels, visible engine block, gas tank, handlebars, exhaust pipe. Must see bike frame. NOT cars (4 wheels, enclosed), NOT bicycles (no engine/gas tank), NOT scooters.',
-          bicycle: 'Bicycles: 2 thin wheels, thin metal frame, pedals, NO engine, NO gas tank. NOT motorcycles (have engine), NOT scooters.',
-          traffic_light: 'Traffic lights: pole with 2-3 colored circles (red/yellow/green) stacked vertically. NOT street lamps (single white light on pole), NOT building lights.',
-          fire_hydrant: 'Fire hydrants: SHORT barrel-shaped object on ground/sidewalk, dome cap, 2-3 side nozzles/caps, bright red/yellow/orange. They are SMALL (knee-height). NOT buses, NOT vehicles, NOT mailboxes, NOT bollards.',
-          crosswalk: 'Crosswalks: white parallel stripes or zebra pattern PAINTED ON ROAD surface for pedestrians. NOT lane dividers, NOT road arrows, NOT regular pavement markings.',
-          stairs: 'Stairs: visible step edges with distinct risers and treads, ascending or descending. NOT ramps, NOT sloped surfaces, NOT escalators.',
-        };
-        let hint = '';
-        for (const [key, h] of Object.entries(hints)) {
-          if (objLower.includes(key.replace('_', ' ')) || objLower.includes(key)) { hint = `\n- ${h}`; break; }
-        }
+    const batchResults = await Promise.all(
+      batch.map(async ({ idx, base64 }) => {
+        try {
+          const objLower = objectName.toLowerCase();
+          const hints: Record<string, string> = {
+            bus: 'Buses: large vehicle with ROW of passenger windows, tall rectangular body, destination sign. NOT fire hydrants (small barrel on ground), NOT vans, NOT trucks, NOT cars.',
+            car: 'Cars: passenger vehicle with 4 wheels, windshield, hood, trunk/hatch. Must see actual car body shape. NOT motorcycles, NOT buses, NOT trucks, NOT close-ups of single parts.',
+            motorcycle:
+              'Motorcycles: 2 wheels, visible engine block, gas tank, handlebars, exhaust pipe. Must see bike frame. NOT cars (4 wheels, enclosed), NOT bicycles (no engine/gas tank), NOT scooters.',
+            bicycle:
+              'Bicycles: 2 thin wheels, thin metal frame, pedals, NO engine, NO gas tank. NOT motorcycles (have engine), NOT scooters.',
+            traffic_light:
+              'Traffic lights: pole with 2-3 colored circles (red/yellow/green) stacked vertically. NOT street lamps (single white light on pole), NOT building lights.',
+            fire_hydrant:
+              'Fire hydrants: SHORT barrel-shaped object on ground/sidewalk, dome cap, 2-3 side nozzles/caps, bright red/yellow/orange. They are SMALL (knee-height). NOT buses, NOT vehicles, NOT mailboxes, NOT bollards.',
+            crosswalk:
+              'Crosswalks: white parallel stripes or zebra pattern PAINTED ON ROAD surface for pedestrians. NOT lane dividers, NOT road arrows, NOT regular pavement markings.',
+            stairs:
+              'Stairs: visible step edges with distinct risers and treads, ascending or descending. NOT ramps, NOT sloped surfaces, NOT escalators.',
+          };
+          let hint = '';
+          for (const [key, h] of Object.entries(hints)) {
+            if (objLower.includes(key.replace('_', ' ')) || objLower.includes(key)) {
+              hint = `\n- ${h}`;
+              break;
+            }
+          }
 
-        const prompt = `You are solving a reCAPTCHA image challenge. The task: find tiles containing "${objectName}".
+          const prompt = `You are solving a reCAPTCHA image challenge. The task: find tiles containing "${objectName}".
 This is ONE tile from a grid. Each tile shows a real-world photo.
 
 First, carefully describe what you see in detail. Then decide: does this tile contain ${objectName}?
@@ -212,37 +192,50 @@ Rules:
 Describe: [detailed description of what you see]
 Answer: YES or NO`;
 
-        const response = await visionClassify(base64, prompt);
-        const answerLine = response.split('\n').find(l => /^answer:/i.test(l.trim())) || response;
-        let isMatch = /\byes\b/i.test(answerLine);
-        const describeLine = response.split('\n').find(l => /^describe:/i.test(l.trim())) || '';
-        const descText = describeLine.replace(/^describe:\s*/i, '').toLowerCase();
+          const response = await visionClassify(base64, prompt);
+          const answerLine =
+            response.split('\n').find((l) => /^answer:/i.test(l.trim())) || response;
+          let isMatch = /\byes\b/i.test(answerLine);
+          const describeLine = response.split('\n').find((l) => /^describe:/i.test(l.trim())) || '';
+          const descText = describeLine.replace(/^describe:\s*/i, '').toLowerCase();
 
-        // Reject obvious hallucinations: if model says YES but description only
-        // mentions clearly unrelated objects (no mention of target or related terms)
-        if (isMatch) {
-          const falsePositiveHints: Record<string, string[]> = {
-            bus: ['only a car', 'only a van', 'only a truck', 'no bus'],
-            motorcycle: ['only a car', 'only a bicycle', 'no motorcycle'],
-            bicycle: ['only a motorcycle', 'only a car', 'no bicycle'],
-            fire_hydrant: ['only a car', 'only a bus', 'only a building', 'no hydrant', 'no fire'],
-            car: ['only a motorcycle', 'only a bicycle', 'only a bus', 'no car'],
-          };
-          const fpHints = falsePositiveHints[objLower.replace(/\s+/g, '_')] || falsePositiveHints[objLower] || [];
-          const hasFalsePositiveHint = fpHints.some(h => descText.includes(h));
-          if (hasFalsePositiveHint) {
-            _dbg(`analyzeTileCrops: tile ${idx} YES but description contradicts — rejecting`);
-            isMatch = false;
+          // Reject obvious hallucinations: if model says YES but description only
+          // mentions clearly unrelated objects (no mention of target or related terms)
+          if (isMatch) {
+            const falsePositiveHints: Record<string, string[]> = {
+              bus: ['only a car', 'only a van', 'only a truck', 'no bus'],
+              motorcycle: ['only a car', 'only a bicycle', 'no motorcycle'],
+              bicycle: ['only a motorcycle', 'only a car', 'no bicycle'],
+              fire_hydrant: [
+                'only a car',
+                'only a bus',
+                'only a building',
+                'no hydrant',
+                'no fire',
+              ],
+              car: ['only a motorcycle', 'only a bicycle', 'only a bus', 'no car'],
+            };
+            const fpHints =
+              falsePositiveHints[objLower.replace(/\s+/g, '_')] ||
+              falsePositiveHints[objLower] ||
+              [];
+            const hasFalsePositiveHint = fpHints.some((h) => descText.includes(h));
+            if (hasFalsePositiveHint) {
+              _dbg(`analyzeTileCrops: tile ${idx} YES but description contradicts — rejecting`);
+              isMatch = false;
+            }
           }
-        }
 
-        _dbg(`analyzeTileCrops: tile ${idx} → ${isMatch ? 'YES' : 'NO'} (${describeLine.substring(0, 60).trim()})`);
-        return { idx, isMatch };
-      } catch (e: any) {
-        _dbg(`analyzeTileCrops: tile ${idx} failed: ${e.message}`);
-        return { idx, isMatch: false };
-      }
-    }));
+          _dbg(
+            `analyzeTileCrops: tile ${idx} → ${isMatch ? 'YES' : 'NO'} (${describeLine.substring(0, 60).trim()})`
+          );
+          return { idx, isMatch };
+        } catch (e: any) {
+          _dbg(`analyzeTileCrops: tile ${idx} failed: ${e.message}`);
+          return { idx, isMatch: false };
+        }
+      })
+    );
     results.push(...batchResults);
   }
   const matched: number[] = [];
@@ -281,11 +274,13 @@ export function saveCaptchaTraining(example: CaptchaTrainingExample) {
     if (!existsSync(TRAINING_DIR)) mkdirSync(TRAINING_DIR, { recursive: true });
     const path = join(TRAINING_DIR, 'captcha-training.json');
     const data = loadCaptchaTraining();
-    const existing = data.findIndex(e =>
-      e.objectType && example.objectType &&
-      e.objectType.toLowerCase() === example.objectType.toLowerCase() &&
-      e.gridSize === example.gridSize &&
-      JSON.stringify(e.matchedIndices) === JSON.stringify(example.matchedIndices)
+    const existing = data.findIndex(
+      (e) =>
+        e.objectType &&
+        example.objectType &&
+        e.objectType.toLowerCase() === example.objectType.toLowerCase() &&
+        e.gridSize === example.gridSize &&
+        JSON.stringify(e.matchedIndices) === JSON.stringify(example.matchedIndices)
     );
     if (existing >= 0) {
       data[existing].successCount = (data[existing].successCount || 1) + 1;
@@ -325,7 +320,10 @@ export function saveCaptchaResult(r: CaptchaResult) {
     if (r.gridImagePath && existsSync(r.gridImagePath)) {
       try {
         const ext = r.result === 'fail' ? 'failed' : 'passed';
-        const imgDest = join(TRAINING_DIR, `${ext}-${r.timestamp}-${r.objectType.replace(/\s/g, '_')}.png`);
+        const imgDest = join(
+          TRAINING_DIR,
+          `${ext}-${r.timestamp}-${r.objectType.replace(/\s/g, '_')}.png`
+        );
         copyFileSync(r.gridImagePath, imgDest);
         r.gridImagePath = imgDest;
       } catch {}
@@ -334,7 +332,11 @@ export function saveCaptchaResult(r: CaptchaResult) {
     if (r.result === 'fail' || r.result === 'new_challenge') {
       const path = join(TRAINING_DIR, 'failed-captcha.json');
       let list: CaptchaResult[] = [];
-      if (existsSync(path)) { try { list = JSON.parse(readFileSync(path, 'utf-8')); } catch {} }
+      if (existsSync(path)) {
+        try {
+          list = JSON.parse(readFileSync(path, 'utf-8'));
+        } catch {}
+      }
       list.push(r);
       if (list.length > 200) list.splice(0, list.length - 200);
       writeFileSync(path, JSON.stringify(list, null, 2));
@@ -343,12 +345,18 @@ export function saveCaptchaResult(r: CaptchaResult) {
     if (r.result === 'pass' || r.result === 'verified') {
       const path = join(TRAINING_DIR, 'captcha-training.json');
       let list: any[] = [];
-      if (existsSync(path)) { try { list = JSON.parse(readFileSync(path, 'utf-8')); } catch {} }
-      const existing = list.findIndex(e =>
-        e.objectType && r.objectType &&
-        e.objectType.toLowerCase() === r.objectType.toLowerCase() &&
-        e.gridSize === r.gridSize &&
-        JSON.stringify(e.matchedIndices) === JSON.stringify(r.matchedIndices)
+      if (existsSync(path)) {
+        try {
+          list = JSON.parse(readFileSync(path, 'utf-8'));
+        } catch {}
+      }
+      const existing = list.findIndex(
+        (e) =>
+          e.objectType &&
+          r.objectType &&
+          e.objectType.toLowerCase() === r.objectType.toLowerCase() &&
+          e.gridSize === r.gridSize &&
+          JSON.stringify(e.matchedIndices) === JSON.stringify(r.matchedIndices)
       );
       if (existing >= 0) {
         list[existing].successCount = (list[existing].successCount || 1) + 1;
@@ -366,14 +374,17 @@ export function getTrainingHint(objectName: string, gridSize: string, tileCount:
   try {
     const data = loadCaptchaTraining();
     const objLower = objectName.toLowerCase();
-    const relevant = data.filter(e => {
+    const relevant = data.filter((e) => {
       const eObj = (e.objectType || e.instruction).toLowerCase();
-      return eObj.includes(objLower) || objLower.includes(eObj) ||
-        e.instruction.toLowerCase().includes(objLower);
+      return (
+        eObj.includes(objLower) ||
+        objLower.includes(eObj) ||
+        e.instruction.toLowerCase().includes(objLower)
+      );
     });
     if (relevant.length === 0) return '';
 
-    const byGrid = relevant.filter(e => e.gridSize === gridSize || e.gridCount === tileCount);
+    const byGrid = relevant.filter((e) => e.gridSize === gridSize || e.gridCount === tileCount);
     const pool = byGrid.length > 0 ? byGrid : relevant;
 
     const sorted = pool.sort((a, b) => (b.successCount || 1) - (a.successCount || 1));
@@ -385,25 +396,30 @@ export function getTrainingHint(objectName: string, gridSize: string, tileCount:
       patternCounts.set(key, (patternCounts.get(key) || 0) + (ex.successCount || 1));
     }
 
-    const patterns = [...patternCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
+    const patterns = [...patternCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
 
     if (patterns.length === 0) return '';
 
     const avgCount = top.reduce((s, e) => s + e.matchedIndices.length, 0) / top.length;
-    const hint = `\n\n[TRAINING DATA] You have solved "${objectName}" challenges ${relevant.length} times before.` +
+    const hint =
+      `\n\n[TRAINING DATA] You have solved "${objectName}" challenges ${relevant.length} times before.` +
       ` Typical answer has ~${avgCount.toFixed(1)} tiles selected.` +
       ` Most common patterns: ${patterns.map(([p, c]) => `${p} (${c}x)`).join(', ')}.` +
       ` Use this as guidance but always verify against the actual image.`;
     return hint;
-  } catch { return ''; }
+  } catch {
+    return '';
+  }
 }
 
 // TEMP: CapTCHAi training integration — REMOVE AFTER TRAINING
 const CAPTCHAI_KEY = 'sm2ac441rbvjs1yecfec4tigl42e4jja';
 
-export async function capthaiSolve(imageBase64: string, instruction: string, gridSize: string): Promise<number[] | null> {
+export async function capthaiSolve(
+  imageBase64: string,
+  instruction: string,
+  gridSize: string
+): Promise<number[] | null> {
   try {
     const form = new FormData();
     form.append('key', CAPTCHAI_KEY);
@@ -414,28 +430,43 @@ export async function capthaiSolve(imageBase64: string, instruction: string, gri
     form.append('img_type', 'recaptcha');
     form.append('json', '1');
 
-    const createResp = await fetch('https://ocr.captchaai.com/in.php', { method: 'POST', body: form });
+    const createResp = await fetch('https://ocr.captchaai.com/in.php', {
+      method: 'POST',
+      body: form,
+    });
     const createText = await createResp.text();
     console.error(`[CapTCHAi] create: ${createText.substring(0, 200)}`);
     let createJson: any;
-    try { createJson = JSON.parse(createText); } catch { console.error(`[CapTCHAi] non-JSON create response`); return null; }
+    try {
+      createJson = JSON.parse(createText);
+    } catch {
+      console.error(`[CapTCHAi] non-JSON create response`);
+      return null;
+    }
     if (createJson.status !== 1 || !createJson.request) {
-      console.error(`[CapTCHAi] create failed: status=${createJson.status}, request=${createJson.request}`);
+      console.error(
+        `[CapTCHAi] create failed: status=${createJson.status}, request=${createJson.request}`
+      );
       return null;
     }
 
     const taskId = createJson.request;
     for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 2000));
       const pollUrl = `https://ocr.captchaai.com/res.php?key=${CAPTCHAI_KEY}&action=get&id=${taskId}&json=1`;
       const pollResp = await fetch(pollUrl);
       const pollText = await pollResp.text();
       console.error(`[CapTCHAi] poll ${i}: ${pollText.substring(0, 200)}`);
       let pollJson: any;
-      try { pollJson = JSON.parse(pollText); } catch { continue; }
+      try {
+        pollJson = JSON.parse(pollText);
+      } catch {
+        continue;
+      }
       if (pollJson.status === 1) {
         const raw = pollJson.request;
-        const convertToZeroIndexed = (arr: number[]) => arr.map((n: number) => n - 1).filter((n: number) => n >= 0);
+        const convertToZeroIndexed = (arr: number[]) =>
+          arr.map((n: number) => n - 1).filter((n: number) => n >= 0);
         if (Array.isArray(raw)) {
           const result = convertToZeroIndexed(raw.map(Number));
           return result.length > 0 ? result : null;
@@ -443,7 +474,8 @@ export async function capthaiSolve(imageBase64: string, instruction: string, gri
         if (typeof raw === 'string') {
           try {
             const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed) && parsed.length > 0) return convertToZeroIndexed(parsed.map(Number));
+            if (Array.isArray(parsed) && parsed.length > 0)
+              return convertToZeroIndexed(parsed.map(Number));
             if (Array.isArray(parsed) && parsed.length === 0) return null;
           } catch {}
           const nums = raw.match(/\d+/g);
@@ -453,7 +485,9 @@ export async function capthaiSolve(imageBase64: string, instruction: string, gri
       }
     }
     return null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function saveCapthaiTraining(data: {
@@ -481,28 +515,41 @@ export function getCapthaiCorrectionHint(objectName: string, gridSize: string): 
     if (!existsSync(path)) return '';
     const list: any[] = JSON.parse(readFileSync(path, 'utf-8'));
     const objLower = objectName.toLowerCase();
-    const relevant = list.filter(e =>
-      (e.objectType || '').toLowerCase().includes(objLower) ||
-      objLower.includes((e.objectType || '').toLowerCase())
-    ).filter(e => !e.correct);
+    const relevant = list
+      .filter(
+        (e) =>
+          (e.objectType || '').toLowerCase().includes(objLower) ||
+          objLower.includes((e.objectType || '').toLowerCase())
+      )
+      .filter((e) => !e.correct);
 
     if (relevant.length === 0) return '';
 
     const recent = relevant.slice(-5);
-    const corrections = recent.map(e => {
+    const corrections = recent.map((e) => {
       const vision = `[${(e.visionIndices || []).join(',')}]`;
       const correct = `[${(e.capthaiIndices || []).join(',')}]`;
-      const missed = (e.capthaiIndices || []).filter((i: number) => !(e.visionIndices || []).includes(i));
-      const extra = (e.visionIndices || []).filter((i: number) => !(e.capthaiIndices || []).includes(i));
-      return `predicted ${vision}, correct was ${correct}` +
+      const missed = (e.capthaiIndices || []).filter(
+        (i: number) => !(e.visionIndices || []).includes(i)
+      );
+      const extra = (e.visionIndices || []).filter(
+        (i: number) => !(e.capthaiIndices || []).includes(i)
+      );
+      return (
+        `predicted ${vision}, correct was ${correct}` +
         (missed.length ? ` (missed: ${missed.join(',')})` : '') +
-        (extra.length ? ` (extra: ${extra.join(',')})` : '');
+        (extra.length ? ` (extra: ${extra.join(',')})` : '')
+      );
     });
 
-    return `\n\n[PAST CORRECTIONS] Your previous mistakes on "${objectName}" challenges:\n` +
+    return (
+      `\n\n[PAST CORRECTIONS] Your previous mistakes on "${objectName}" challenges:\n` +
       corrections.map((c, i) => `  ${i + 1}. ${c}`).join('\n') +
-      `\nLearn from these errors. Pay attention to tiles you tend to miss or wrongly include.`;
-  } catch { return ''; }
+      `\nLearn from these errors. Pay attention to tiles you tend to miss or wrongly include.`
+    );
+  } catch {
+    return '';
+  }
 }
 // END TEMP: CapTCHAi training integration
 
@@ -653,11 +700,13 @@ export async function findGridTiles(frame: any, provider: string) {
       for (const sel of tableSelectors) {
         try {
           const table = frame.locator(sel).first();
-          if (await table.count() > 0 && await table.isVisible()) {
+          if ((await table.count()) > 0 && (await table.isVisible())) {
             const cells = await table.locator('td').all();
             const visible: any[] = [];
             for (const cell of cells) {
-              try { if (await cell.isVisible()) visible.push(cell); } catch {}
+              try {
+                if (await cell.isVisible()) visible.push(cell);
+              } catch {}
             }
             if (visible.length >= 4) return visible;
           }
@@ -666,11 +715,13 @@ export async function findGridTiles(frame: any, provider: string) {
       const tables = await frame.locator('table').all();
       for (const table of tables) {
         try {
-          if (!await table.isVisible()) continue;
+          if (!(await table.isVisible())) continue;
           const cells = await table.locator('td').all();
           const visible: any[] = [];
           for (const cell of cells) {
-            try { if (await cell.isVisible()) visible.push(cell); } catch {}
+            try {
+              if (await cell.isVisible()) visible.push(cell);
+            } catch {}
           }
           if (visible.length >= 4) return visible;
         } catch {}
@@ -679,18 +730,20 @@ export async function findGridTiles(frame: any, provider: string) {
     }
     case 'hcaptcha': {
       const tiles = frame.locator('.task-image, .image, .task .answer');
-      if (await tiles.count() > 0) return tiles.all();
+      if ((await tiles.count()) > 0) return tiles.all();
       return [];
     }
     case 'mtcaptcha':
     case 'geetest': {
       const items = frame.locator('.geetest_item_wrap, .geetest_ques_tips img, .mtcaptcha-item');
-      if (await items.count() > 0) return items.all();
+      if ((await items.count()) > 0) return items.all();
       return [];
     }
     default: {
-      const tiles = frame.locator('.task-image, .rc-imageselect-table-33 td, .rc-imageselect-table-44 td, table td');
-      if (await tiles.count() > 0) return tiles.all();
+      const tiles = frame.locator(
+        '.task-image, .rc-imageselect-table-33 td, .rc-imageselect-table-44 td, table td'
+      );
+      if ((await tiles.count()) > 0) return tiles.all();
       return [];
     }
   }

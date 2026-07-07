@@ -58,6 +58,14 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
+    name: 'history-search',
+    aliases: ['search-history', 'session-search'],
+    argumentHint: '<query>',
+    description: 'Search durable sessions, messages, and tool events',
+    group: 'session',
+    source: 'aurix',
+  },
+  {
     name: 'context',
     description: 'Show context usage and compaction stats',
     group: 'session',
@@ -222,7 +230,7 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'vision',
-    description: 'Configure Vision Fallback model for handling images',
+    description: 'Configure/test Vision Fallback model for non-vision models and images',
     group: 'config',
     source: 'aurix',
   },
@@ -420,9 +428,9 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'insights',
-    description: 'Analyze coding patterns and architecture',
+    description: 'Show learned workflow patterns and skill candidates',
     group: 'workflows',
-    source: 'claude-code',
+    source: 'aurix',
   },
   {
     name: 'debug',
@@ -694,12 +702,10 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'cron',
-    argumentHint: '[list|add|create|edit|pause|resume|run|remove]',
-    description: 'Manage scheduled tasks',
+    argumentHint: '[list|add|run|remove]',
+    description: 'Manage scheduled tasks and automations',
     group: 'tools',
-    source: 'hermes',
-    hidden: true,
-    status: 'not-implemented',
+    source: 'aurix',
   },
   {
     name: 'curator',
@@ -766,9 +772,10 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'usage',
-    description: 'Show token usage and rate limits for session',
+    argumentHint: '[tools]',
+    description: 'Show token usage or learned tool usage stats',
     group: 'session',
-    source: 'hermes',
+    source: 'aurix',
   },
   {
     name: 'platforms',

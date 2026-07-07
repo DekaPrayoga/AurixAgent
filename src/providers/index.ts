@@ -84,6 +84,13 @@ function bypassProxyIfLocal(url: string) {
 
 function imageToBase64(filePath: string): { data: string; mediaType: string } | null {
   try {
+    const dataUrl = filePath.match(/^data:(image\/[^;]+);base64,(.+)$/);
+    if (dataUrl) {
+      const data = dataUrl[2];
+      if (Buffer.byteLength(data, 'base64') > 20 * 1024 * 1024) return null;
+      return { data, mediaType: dataUrl[1] };
+    }
+
     if (!fs.existsSync(filePath)) return null;
     const ext = path.extname(filePath).toLowerCase();
     const mediaType = IMAGE_MIME[ext];
@@ -833,6 +840,8 @@ export function createProvider(config: AurixConfig): Provider {
         return new OpenAIProvider(config);
       }
       return new AutoDetectProvider(config);
+    case 'custom-anthropic':
+      return new AnthropicProvider(config);
     default:
       return new OpenAIProvider(config);
   }

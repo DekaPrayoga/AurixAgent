@@ -4,6 +4,7 @@ import markedTerminal from 'marked-terminal';
 import chalk from 'chalk';
 import ora from 'ora';
 import { AgentLoop } from '../agent/AgentLoop.js';
+import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { ToolRegistry } from '../tools/Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { asciiLogo } from '../utils/ascii-logo.js';
@@ -60,21 +61,27 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
     const spinner = ora({ text: chalk.yellow('Thinking...'), color: 'yellow' }).start();
 
     try {
+      let assistantText = '';
       const stream = agent.run(text);
       for await (const event of stream) {
         if (event.type === 'text') {
+          assistantText += event.data;
           spinner.text = safeDisplayText(event.data);
         } else if (event.type === 'tool_start') {
-          spinner.text = chalk.dim('⚙ ' + event.toolName + '...');
+          spinner.text = chalk.dim(
+            renderToolSpinnerText({ toolName: event.toolName, args: event.toolArgs })
+          );
+        } else if (event.type === 'tool_chunk') {
+          spinner.text = chalk.gray(safeDisplayText(event.data).slice(0, 160));
         } else if (event.type === 'tool_end') {
           spinner.text = chalk.yellow('Thinking...');
         } else if (event.type === 'error') {
-          spinner.stop();
-          console.log(chalk.red.bold('\n✗ Error: ') + chalk.red(safeDisplayText(event.data)));
-          spinner.start(chalk.yellow('Thinking...'));
+          spinner.fail(chalk.red(safeDisplayText(event.data)));
+          break;
         } else if (event.type === 'done') {
           spinner.stop();
-          console.log('\n' + marked.parse(safeDisplayText(event.data)));
+          const finalText = event.data || assistantText;
+          if (finalText.trim()) console.log('\n' + marked.parse(safeDisplayText(finalText)));
           console.log();
         }
       }

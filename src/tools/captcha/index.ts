@@ -17,6 +17,12 @@ export {
 } from './common.js';
 export type { CaptchaTrainingExample } from './common.js';
 export { solveCaptchaGrid } from './RecaptchaSolver.js';
-export { autoSolveCaptcha, analyzeImageChallenge, _lastGridAnalyzeTime, setLastGridAnalyzeTime } from './CaptchaRouter.js';
+export {
+  autoSolveCaptcha,
+  analyzeImageChallenge,
+  _lastGridAnalyzeTime,
+  setLastGridAnalyzeTime,
+} from './CaptchaRouter.js';
+export { solveGeetestSlider } from './GeetestSolver.js';
 export { FuncaptchaSolver, extractPublicKey, extractServiceUrl } from './FuncaptchaSolver.js';
 export type { FuncaptchaOptions, FuncaptchaSolveResult } from './FuncaptchaSolver.js';

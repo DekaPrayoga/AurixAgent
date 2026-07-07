@@ -1707,5 +1707,20 @@
     "is3x3Flip": false,
     "errorNotes": "VERIFIED",
     "successCount": 1
+  },
+  {
+    "instruction": "CAPTCHA Examples",
+    "objectType": "",
+    "gridSize": "3x3",
+    "tileCount": 0,
+    "matchedIndices": [],
+    "result": "verified",
+    "timestamp": 1783319317036,
+    "source": "geetest",
+    "tileDescriptions": [],
+    "gridImagePath": "/root/main/aurix-agent/training/passed-1783319317036-.png",
+    "is3x3Flip": false,
+    "errorNotes": "BFRAME_GONE",
+    "successCount": 1
   }
 ]

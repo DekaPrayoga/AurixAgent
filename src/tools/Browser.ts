@@ -30,6 +30,7 @@ import {
   solveCaptchaGrid,
   autoSolveCaptcha,
   analyzeImageChallenge,
+  solveGeetestSlider,
   _lastGridAnalyzeTime,
   bezierPoint,
   easeInOut,
@@ -373,6 +374,21 @@ async function ensureBrowser(): Promise<Page> {
           `--window-size=${vp.width},${vp.height}`,
         ];
       }
+      if (process.platform === 'linux' && !browserHeadless) {
+        // Headed Chromium under remote X11 can render as a transparent/blank window
+        // when GPU compositing or Wayland/Ozone auto-detection kicks in. Force the
+        // visible debug browser through X11 + software rendering so DISPLAY=:0 works.
+        return [
+          ...base,
+          '--ozone-platform=x11',
+          '--disable-gpu',
+          '--disable-gpu-compositing',
+          '--disable-software-rasterizer=false',
+          '--use-gl=swiftshader',
+          '--disable-vulkan',
+          '--disable-features=VizDisplayCompositor,WebRtcHideLocalIpsWithMdns,TranslateUI',
+        ];
+      }
       return base;
     })(),
     // Override cloakbrowser's hardcoded ignoreDefaultArgs on Windows:
@@ -510,10 +526,20 @@ async function ensureBrowser(): Promise<Page> {
     })();`,
   });
 
-  let page = context.pages()[0];
-  if (!page || page.url() === 'about:blank' || page.url().startsWith('chrome://')) {
-    if (page) await page.close().catch(() => {});
+  let page = context.pages().find((p) => !p.isClosed());
+  if (!page) {
     page = await context.newPage();
+  } else if (page.url() === 'about:blank' || page.url().startsWith('chrome://')) {
+    // Persistent contexts often start with an about:blank page. Prefer a fresh
+    // page, but never close the only usable page before newPage succeeds — some
+    // CloakBrowser/headed/X11 combinations throw Target.createTarget here.
+    try {
+      const fresh = await context.newPage();
+      await page.close().catch(() => {});
+      page = fresh;
+    } catch {
+      // Fall back to the existing page. Navigation can reuse about:blank safely.
+    }
     if (process.platform === 'win32') {
       await page.goto('about:blank').catch(() => {});
     }
@@ -2265,6 +2291,13 @@ except Exception as e:
 
             if (captchaType === 'mtcaptcha' || captchaType === 'geetest') {
               results.push(`Detected ${captchaType} challenge. Analyzing...`);
+              if (captchaType === 'geetest') {
+                results.push(await solveGeetestSlider(p));
+                const screenshotPath = join(homedir(), '.aurix', 'captcha-after.png');
+                await p.screenshot({ path: screenshotPath });
+                results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
+                return results.join('\n');
+              }
               const targetFrame = mtcaptchaFrame || geetestFrame || p;
 
               const hasSlider = await targetFrame

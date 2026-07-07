@@ -26,6 +26,7 @@ import {
   type BorderStyle,
 } from './theme.js';
 import { orchestratorEvents } from '../tools/SpawnAgent.js';
+import type { CronDaemon } from '../agent/CronDaemon.js';
 import {
   auditCommandCoverage,
   createSlashCommands,
@@ -34,6 +35,7 @@ import {
   parseSlash,
 } from './commands.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
+import { renderToolEnd } from '../agent/ToolEventRenderer.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { CONFIG_PATH, saveConfig } from '../agent/Config.js';
 import type { ToolRegistry } from '../tools/Registry.js';
@@ -92,6 +94,7 @@ const HANDLED_COMMANDS = new Set([
   'handoff',
   'help',
   'history',
+  'history-search',
   'image',
   'indicator',
   'init',
@@ -186,13 +189,30 @@ function normalizeApiStyleInput(value?: string): AurixConfig['apiStyle'] | undef
   return undefined;
 }
 
+function normalizeProviderInput(value?: string): AurixConfig['provider'] | undefined {
+  const provider = value?.trim().toLowerCase();
+  if (!provider) return undefined;
+  if (provider === '1') return 'openai';
+  if (provider === '2') return 'anthropic';
+  if (provider === '3') return 'custom';
+  if (
+    provider === 'openai' ||
+    provider === 'anthropic' ||
+    provider === 'custom' ||
+    provider === 'custom-anthropic'
+  )
+    return provider;
+  return undefined;
+}
+
 interface AppProps {
   config: AurixConfig;
   registry: ToolRegistry;
   resumeId?: string;
+  cronDaemon?: CronDaemon;
 }
 
-export function App({ config, registry, resumeId }: AppProps) {
+export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const renderer = useRenderer();
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -290,7 +310,7 @@ export function App({ config, registry, resumeId }: AppProps) {
     };
   }, [renderer, showToast]);
 
-  const doExit = useCallback(() => {
+  const doExit = useCallback(async () => {
     // Cleanup: interrupt any running agent task, stop gateway, stop MCP
     try {
       agentRef.current?.interrupt();
@@ -304,7 +324,7 @@ export function App({ config, registry, resumeId }: AppProps) {
 
     const name = sessionNameRef.current !== 'New session' ? sessionNameRef.current : undefined;
     const saveId = resumeSessionIdRef.current || name;
-    const sessionId = agentRef.current?.saveSession(saveId) || '';
+    const sessionId = (await agentRef.current?.saveSessionAsync(saveId)) || '';
     try {
       renderer.destroy();
     } catch {}
@@ -339,27 +359,29 @@ export function App({ config, registry, resumeId }: AppProps) {
   useEffect(() => {
     if (!resumeId || resumedRef.current) return;
     resumedRef.current = true;
-    const count = agentRef.current?.loadSession(resumeId) || 0;
-    if (count > 0) {
-      resumeSessionIdRef.current = resumeId;
-      const loaded = agentRef.current?.getMessages() || [];
-      setMessages(
-        loaded.map((m) => ({
-          role: m.role as 'user' | 'assistant' | 'tool' | 'system',
-          content: m.content,
-          timestamp: new Date(),
-        }))
-      );
-      setShowBanner(false);
-    } else {
-      setMessages([
-        {
-          role: 'system' as const,
-          content: `Session "${resumeId}" not found. Use /title to name sessions, or run aurix without --resume.`,
-          timestamp: new Date(),
-        },
-      ]);
-    }
+    (async () => {
+      const count = (await agentRef.current?.loadSessionAsync(resumeId)) || 0;
+      if (count > 0) {
+        resumeSessionIdRef.current = resumeId;
+        const loaded = agentRef.current?.getMessages() || [];
+        setMessages(
+          loaded.map((m) => ({
+            role: m.role as 'user' | 'assistant' | 'tool' | 'system',
+            content: m.content,
+            timestamp: new Date(),
+          }))
+        );
+        setShowBanner(false);
+      } else {
+        setMessages([
+          {
+            role: 'system' as const,
+            content: `Session "${resumeId}" not found. Use /title to name sessions, or run aurix without --resume.`,
+            timestamp: new Date(),
+          },
+        ]);
+      }
+    })();
   }, [resumeId]);
   useEffect(() => {
     const onStart = (data: any) => {
@@ -707,7 +729,34 @@ export function App({ config, registry, resumeId }: AppProps) {
 
         if (commandName === 'history') {
           const count = agent.getMessages().length;
-          addAssistant(`Conversation has ${count} messages (including system prompt).`);
+          addAssistant(
+            `Conversation has ${count} messages (including system prompt).\nDurable session: ${agent.getSessionId()}`
+          );
+          return;
+        }
+
+        if (commandName === 'history-search') {
+          const q = slash.args.trim();
+          if (!q) {
+            addAssistant('Usage: /history-search <query>\nExample: /history-search geetest');
+            return;
+          }
+          try {
+            const hits = await agent.searchSessions(q, 8);
+            if (hits.length === 0) {
+              addAssistant(`No durable session hits for: ${q}`);
+              return;
+            }
+            const lines = hits.map(
+              (s, i) =>
+                `  ${i + 1}. ${s.id} — ${s.preview || s.snippet || '(empty)'} (${s.messageCount} msg, ${s.savedAt || 'unknown date'})`
+            );
+            addAssistant(
+              `History search: "${q}"\n\n${lines.join('\n')}\n\nResume newest match: /resume latest ${q}\nResume exact: /resume <session-id>`
+            );
+          } catch (e: any) {
+            addAssistant(`History search failed: ${e.message}`);
+          }
           return;
         }
 
@@ -795,7 +844,7 @@ export function App({ config, registry, resumeId }: AppProps) {
               await wa.connect();
               if (!gatewayRef.current) {
                 const { Gateway } = await import('../gateway/Gateway.js');
-                gatewayRef.current = new Gateway(config, registry);
+                gatewayRef.current = new Gateway(config, registry, cronDaemon);
               }
               gatewayRef.current.register(wa);
             } catch (e: any) {
@@ -1212,8 +1261,11 @@ export function App({ config, registry, resumeId }: AppProps) {
           return;
         } else if (commandName === 'sessions') {
           try {
-            const { MemoryEngine } = await import('../agent/MemoryEngine.js');
-            const list = new MemoryEngine().listSessions();
+            let list = await agent.listDurableSessions(30);
+            if (list.length === 0) {
+              const { MemoryEngine } = await import('../agent/MemoryEngine.js');
+              list = new MemoryEngine().listSessions().map((s) => ({ ...s, title: s.id }));
+            }
             if (list.length === 0) {
               addAssistant('No past sessions found.');
               return;
@@ -1306,8 +1358,25 @@ export function App({ config, registry, resumeId }: AppProps) {
           addAssistant('Focus mode toggled. Minimal UI active.');
           return;
         } else if (commandName === 'insights') {
-          outboundText =
-            'Analyze the coding patterns, architecture decisions, and potential improvements visible in this project.';
+          try {
+            const patterns = await agent.detectWorkflowPatterns(8);
+            if (patterns.length === 0) {
+              addAssistant(
+                'No repeated workflow patterns detected yet. Run a few verified tasks first; Aurix only suggests candidates after repeated successful evidence.'
+              );
+              return;
+            }
+            const lines = patterns.map((p, i) => {
+              const marker = p.candidateSkill ? 'candidate skill' : 'observed pattern';
+              return `  ${i + 1}. ${p.name} — ${p.sequence.join(' → ')} (${p.count}x, ${p.successfulSessions} successful sessions, ${marker})`;
+            });
+            addAssistant(
+              `Learning insights\n\n${lines.join('\n')}\n\nAurix will not auto-create skills from one-off work; repeated successful patterns become candidates only.`
+            );
+          } catch (e: any) {
+            addAssistant(`Insights failed: ${e.message}`);
+          }
+          return;
         } else if (commandName === 'debug') {
           addAssistant('Debug logging enabled for this session. Logs stored in ~/.aurix/logs/');
           return;
@@ -1356,9 +1425,44 @@ export function App({ config, registry, resumeId }: AppProps) {
             outboundText = `(Side question, no tools) ${btwText}`;
           }
         } else if (commandName === 'resume') {
-          addAssistant(
-            slash.args ? `Resuming session: ${slash.args}` : 'Usage: /resume <session-id>'
-          );
+          const raw = slash.args.trim();
+          if (!raw) {
+            setSessionList(await agent.listDurableSessions(30));
+            return;
+          }
+          let target = raw;
+          if (raw.toLowerCase().startsWith('latest')) {
+            const query = raw.slice('latest'.length).trim();
+            const latest = await agent.findLatestSession(query || undefined);
+            if (!latest) {
+              addAssistant(query ? `No session matches: ${query}` : 'No durable sessions found.');
+              return;
+            }
+            target = latest.id;
+          }
+          try {
+            const count = await agent.loadSessionAsync(target);
+            if (count > 0) {
+              resumeSessionIdRef.current = target;
+              const loaded = agent.getMessages();
+              setMessages(
+                loaded
+                  .filter((m) => m.role !== 'system')
+                  .map((m) => ({
+                    role: m.role as 'user' | 'assistant' | 'tool' | 'system',
+                    content: m.content,
+                    timestamp: new Date(),
+                  }))
+              );
+              setShowBanner(false);
+              setScrollOffset(0);
+              addAssistant(`Resumed session: ${target} (${count} messages)`);
+            } else {
+              addAssistant(`Session not found: ${target}`);
+            }
+          } catch (e: any) {
+            addAssistant(`Resume failed: ${e.message}`);
+          }
           return;
         } else if (commandName === 'snapshot') {
           addAssistant('Configuration snapshot saved. Use /snapshot restore <name> to restore.');
@@ -1384,23 +1488,54 @@ export function App({ config, registry, resumeId }: AppProps) {
           );
           return;
         } else if (commandName === 'usage') {
+          const subcmd = slash.args.trim().toLowerCase();
+          if (subcmd === 'tools') {
+            try {
+              const stats = await agent.getToolUsageStats(12);
+              if (stats.length === 0) {
+                addAssistant(
+                  'No tool usage stats recorded yet. Run a few tool-using sessions first.'
+                );
+                return;
+              }
+              const lines = stats.map((s, i) => {
+                const duration = s.averageDurationMs ? `, avg ${s.averageDurationMs}ms` : '';
+                const err = s.topErrorType ? `, top error: ${s.topErrorType}` : '';
+                return `  ${i + 1}. ${s.toolName}: ${s.total} runs, ${s.successRate}% success (${s.success}/${s.total})${duration}${err}`;
+              });
+              addAssistant(`Tool usage stats\n\n${lines.join('\n')}\n\nPatterns: /insights`);
+            } catch (e: any) {
+              addAssistant(`Tool usage stats failed: ${e.message}`);
+            }
+            return;
+          }
           const stats = agent.getContextStats();
           const tokens = agent.getTokenStats();
           const ledger = tokens.ledger;
           addAssistant(
             agent.getLedger().format(stats.totalTokens, stats.estimatedPct) +
-              `\n  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)`
+              `\n  Messages: ${stats.messageCount} (${stats.compactedCount} compactions)\n\nUse /usage tools for learned tool success rates.`
           );
           return;
         } else if (commandName === 'agents' || commandName === 'tasks') {
-          if (agent.isMultiAgent()) {
-            addAssistant(
-              `Native multi-agent routing is ON.\nSpecialists are selected per task; Aurix will report the selected route when a prompt actually runs.`
-            );
-          } else {
-            addAssistant(
-              `Single-agent direct mode.\nEnable native multi-agent routing with: /multiagent\nSpecialists are available but not active until selected for a task.`
-            );
+          try {
+            const jobs = await agent.listAgentJobs(8);
+            const mode = agent.isMultiAgent()
+              ? 'Native multi-agent routing is ON.'
+              : 'Single-agent direct mode. Enable native routing with: /multiagent';
+            if (jobs.length === 0) {
+              addAssistant(`${mode}\n\nNo persisted agent jobs yet.`);
+              return;
+            }
+            const lines = jobs.map((j, i) => {
+              const count = j.totalAgents ? ` ${j.completedAgents || 0}/${j.totalAgents}` : '';
+              const done = j.finishedAt ? ` finished ${j.finishedAt}` : ' running';
+              const status = j.lastStatus ? ` — ${j.lastStatus}` : '';
+              return `  ${i + 1}. ${j.id} ${j.status}${count}${done}${status}\n     ${j.prompt.replace(/\s+/g, ' ').slice(0, 100)}`;
+            });
+            addAssistant(`Agent dashboard\n${mode}\n\n${lines.join('\n')}`);
+          } catch (e: any) {
+            addAssistant(`Agent dashboard failed: ${e.message}`);
           }
           return;
         } else if (commandName === 'whoami') {
@@ -1511,9 +1646,76 @@ export function App({ config, registry, resumeId }: AppProps) {
           addAssistant('Model variant selection not available for current provider.');
           return;
         } else if (commandName === 'cron') {
-          addAssistant(
-            'Cron scheduling not yet implemented. Use external cron for recurring tasks.'
-          );
+          if (!cronDaemon) {
+            addAssistant('Cron daemon unavailable in this runtime.');
+            return;
+          }
+          const raw = slash.args.trim();
+          const [subcmd = 'list', ...rest] = raw.split(/\s+/);
+          const action = subcmd.toLowerCase();
+          try {
+            if (!raw || action === 'list') {
+              const jobs = await cronDaemon.listJobs();
+              if (jobs.length === 0) {
+                addAssistant('No scheduled jobs. Add one with: /cron add <cron expr> | <prompt>');
+                return;
+              }
+              const lines = jobs.map(
+                (j, i) =>
+                  `  ${i + 1}. ${j.id} ${j.status} ${j.schedule} — ${j.prompt.slice(0, 90)}${j.lastRunAt ? ` (last: ${j.lastRunAt})` : ''}`
+              );
+              addAssistant(
+                `Scheduled jobs\n\n${lines.join('\n')}\n\nCommands: /cron add <expr> | <prompt> · /cron remove <id> · /cron run <id>`
+              );
+              return;
+            }
+            if (action === 'add') {
+              const spec = rest.join(' ');
+              const parts = spec.split('|');
+              if (parts.length < 2) {
+                addAssistant(
+                  'Usage: /cron add <cron expr> | <prompt>\nExample: /cron add 0 9 * * * | research China AI news'
+                );
+                return;
+              }
+              const schedule = parts[0].trim();
+              const prompt = parts.slice(1).join('|').trim();
+              const job = await cronDaemon.addJob(schedule, prompt);
+              addAssistant(`Scheduled job added: ${job.id}\n  ${job.schedule}\n  ${job.prompt}`);
+              return;
+            }
+            if (action === 'remove' || action === 'delete' || action === 'rm') {
+              const id = rest[0];
+              if (!id) {
+                addAssistant('Usage: /cron remove <id>');
+                return;
+              }
+              const removed = await cronDaemon.removeJob(id);
+              addAssistant(
+                removed ? `Removed scheduled job: ${id}` : `No scheduled job found: ${id}`
+              );
+              return;
+            }
+            if (action === 'run') {
+              const id = rest[0];
+              if (!id) {
+                addAssistant('Usage: /cron run <id>');
+                return;
+              }
+              const run = await cronDaemon.runJob(id);
+              addAssistant(
+                run.status === 'success'
+                  ? `Cron job ${id} completed.\n\n${run.result || ''}`
+                  : `Cron job ${id} failed: ${run.error || 'unknown error'}`
+              );
+              return;
+            }
+            addAssistant(
+              'Usage: /cron list | /cron add <expr> | <prompt> | /cron remove <id> | /cron run <id>'
+            );
+          } catch (e: any) {
+            addAssistant(`Cron error: ${e.message}`);
+          }
           return;
         } else if (commandName === 'curator') {
           addAssistant('Skill curator: no maintenance needed. Skills are loaded on startup.');
@@ -1833,6 +2035,57 @@ export function App({ config, registry, resumeId }: AppProps) {
           outboundText =
             'Inspect the current git diff and summarize what changed, risks, and recommended next checks.';
         } else if (commandName === 'vision') {
+          const action = slash.args.trim().toLowerCase();
+          const visionStatus = () =>
+            [
+              'Vision Fallback:',
+              `  Provider: ${config.visionProvider || config.provider || 'openai'}${config.visionProvider ? '' : ' (main)'}`,
+              `  API Style: ${config.visionApiStyle || config.apiStyle || 'auto'}${config.visionApiStyle ? '' : ' (main)'}`,
+              `  Base URL: ${config.visionBaseUrl || config.baseUrl || '(default provider URL)'}`,
+              `  Model: ${config.visionModel || 'gpt-4o'}`,
+              `  API Key: ${config.visionApiKey ? 'vision key set' : 'using main key'}`,
+              '',
+              'Commands:',
+              '  /vision          — configure fallback',
+              '  /vision status   — show active config',
+              '  /vision test     — send a tiny image test',
+            ].join('\n');
+
+          if (action === 'status') {
+            addAssistant(visionStatus());
+            return;
+          }
+
+          if (action === 'test') {
+            addAssistant('Testing vision fallback with a tiny image...');
+            try {
+              const { createProvider } = await import('../providers/index.js');
+              const vProvider = createProvider({
+                ...config,
+                provider: config.visionProvider || config.provider,
+                baseUrl: config.visionBaseUrl || config.baseUrl,
+                apiKey: config.visionApiKey || config.apiKey,
+                model: config.visionModel || 'gpt-4o',
+                apiStyle: config.visionApiStyle || config.apiStyle,
+                maxTokens: 64,
+                temperature: 0,
+              });
+              const png1x1 =
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
+              const res = await vProvider.chat([
+                {
+                  role: 'user',
+                  content: 'What is in this image? Reply in 5 words or fewer.',
+                  images: [`data:image/png;base64,${png1x1}`],
+                },
+              ]);
+              addAssistant(`Vision test OK: ${res.text.trim() || '(empty response)'}`);
+            } catch (e: any) {
+              addAssistant(`Vision test failed: ${e?.message || String(e)}\n\n${visionStatus()}`);
+            }
+            return;
+          }
+
           setShowVisionConfig(true);
           return;
         } else if (commandName === 'mcp') {
@@ -2179,13 +2432,48 @@ export function App({ config, registry, resumeId }: AppProps) {
               setActiveTool({ name: event.toolName || '', args: event.toolArgs });
               break;
 
+            case 'tool_chunk':
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (
+                  last?.role === 'tool' &&
+                  last.toolName === event.toolName &&
+                  last.content.startsWith('Live output:')
+                ) {
+                  return [
+                    ...prev.slice(0, -1),
+                    {
+                      ...last,
+                      content: `Live output: ${event.toolName || 'tool'}\n${event.data}`,
+                      timestamp: new Date(),
+                    },
+                  ];
+                }
+                return [
+                  ...prev,
+                  {
+                    role: 'tool',
+                    content: `Live output: ${event.toolName || 'tool'}\n${event.data}`,
+                    toolName: event.toolName,
+                    timestamp: new Date(),
+                  },
+                ];
+              });
+              break;
+
             case 'tool_end':
               setActiveTool(undefined);
               setMessages((prev) => [
                 ...prev,
                 {
                   role: 'tool',
-                  content: event.data,
+                  content: `${renderToolEnd({
+                    toolName: event.toolName,
+                    data: event.data,
+                    durationMs: event.durationMs,
+                    status: event.status,
+                    errorType: event.errorType,
+                  })}\n\n${event.data}`,
                   toolName: event.toolName,
                   timestamp: new Date(),
                 },
@@ -2344,20 +2632,23 @@ export function App({ config, registry, resumeId }: AppProps) {
                   <VisionModal
                     currentBaseUrl={config.visionBaseUrl}
                     currentModel={config.visionModel}
+                    currentProvider={config.visionProvider}
                     currentApiStyle={config.visionApiStyle}
-                    onSubmit={(newBaseUrl, newApiKey, newModel, newApiStyle) => {
+                    onSubmit={(newBaseUrl, newApiKey, newModel, newProvider, newApiStyle) => {
+                      const provider = normalizeProviderInput(newProvider);
+                      const apiStyle = normalizeApiStyleInput(newApiStyle);
                       if (newBaseUrl) config.visionBaseUrl = newBaseUrl;
                       if (newApiKey) config.visionApiKey = newApiKey;
                       if (newModel) config.visionModel = newModel;
-                      if (newApiStyle && ['openai', 'anthropic'].includes(newApiStyle))
-                        config.visionApiStyle = newApiStyle as any;
+                      if (provider) config.visionProvider = provider;
+                      if (apiStyle) config.visionApiStyle = apiStyle;
                       saveConfig(config);
                       setShowVisionConfig(false);
                       setMessages((prev) => [
                         ...prev,
                         {
                           role: 'system',
-                          content: `Vision Fallback updated.\n  Base URL: ${newBaseUrl || '(main agent URL)'}\n  API Style: ${newApiStyle || '(main agent style)'}\n  Model: ${newModel}`,
+                          content: `Vision Fallback updated.\n  Provider: ${provider || config.visionProvider || '(main provider)'}\n  Base URL: ${newBaseUrl || config.visionBaseUrl || '(main agent URL)'}\n  API Style: ${apiStyle || config.visionApiStyle || '(main agent style)'}\n  Model: ${newModel || config.visionModel || 'gpt-4o'}`,
                           timestamp: new Date(),
                         },
                       ]);
@@ -2430,41 +2721,43 @@ export function App({ config, registry, resumeId }: AppProps) {
                     sessions={sessionList}
                     onSelect={(id) => {
                       setSessionList(null);
-                      try {
-                        const count = agent.loadSession(id);
-                        if (count > 0) {
-                          const loaded = agent.getMessages();
-                          setMessages(
-                            loaded
-                              .filter((m) => m.role !== 'system')
-                              .map((m) => ({
-                                role: m.role as 'user' | 'assistant' | 'tool' | 'system',
-                                content: m.content,
+                      (async () => {
+                        try {
+                          const count = await agent.loadSessionAsync(id);
+                          if (count > 0) {
+                            const loaded = agent.getMessages();
+                            setMessages(
+                              loaded
+                                .filter((m) => m.role !== 'system')
+                                .map((m) => ({
+                                  role: m.role as 'user' | 'assistant' | 'tool' | 'system',
+                                  content: m.content,
+                                  timestamp: new Date(),
+                                }))
+                            );
+                            setShowBanner(false);
+                            setScrollOffset(0);
+                          } else {
+                            setMessages((prev) => [
+                              ...prev,
+                              {
+                                role: 'system',
+                                content: `Session "${id}" could not be loaded.`,
                                 timestamp: new Date(),
-                              }))
-                          );
-                          setShowBanner(false);
-                          setScrollOffset(0);
-                        } else {
+                              },
+                            ]);
+                          }
+                        } catch {
                           setMessages((prev) => [
                             ...prev,
                             {
                               role: 'system',
-                              content: `Session "${id}" could not be loaded.`,
+                              content: 'Failed to resume session.',
                               timestamp: new Date(),
                             },
                           ]);
                         }
-                      } catch {
-                        setMessages((prev) => [
-                          ...prev,
-                          {
-                            role: 'system',
-                            content: 'Failed to resume session.',
-                            timestamp: new Date(),
-                          },
-                        ]);
-                      }
+                      })();
                     }}
                     onCancel={() => setSessionList(null)}
                   />
@@ -2482,7 +2775,7 @@ export function App({ config, registry, resumeId }: AppProps) {
                           await dp.connect();
                           if (!gatewayRef.current) {
                             const { Gateway } = await import('../gateway/Gateway.js');
-                            gatewayRef.current = new Gateway(config, registry);
+                            gatewayRef.current = new Gateway(config, registry, cronDaemon);
                           }
                           gatewayRef.current.register(dp);
                           if (!config.gateway) config.gateway = {};
@@ -2502,7 +2795,7 @@ export function App({ config, registry, resumeId }: AppProps) {
                           await tp.connect();
                           if (!gatewayRef.current) {
                             const { Gateway } = await import('../gateway/Gateway.js');
-                            gatewayRef.current = new Gateway(config, registry);
+                            gatewayRef.current = new Gateway(config, registry, cronDaemon);
                           }
                           gatewayRef.current.register(tp);
                           if (!config.gateway) config.gateway = {};

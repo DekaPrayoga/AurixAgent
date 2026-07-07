@@ -1,10 +1,21 @@
 import type { ToolDef } from '../providers/index.js';
 
+export interface ToolExecutionEvent {
+  type: 'chunk';
+  data: string;
+  stream?: 'stdout' | 'stderr';
+}
+
+export interface ToolExecutionContext {
+  onEvent?: (event: ToolExecutionEvent) => void;
+}
+
 export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
   execute(args: Record<string, unknown>): Promise<string>;
+  executeWithEvents?(args: Record<string, unknown>, context: ToolExecutionContext): Promise<string>;
 }
 
 export type PermissionMode = 'ask' | 'bypass' | 'deny';
@@ -89,6 +100,22 @@ export class ToolRegistry {
   }
 
   async execute(name: string, args: Record<string, unknown>): Promise<string> {
+    return this.runTool(name, args);
+  }
+
+  async executeWithEvents(
+    name: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext = {}
+  ): Promise<string> {
+    return this.runTool(name, args, context);
+  }
+
+  private async runTool(
+    name: string,
+    args: Record<string, unknown>,
+    context?: ToolExecutionContext
+  ): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Error: Unknown tool "${name}"`;
 
@@ -123,6 +150,7 @@ export class ToolRegistry {
     }
 
     try {
+      if (context && tool.executeWithEvents) return await tool.executeWithEvents(args, context);
       return await tool.execute(args);
     } catch (e: any) {
       return `Error executing ${name}: ${e.message}`;

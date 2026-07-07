@@ -1,103 +1,145 @@
 import * as cron from 'node-cron';
+import crypto from 'crypto';
 import { AgentLoop } from './AgentLoop.js';
-import { ToolRegistry } from '../tools/Registry.js';
 import { loadConfig } from './Config.js';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import type { ToolRegistry } from '../tools/Registry.js';
+import { getSessionStore, type ScheduledJob, type ScheduledJobRun } from './SessionStore.js';
 
-export interface CronJob {
-  id: string;
-  schedule: string;
-  prompt: string;
-  status: 'active' | 'paused';
-  createdAt: number;
+export interface CronTarget {
+  platform?: string;
+  channelId?: string;
+  replyTo?: string;
 }
 
+export type CronDelivery = (job: ScheduledJob, result: string) => Promise<void>;
+
+export type CronJob = ScheduledJob;
+
 export class CronDaemon {
-  private jobs: Map<string, CronJob> = new Map();
-  private scheduledTasks: Map<string, cron.ScheduledTask> = new Map();
-  private dbPath: string;
-  private registry: ToolRegistry;
+  private scheduledTasks = new Map<string, cron.ScheduledTask>();
+  private ready: Promise<void> | null = null;
 
-  constructor(registry: ToolRegistry) {
-    this.registry = registry;
-    const aurixDir = path.join(os.homedir(), '.aurix');
-    if (!fs.existsSync(aurixDir)) fs.mkdirSync(aurixDir, { recursive: true });
-    this.dbPath = path.join(aurixDir, 'cron.json');
-    this.loadJobs();
+  constructor(
+    private registry: ToolRegistry,
+    private deliver?: CronDelivery
+  ) {}
+
+  setDelivery(deliver: CronDelivery): void {
+    this.deliver = deliver;
   }
 
-  private loadJobs() {
-    if (!fs.existsSync(this.dbPath)) return;
-    try {
-      const data = JSON.parse(fs.readFileSync(this.dbPath, 'utf8'));
-      for (const job of data as CronJob[]) {
-        this.jobs.set(job.id, job);
-        if (job.status === 'active') {
-          this.scheduleJob(job);
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load cron jobs:', e);
+  async start(): Promise<void> {
+    if (!this.ready) {
+      this.ready = this.loadJobs();
+    }
+    await this.ready;
+  }
+
+  private async loadJobs(): Promise<void> {
+    const store = await getSessionStore();
+    for (const job of store.listScheduledJobs(false)) {
+      this.scheduleJob(job);
     }
   }
 
-  private saveJobs() {
-    try {
-      fs.writeFileSync(this.dbPath, JSON.stringify(Array.from(this.jobs.values()), null, 2));
-    } catch (e) {
-      console.error('Failed to save cron jobs:', e);
-    }
+  private scheduleJob(job: ScheduledJob): void {
+    if (this.scheduledTasks.has(job.id)) return;
+    if (!cron.validate(job.schedule)) return;
+    const task = cron.schedule(job.schedule, () => {
+      this.runJob(job.id).catch((err) => {
+        console.error(`[Cron Job ${job.id}] Execution failed:`, err?.message || String(err));
+      });
+    });
+    this.scheduledTasks.set(job.id, task);
   }
 
-  public addJob(schedule: string, prompt: string): CronJob {
+  async addJob(schedule: string, prompt: string, target: CronTarget = {}): Promise<CronJob> {
+    await this.start();
     if (!cron.validate(schedule)) throw new Error('Invalid cron expression');
-    
-    const id = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-    const job: CronJob = {
+    const store = await getSessionStore();
+    const id = `cron_${crypto.randomBytes(5).toString('hex')}`;
+    const job = store.upsertScheduledJob({
       id,
       schedule,
       prompt,
       status: 'active',
-      createdAt: Date.now()
-    };
-    
-    this.jobs.set(id, job);
+      targetPlatform: target.platform,
+      targetChannelId: target.channelId,
+      targetReplyTo: target.replyTo,
+    });
     this.scheduleJob(job);
-    this.saveJobs();
     return job;
   }
 
-  public removeJob(id: string): boolean {
+  async removeJob(id: string): Promise<boolean> {
+    await this.start();
     const task = this.scheduledTasks.get(id);
     if (task) {
       task.stop();
       this.scheduledTasks.delete(id);
     }
-    const result = this.jobs.delete(id);
-    this.saveJobs();
-    return result;
+    const store = await getSessionStore();
+    return store.removeScheduledJob(id);
   }
 
-  public listJobs(): CronJob[] {
-    return Array.from(this.jobs.values());
+  async listJobs(): Promise<CronJob[]> {
+    await this.start();
+    const store = await getSessionStore();
+    return store.listScheduledJobs(true);
   }
 
-  private scheduleJob(job: CronJob) {
-    const task = cron.schedule(job.schedule, async () => {
-      console.log(`[Cron Trigger] Executing job ${job.id}: ${job.prompt}`);
-      try {
-        const config = await loadConfig();
-        const agent = new AgentLoop(config, this.registry);
-        // Execute background agent quietly
-        agent.setMessages([{ role: 'user', content: `[CRON TRIGGERED TASK] Please execute the following autonomous task: ${job.prompt}\n\nDo not ask the user for confirmation, just do it and log results if any.` }]);
-        for await (const _ of agent.run(job.prompt)) {}
-        console.log(`[Cron Job ${job.id}] Finished successfully.`);
-      } catch (err: any) {
-        console.error(`[Cron Job ${job.id}] Execution failed:`, err.message);
+  async runJob(id: string): Promise<ScheduledJobRun> {
+    await this.start();
+    const store = await getSessionStore();
+    const job = store.listScheduledJobs(true).find((j) => j.id === id);
+    if (!job) throw new Error(`Cron job not found: ${id}`);
+    if (job.status !== 'active') throw new Error(`Cron job is ${job.status}: ${id}`);
+
+    const startedAt = new Date().toISOString();
+    const runId = store.recordScheduledJobRun({ jobId: id, startedAt, status: 'running' });
+
+    try {
+      const config = loadConfig();
+      const agent = new AgentLoop(config, this.registry);
+      agent.setSessionKey(`cron:${id}`);
+      let finalText = '';
+      const prompt = `[CRON TRIGGERED TASK]\n${job.prompt}\n\nRun autonomously. If this job has a gateway delivery target, produce a concise final answer suitable for sending to that chat.`;
+      for await (const event of agent.run(prompt)) {
+        if (event.type === 'text' && event.data) finalText = event.data;
+        if (event.type === 'error' && event.data) finalText = `Error: ${event.data}`;
       }
-    });
-    this.scheduledTasks.set(job.id, task);
+      const finishedAt = new Date().toISOString();
+      const result = finalText || '(cron job completed with no final text)';
+      if (this.deliver && job.targetPlatform && job.targetChannelId) {
+        await this.deliver(job, result);
+      }
+      const run: ScheduledJobRun = {
+        id: runId,
+        jobId: id,
+        startedAt,
+        finishedAt,
+        status: 'success',
+        result,
+      };
+      store.recordScheduledJobRun(run);
+      return run;
+    } catch (err: any) {
+      const finishedAt = new Date().toISOString();
+      const run: ScheduledJobRun = {
+        id: runId,
+        jobId: id,
+        startedAt,
+        finishedAt,
+        status: 'error',
+        error: err?.message || String(err),
+      };
+      store.recordScheduledJobRun(run);
+      return run;
+    }
+  }
+
+  stop(): void {
+    for (const task of this.scheduledTasks.values()) task.stop();
+    this.scheduledTasks.clear();
   }
 }

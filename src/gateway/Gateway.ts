@@ -6,6 +6,9 @@ import type { AurixConfig } from '../agent/Config.js';
 import { loadConfig, saveConfig } from '../agent/Config.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
 import { MemoryEngine } from '../agent/MemoryEngine.js';
+import { renderToolEnd, renderToolStart } from '../agent/ToolEventRenderer.js';
+import { CronDaemon } from '../agent/CronDaemon.js';
+import { getSessionStore } from '../agent/SessionStore.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
@@ -89,6 +92,7 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   /cancel — Stop current task (unlocks queue)
   /title [name] — Name & save session (auto-random if no name)
   /resume [name] — Load a saved session (list if no name)
+  /history-search <query> — Search durable sessions
   /save — Save current session
   /status — Model, provider, uptime
   /history — Message count
@@ -118,7 +122,8 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
 
 *Advanced:*
   /compress — Compress context
-  /agents — Show active agents
+  /agents — Show active agents/jobs
+  /cron — Manage scheduled automations
   /btw <text> — Add context while agent is working
 
 💡 *RESEARCH DEPTH:*
@@ -145,6 +150,7 @@ const WA_COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   !ai cancel — Stop current task
   !ai status — Model, provider, uptime
   !ai history — Message count
+  !ai history-search <query> — Search durable sessions
 
 *Configuration:*
   !ai model <name> — Switch AI model
@@ -188,6 +194,7 @@ const KNOWN_COMMANDS = new Set([
   'save',
   'status',
   'history',
+  'history-search',
   'model',
   'baseurl',
   'apikey',
@@ -205,308 +212,11 @@ const KNOWN_COMMANDS = new Set([
   'xlsx',
   'compress',
   'agents',
+  'cron',
   'btw',
   'proxy',
   'login',
 ]);
-
-const STATUS_EMOJIS: Record<string, string> = {
-  thinking: '❄️',
-  tool_start: '❄️',
-  text: '❄️',
-  done: '✅',
-  error: '❌',
-};
-
-function formatStatus(status: string, detail?: string): string {
-  const emoji = STATUS_EMOJIS[status] || '❄️';
-  const label: Record<string, string> = {
-    thinking: 'Thinking...',
-    tool_start: `using_tools: ${detail || 'tool'}`,
-    text: 'Writing response...',
-    done: 'Done!',
-    error: 'Error',
-  };
-  return `${emoji} ${label[status] || status}`;
-}
-
-const SOURCE_LABELS: Record<string, string> = {
-  reddit: 'Reddit',
-  x: 'X/Twitter',
-  twitter: 'X/Twitter',
-  youtube: 'YouTube',
-  tiktok: 'TikTok',
-  hackernews: 'Hacker News',
-  polymarket: 'Polymarket',
-  github: 'GitHub',
-  instagram: 'Instagram',
-  bluesky: 'Bluesky',
-  threads: 'Threads',
-  pinterest: 'Pinterest',
-  web: 'Web',
-  digg: 'Digg',
-  truthsocial: 'Truth Social',
-  facebook: 'Facebook',
-};
-
-function shortPath(value?: unknown): string {
-  const file = value ? String(value) : '';
-  return file.split('/').pop() || file;
-}
-
-function truncateLines(text: string, maxLines = 30, maxLineLength = 140): string {
-  const lines = safeDisplayText(text)
-    .split('\n')
-    .map((line) => (line.length > maxLineLength ? line.slice(0, maxLineLength - 1) + '…' : line));
-  if (lines.length <= maxLines) return lines.join('\n');
-  return lines.slice(0, maxLines).join('\n') + `\n… (${lines.length - maxLines} more lines)`;
-}
-
-function formatToolStatus(toolName: string, args?: Record<string, unknown>): string {
-  const name = toolName || 'tool';
-  const lower = name.toLowerCase();
-  const file = args?.file_path || args?.path;
-  const query = args?.query ? String(args.query) : '';
-  const url = args?.url ? String(args.url) : '';
-  const target = args?.target ? String(args.target) : '';
-  const detail = query || url || target;
-
-  if (lower === 'terminal' || lower === 'bash' || lower === 'code_exec') {
-    const command = args?.command || args?.code || '';
-    const lang = lower === 'code_exec' ? String(args?.language || 'code') : 'shell';
-    const label = lower === 'code_exec' ? 'Executing Code' : 'Running Terminal';
-    return `🖥️ **${label}**\n\n\`\`\`${lang}\n${truncateLines(String(command || '(no command)'), 30)}\n\`\`\``;
-  }
-
-  if (lower === 'spawn_agent') {
-    const role = args?.role || args?.agent || args?.specialist || args?.name || 'specialist';
-    const task = args?.task || args?.prompt || query;
-    return `🤖 **Spawning Agent**\n${String(role)}${task ? `\n${String(task).slice(0, 160)}` : ''}`;
-  }
-
-  if (lower === 'mcp_manage') {
-    const action = args?.action ? String(args.action) : 'manage';
-    const server = args?.server || args?.name || args?.package || '';
-    return `🔌 **Managing MCP**\n${action}${server ? ` · ${String(server)}` : ''}`;
-  }
-
-  if (lower === 'web_fetch' || lower === 'web_scrape') {
-    return `🌐 **Fetching Web**${url ? `\n${url}` : query ? `\n${query}` : ''}`;
-  }
-
-  if (lower === 'web_search') {
-    return `🔎 **Searching Web**${query ? `\n${query}` : ''}`;
-  }
-
-  if (lower === 'youtube_transcript') {
-    const video = url || query || String(args?.video_id || args?.id || 'YouTube video');
-    return `▶️ **Reading YouTube Transcript**\n${video}`;
-  }
-
-  if (lower === 'research' || lower === 'china_ai_research') {
-    const depth = args?.depth ? ` (${String(args.depth)})` : '';
-    const label = lower === 'china_ai_research' ? 'Researching China AI' : 'Researching';
-    return `🔬 **${label}**${depth}${query ? `\n${query}` : ''}`;
-  }
-
-  if (lower === 'research_forums') {
-    const sources = args?.sources
-      ? String(args.sources)
-          .split(',')
-          .map((s) => SOURCE_LABELS[s.trim().toLowerCase()] || s.trim())
-      : ['Reddit', 'X/Twitter', 'YouTube', 'Hacker News', 'GitHub', 'Web'];
-    return `💬 **Scanning Forums**\n${sources.join(', ')}`;
-  }
-
-  if (lower === 'browser') {
-    const action = args?.action ? String(args.action) : 'action';
-    const browserTarget = args?.target ? ` → ${String(args.target).slice(0, 80)}` : '';
-    const value = args?.value ? `\n${String(args.value).slice(0, 120)}` : '';
-    return `🧭 **Browser ${action}**${browserTarget}${value}`;
-  }
-
-  if (lower === 'read_file' || lower === 'read_archive') {
-    const range = args?.offset ? `:${String(args.offset)}` : '';
-    const label = lower === 'read_archive' ? 'Reading Archive' : 'Reading File';
-    return `📖 **${label}**\n${shortPath(file)}${range}`;
-  }
-
-  if (lower === 'write_file') {
-    return `✍️ **Writing File**\n${shortPath(file)}`;
-  }
-
-  if (lower === 'file_edit') {
-    const line = args?.line || args?.offset ? ` line ${String(args.line || args.offset)}` : '';
-    return `📝 **Editing File${line}**\n${shortPath(file)}`;
-  }
-
-  if (lower === 'delete_file' || lower === 'delete_folder') {
-    const label = lower === 'delete_folder' ? 'Deleting Folder' : 'Deleting File';
-    return `🗑️ **${label}**\n${shortPath(file)}`;
-  }
-
-  if (lower === 'search_files') {
-    const pattern = args?.pattern ? String(args.pattern).slice(0, 80) : '';
-    const where = args?.path ? ` in ${String(args.path)}` : '';
-    return `🔍 **Searching Files**\n${pattern}${where}`;
-  }
-
-  if (lower.startsWith('git_') || lower.startsWith('gh_') || lower.includes('github')) {
-    const gitLabels: Record<string, string> = {
-      git_advanced: 'Advanced Git',
-      gh_pr_create: 'Creating GitHub PR',
-      gh_issue_create: 'Creating GitHub Issue',
-      gh_pr_list: 'Listing GitHub PRs',
-      gh_repo_info: 'Reading GitHub Repo',
-      github_connect: 'Connecting GitHub',
-      github_pr: 'Working GitHub PR',
-      github_issue: 'Working GitHub Issue',
-      github_search: 'Searching GitHub',
-    };
-    return `🐙 **${gitLabels[lower] || 'GitHub / Git'}**\n${detail || name}`;
-  }
-
-  const documentLabels: Record<string, string> = {
-    pdf: 'Generating PDF',
-    generate_pptx: 'Generating Slides',
-    generate_excel: 'Generating Spreadsheet',
-    email: 'Composing Email',
-  };
-  if (documentLabels[lower]) {
-    return `📄 **${documentLabels[lower]}**\n${shortPath(file) || detail || name}`;
-  }
-
-  if (lower === 'send_file') {
-    return `📎 **Sending File**\n${shortPath(file)}`;
-  }
-
-  if (lower === 'ask_user') {
-    return `❓ **Asking User**`;
-  }
-
-  if (lower === 'todo' || lower === 'planning') {
-    const label = lower === 'todo' ? 'Updating Tasks' : 'Planning';
-    return `📋 **${label}**\n${detail || name}`;
-  }
-
-  if (lower === 'memory') {
-    const action = args?.action ? String(args.action) : 'update';
-    return `🧠 **Updating Memory**\n${action}`;
-  }
-
-  if (lower === 'skill_loader') {
-    return `📚 **Loading Skill**\n${detail || String(args?.skill || args?.name || name)}`;
-  }
-
-  if (lower === 'system_info') {
-    return `📊 **Checking System**\nCPU · memory · disk`;
-  }
-
-  if (lower === 'docker_manage') {
-    const action = args?.action ? String(args.action) : 'manage';
-    const service = args?.container || args?.image || args?.service || args?.name || '';
-    return `🐳 **Managing Docker**\n${action}${service ? ` · ${String(service)}` : ''}`;
-  }
-
-  if (lower === 'vps') {
-    const action = args?.action ? String(args.action) : 'manage';
-    return `🖧 **Managing VPS**\n${action}${detail ? ` · ${detail}` : ''}`;
-  }
-
-  const cloudLabels: Record<string, string> = {
-    gcloud_status: 'Checking Google Cloud',
-    gcloud_deploy: 'Deploying to Google Cloud',
-    aws_status: 'Checking AWS',
-    aws_deploy: 'Deploying to AWS',
-    cloud_cost: 'Checking Cloud Cost',
-  };
-  if (cloudLabels[lower]) {
-    const project = args?.project || args?.service || args?.region || '';
-    return `☁️ **${cloudLabels[lower]}**${project ? `\n${String(project)}` : ''}`;
-  }
-
-  const deployLabels: Record<string, string> = {
-    deploy_vercel: 'Deploying to Vercel',
-    deploy_github_pages: 'Deploying GitHub Pages',
-    setup_ci: 'Setting Up CI',
-    deploy_status: 'Checking Deploy Status',
-  };
-  if (deployLabels[lower]) {
-    return `🚀 **${deployLabels[lower]}**${detail ? `\n${detail}` : ''}`;
-  }
-
-  const frontendLabels: Record<string, string> = {
-    scaffold_project: 'Scaffolding Frontend',
-    generate_component: 'Generating Component',
-    build_check: 'Checking Frontend Build',
-  };
-  if (frontendLabels[lower]) {
-    const subject = args?.component || args?.framework || args?.project || args?.name || detail;
-    return `🎨 **${frontendLabels[lower]}**${subject ? `\n${String(subject)}` : ''}`;
-  }
-
-  const backendLabels: Record<string, string> = {
-    scaffold_api: 'Scaffolding API',
-    generate_schema: 'Generating Schema',
-    generate_endpoint: 'Generating Endpoint',
-    setup_auth: 'Setting Up Auth',
-    generate_dockerfile: 'Generating Dockerfile',
-  };
-  if (backendLabels[lower]) {
-    const subject = args?.endpoint || args?.schema || args?.framework || args?.name || detail;
-    return `🧱 **${backendLabels[lower]}**${subject ? `\n${String(subject)}` : ''}`;
-  }
-
-  if (lower === 'evm_wallet') {
-    const action = args?.action ? String(args.action) : 'wallet';
-    return `⛓️ **EVM Wallet**\n${action}${detail ? ` · ${detail}` : ''}`;
-  }
-
-  if (lower === 'solana_wallet') {
-    const action = args?.action ? String(args.action) : 'wallet';
-    return `◎ **Solana Wallet**\n${action}${detail ? ` · ${detail}` : ''}`;
-  }
-
-  if (lower === 'trading') {
-    const symbol = args?.symbol || args?.pair || args?.asset || detail;
-    return `📈 **Trading Analysis**${symbol ? `\n${String(symbol)}` : ''}`;
-  }
-
-  if (lower === 'maps_lookup') {
-    return `🗺️ **Looking Up Maps**${detail ? `\n${detail}` : ''}`;
-  }
-
-  if (lower === 'music') {
-    return `🎧 **Working with Music**${detail ? `\n${detail}` : ''}`;
-  }
-
-  if (lower === 'setup_notifier') {
-    return `🔔 **Setting Up Notifier**${detail ? `\n${detail}` : ''}`;
-  }
-
-  if (lower === 'humanize_text') {
-    return `✨ **Humanizing Text**`;
-  }
-
-  if (lower.includes('osint') || lower.includes('cybersec')) {
-    const label = lower.includes('osint') ? 'OSINT Investigation' : 'Security Research';
-    return `🛡️ **${label}**\n${detail || name}`;
-  }
-
-  if (lower === 'generate_diagram') {
-    return `🗺️ **Generating Diagram**${detail ? `\n${detail}` : ''}`;
-  }
-
-  if (lower === 'gif_search') {
-    return `🖼️ **Searching GIFs**${query ? `\n${query}` : ''}`;
-  }
-
-  if (lower.includes('image') || lower.includes('diagram') || lower.includes('gif')) {
-    return `🖼️ **Generating Visual**\n${name}`;
-  }
-
-  return `🧰 **${name}**`;
-}
 
 function cleanResponse(text: string): string {
   return safeDisplayText(text)
@@ -573,7 +283,7 @@ function truncateDisplay(text: string, width: number): string {
   return out;
 }
 
-function wrapDisplay(text: string, width: number): string[] {
+function wrapDisplay(text: string, width: number, maxLines = Number.POSITIVE_INFINITY): string[] {
   const value = (text || '').trim();
   if (!value) return [''];
   const words = value.split(/\s+/);
@@ -606,13 +316,14 @@ function wrapDisplay(text: string, width: number): string[] {
   }
 
   if (current || lines.length === 0) lines.push(current);
-  return lines.slice(0, 6);
+  return Number.isFinite(maxLines) ? lines.slice(0, maxLines) : lines;
 }
 
 function parseMarkdownTable(
   lines: string[],
-  start: number
-): { next: number; table: string } | null {
+  start: number,
+  availableWidth = 72
+): { next: number; table: string; pre: boolean } | null {
   if (!lines[start]?.trim().startsWith('|')) return null;
   const rows: string[] = [];
   let i = start;
@@ -623,64 +334,70 @@ function parseMarkdownTable(
   if (rows.length < 2) return null;
   const parseRow = (row: string) =>
     row
+      .trim()
+      .replace(/^\||\|$/g, '')
       .split('|')
-      .slice(1, -1)
-      .map((c) => c.trim());
-  const sepIdx = rows.findIndex((r, idx) => idx > 0 && /^[\s|:-]+$/.test(r.trim()));
+      .map((c) =>
+        c
+          .replace(/<br\s*\/?>/gi, ' / ')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+  const isDivider = (row: string) => parseRow(row).every((cell) => /^:?-{3,}:?$/.test(cell));
+  const sepIdx = rows.findIndex((r, idx) => idx > 0 && isDivider(r));
   if (sepIdx < 1) return null;
-  const headers = parseRow(rows[0]);
-  const body = rows.filter((_, idx) => idx !== 0 && idx !== sepIdx).map(parseRow);
-  if (headers.length === 0 || body.length === 0) return null;
-  const colCount = Math.max(headers.length, ...body.map((r) => r.length));
-  const normalizedHeaders = Array.from(
-    { length: colCount },
-    (_, c) => headers[c] || `Column ${c + 1}`
-  );
-  const normalizedBody = body.map((row) =>
+  const header = parseRow(rows[0]);
+  const body = rows
+    .filter((_, idx) => idx !== 0 && idx !== sepIdx && !isDivider(rows[idx]))
+    .map(parseRow);
+  if (header.length === 0 || body.length === 0) return null;
+  const colCount = Math.max(header.length, ...body.map((r) => r.length));
+  const normalized = [header, ...body].map((row) =>
     Array.from({ length: colCount }, (_, c) => row[c] || '')
   );
-  const widths = normalizedHeaders.map((h, c) => {
-    let max = displayWidth(h);
-    for (const row of normalizedBody) max = Math.max(max, displayWidth(row[c] || ''));
-    return Math.min(Math.max(max, 6), 18);
-  });
-  let totalWidth = widths.reduce((sum, w) => sum + w + 3, 1);
-  while (totalWidth > 74 && widths.some((w) => w > 8)) {
-    let widest = 0;
-    for (let idx = 1; idx < widths.length; idx++) {
-      if (widths[idx] > widths[widest]) widest = idx;
-    }
-    widths[widest] -= 1;
-    totalWidth = widths.reduce((sum, w) => sum + w + 3, 1);
+  const widths = Array.from({ length: colCount }, (_, c) =>
+    Math.max(3, ...normalized.map((row) => displayWidth(row[c] || '')))
+  );
+  const horizontalWidth = widths.reduce((sum, width) => sum + width, 0) + 3 * colCount + 1;
+
+  if (horizontalWidth <= Math.max(availableWidth, 20)) {
+    const pad = (value: string, width: number) =>
+      value + ' '.repeat(Math.max(0, width - displayWidth(value)));
+    const rowLine = (row: string[]) =>
+      '| ' + row.map((cell, idx) => pad(cell, widths[idx])).join(' | ') + ' |';
+    const divider = '|' + widths.map((width) => '-'.repeat(width + 2)).join('|') + '|';
+    return {
+      next: i,
+      table: [rowLine(normalized[0]), divider, ...normalized.slice(1).map(rowLine)].join('\n'),
+      pre: true,
+    };
   }
-  const pad = (value: string, width: number) => {
-    const clean = truncateDisplay(value || '', width);
-    return clean + ' '.repeat(Math.max(0, width - displayWidth(clean)));
-  };
-  const border = (left: string, mid: string, right: string) =>
-    left + widths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
-  const rowLines = (cells: string[]) => {
-    const wrapped = widths.map((width, c) => wrapDisplay(cells[c] || '', width));
-    const height = Math.max(...wrapped.map((cell) => cell.length), 1);
-    return Array.from({ length: height }, (_, lineIdx) => {
-      return (
-        '│' +
-        Array.from(
-          { length: colCount },
-          (_, c) => ` ${pad(wrapped[c][lineIdx] || '', widths[c])} `
-        ).join('│') +
-        '│'
-      );
-    });
-  };
-  const out = [
-    border('┌', '┬', '┐'),
-    ...rowLines(normalizedHeaders),
-    border('├', '┼', '┤'),
-    ...normalizedBody.flatMap(rowLines),
-    border('└', '┴', '┘'),
-  ].join('\n');
-  return { next: i, table: out };
+
+  const labels = normalized[0].map((label, idx) => label || `Column ${idx + 1}`);
+  const separator = '─'.repeat(Math.max(20, Math.min(40, availableWidth - 2)));
+  const vertical: string[] = [];
+  for (const [rowIdx, row] of normalized.slice(1).entries()) {
+    if (rowIdx > 0) vertical.push(separator);
+    for (let col = 0; col < colCount; col++) {
+      const label = labels[col];
+      const value = row[col] || '';
+      if (!value) {
+        vertical.push(`**${label}:**`);
+        continue;
+      }
+      const firstBudget = Math.max(10, availableWidth - displayWidth(label) - 2);
+      const contBudget = Math.max(10, availableWidth - 2);
+      const wrapped = wrapDisplay(value, firstBudget);
+      vertical.push(`**${label}:** ${wrapped[0]}`);
+      const rest = wrapped.slice(1).join(' ');
+      if (rest) {
+        for (const line of wrapDisplay(rest, contBudget)) {
+          if (line.trim()) vertical.push(`  ${line}`);
+        }
+      }
+    }
+  }
+  return { next: i, table: vertical.join('\n'), pre: false };
 }
 
 function formatMarkdownTablesForTelegram(text: string): string {
@@ -689,13 +406,68 @@ function formatMarkdownTablesForTelegram(text: string): string {
   for (let i = 0; i < lines.length; ) {
     const table = parseMarkdownTable(lines, i);
     if (table) {
-      out.push('```text', table.table, '```');
+      out.push(table.pre ? `\`\`\`text\n${table.table}\n\`\`\`` : table.table);
       i = table.next;
     } else {
       out.push(lines[i]);
       i++;
     }
   }
+  return out.join('\n');
+}
+
+function formatBoxDrawingTables(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  const isTableLine = (line: string) => /^[\s]*[┌┬┐├┼┤└┴┘│─]+/.test(line);
+  const isBorderLine = (line: string) => /^[\s]*[┌┬┐├┼┤└┴┘─]+[\s]*$/.test(line);
+  const splitRow = (line: string) =>
+    line
+      .trim()
+      .replace(/^│|│$/g, '')
+      .split('│')
+      .map((cell) => cell.replace(/\s+/g, ' ').trim());
+  const renderRows = (rows: string[][]) => {
+    if (rows.length < 2) return rows.map((row) => row.join(' — ')).join('\n');
+    const headers = rows[0];
+    const body = rows.slice(1);
+    const isIndexColumn = /^(?:#|no\.?|num(?:ber)?)$/i.test(headers[0] || '');
+    return body
+      .map((row) => {
+        if (headers.length === 2)
+          return `• **${headers[0]}:** ${row[0] || ''} — **${headers[1]}:** ${row[1] || ''}`;
+        const startCol = isIndexColumn ? 1 : 0;
+        const prefix = startCol === 1 && row[0] ? `• **${row[0]}** ` : '• ';
+        const parts = headers
+          .slice(startCol)
+          .map((header, idx) => {
+            const value = row[idx + startCol] || '';
+            return value ? `**${header}:** ${value}` : '';
+          })
+          .filter(Boolean);
+        return prefix + parts.join(' — ');
+      })
+      .join('\n');
+  };
+
+  for (let i = 0; i < lines.length; ) {
+    if (!isTableLine(lines[i])) {
+      out.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    const block: string[] = [];
+    while (i < lines.length && isTableLine(lines[i])) {
+      block.push(lines[i]);
+      i++;
+    }
+    const rows = block
+      .filter((line) => line.trim().startsWith('│') && !isBorderLine(line))
+      .map(splitRow);
+    out.push(rows.length > 0 ? renderRows(rows) : block.join('\n'));
+  }
+
   return out.join('\n');
 }
 
@@ -734,7 +506,7 @@ function markdownToTelegramHtml(text: string): string {
 }
 
 function gatewayText(text: string, platformName?: string): { text: string; options?: any } {
-  const cleaned = cleanResponse(text);
+  const cleaned = formatBoxDrawingTables(cleanResponse(text));
   if (platformName === 'telegram') {
     return {
       text: markdownToTelegramHtml(formatMarkdownTablesForTelegram(cleaned)),
@@ -745,11 +517,13 @@ function gatewayText(text: string, platformName?: string): { text: string; optio
 }
 
 function gatewayPlainText(text: string): string {
-  return stripMarkdown(cleanResponse(text));
+  return stripMarkdown(formatBoxDrawingTables(cleanResponse(text)));
 }
 
 function isProgressPlatform(platform: Platform): boolean {
-  return platform.name === 'telegram' && typeof platform.edit === 'function';
+  // Keep every progress/tool event as its own chat message. Editing a single
+  // status message hides the command/tool timeline from gateway users.
+  return false;
 }
 
 async function sendGatewayMessage(
@@ -779,12 +553,25 @@ export class Gateway extends EventEmitter {
   >();
   private sessionNames = new Map<string, string>();
   private messageQueue = new Map<string, IncomingMessage>();
+  private cronDaemon: CronDaemon;
 
-  constructor(config: AurixConfig, registry: ToolRegistry) {
+  constructor(config: AurixConfig, registry: ToolRegistry, cronDaemon?: CronDaemon) {
     super();
     this.config = config;
     this.registry = registry;
     this.startTime = Date.now();
+    this.cronDaemon = cronDaemon || new CronDaemon(registry);
+    this.cronDaemon.setDelivery(async (job, result) => {
+      const platform = job.targetPlatform ? this.platforms.get(job.targetPlatform) : undefined;
+      if (platform && job.targetChannelId) {
+        await platform.send(
+          stripMarkdown(result).slice(0, 3900),
+          job.targetChannelId,
+          job.targetReplyTo
+        );
+      }
+    });
+    if (!cronDaemon) this.cronDaemon.start().catch(() => {});
 
     setGlobalAskCallback((sessionKey, question, toolOptions) => {
       if (sessionKey === 'default') {
@@ -1221,7 +1008,49 @@ export class Gateway extends EventEmitter {
       if (cmd === 'history') {
         const agent = this.getAgent(agentKey);
         const count = agent.getMessages().length;
-        await platform.send(`📝 ${count} messages in conversation.`, msg.channelId, msg.replyTo);
+        await platform.send(
+          `📝 ${count} messages in conversation.\nDurable session: ${agent.getSessionId()}`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'history-search') {
+        const query = args.trim();
+        if (!query) {
+          await platform.send(
+            'Usage: /history-search <query>\nExample: /history-search geetest',
+            msg.channelId,
+            msg.replyTo
+          );
+          return;
+        }
+        const agent = this.getAgent(agentKey);
+        try {
+          const hits = await agent.searchSessions(query, 8);
+          if (hits.length === 0) {
+            await platform.send(
+              `No durable session hits for: ${query}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          const list = hits
+            .map(
+              (s, i) =>
+                `  ${i + 1}. ${s.id} — ${s.preview || s.snippet || '(empty)'} (${s.messageCount} msg)`
+            )
+            .join('\n');
+          await platform.send(
+            `🔎 History search: "${query}"\n${list}\n\nResume newest match: /resume latest ${query}`,
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`History search failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
         return;
       }
 
@@ -1267,12 +1096,25 @@ export class Gateway extends EventEmitter {
 
       if (cmd === 'resume') {
         let name = args.trim();
-        const memory = new MemoryEngine();
+        const listingAgent = this.getAgent(agentKey);
         if (!name) {
-          const sessions = memory.listSessions().slice(0, 10);
+          const sessions = await listingAgent.listDurableSessions(10);
           if (sessions.length === 0) {
+            const memory = new MemoryEngine();
+            const legacy = memory.listSessions().slice(0, 10);
+            if (legacy.length === 0) {
+              await platform.send(
+                'No saved CLI/gateway sessions found. Use /title <name> or send a message to create durable history.',
+                msg.channelId,
+                msg.replyTo
+              );
+              return;
+            }
+            const list = legacy
+              .map((s, i) => `  ${i + 1}. ${s.id} — ${s.preview} (${s.messageCount} msg)`)
+              .join('\n');
             await platform.send(
-              'No saved CLI/gateway sessions found. Use /title <name> or exit AURIX CLI once to create one.',
+              `💾 Legacy AURIX sessions:\n${list}\n\nResume any session with: /resume <id>`,
               msg.channelId,
               msg.replyTo
             );
@@ -1282,11 +1124,25 @@ export class Gateway extends EventEmitter {
             .map((s, i) => `  ${i + 1}. ${s.id} — ${s.preview} (${s.messageCount} msg)`)
             .join('\n');
           await platform.send(
-            `💾 Shared AURIX sessions:\n${list}\n\nResume any CLI or gateway session with: /resume <id>`,
+            `💾 Shared durable AURIX sessions:\n${list}\n\nResume newest match: /resume latest <query>\nResume exact: /resume <id>`,
             msg.channelId,
             msg.replyTo
           );
           return;
+        }
+
+        if (name.toLowerCase().startsWith('latest')) {
+          const query = name.slice('latest'.length).trim();
+          const latest = await listingAgent.findLatestSession(query || undefined);
+          if (!latest) {
+            await platform.send(
+              query ? `❌ No session matches: ${query}` : '❌ No durable sessions found.',
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          name = latest.id;
         }
 
         this.agents.get(agentKey)?.interrupt();
@@ -1294,7 +1150,7 @@ export class Gateway extends EventEmitter {
         this.messageQueue.delete(agentKey);
         this.agents.delete(agentKey);
         const agent = this.getAgent(agentKey);
-        const count = agent.loadSession(name);
+        const count = await agent.loadSessionAsync(name);
         if (count > 0) {
           this.sessionNames.set(agentKey, name);
           await platform.send(
@@ -1342,11 +1198,118 @@ export class Gateway extends EventEmitter {
       }
 
       if (cmd === 'agents') {
-        await platform.send(
-          '🤖 Native routing: specialists are selected per task when /depth high+ or multi-agent routing applies. No fake always-on agents.',
-          msg.channelId,
-          msg.replyTo
-        );
+        try {
+          const store = await getSessionStore();
+          const jobs = store.listAgentJobs(8);
+          if (jobs.length === 0) {
+            await platform.send(
+              '🤖 No persisted agent jobs yet. Native specialists are selected per task when /depth high+ or multi-agent routing applies.',
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          const lines = jobs.map((j, i) => {
+            const count = j.totalAgents ? ` ${j.completedAgents || 0}/${j.totalAgents}` : '';
+            const state = j.finishedAt ? `finished ${j.finishedAt}` : 'running';
+            return `${i + 1}. ${j.id} ${j.status}${count} — ${state}${j.lastStatus ? ` — ${j.lastStatus}` : ''}\n   ${j.prompt.replace(/\s+/g, ' ').slice(0, 100)}`;
+          });
+          await platform.send(`🤖 Agent jobs\n\n${lines.join('\n')}`, msg.channelId, msg.replyTo);
+        } catch (e: any) {
+          await platform.send(`Agent dashboard failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
+        return;
+      }
+
+      if (cmd === 'cron') {
+        const raw = args.trim();
+        const [subcmd = 'list', ...rest] = raw.split(/\s+/);
+        const action = subcmd.toLowerCase();
+        try {
+          if (!raw || action === 'list') {
+            const jobs = await this.cronDaemon.listJobs();
+            if (jobs.length === 0) {
+              await platform.send(
+                'No scheduled jobs. Add one with: /cron add <cron expr> | <prompt>',
+                msg.channelId,
+                msg.replyTo
+              );
+              return;
+            }
+            const lines = jobs.map(
+              (j, i) =>
+                `${i + 1}. ${j.id} ${j.status} ${j.schedule} — ${j.prompt.slice(0, 100)}${j.lastRunAt ? ` (last: ${j.lastRunAt})` : ''}`
+            );
+            await platform.send(
+              `⏰ Scheduled jobs\n\n${lines.join('\n')}\n\nCommands: /cron add <expr> | <prompt> · /cron remove <id> · /cron run <id>`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          if (action === 'add') {
+            const spec = rest.join(' ');
+            const parts = spec.split('|');
+            if (parts.length < 2) {
+              await platform.send(
+                'Usage: /cron add <cron expr> | <prompt>\nExample: /cron add 0 9 * * * | research China AI news',
+                msg.channelId,
+                msg.replyTo
+              );
+              return;
+            }
+            const schedule = parts[0].trim();
+            const prompt = parts.slice(1).join('|').trim();
+            const job = await this.cronDaemon.addJob(schedule, prompt, {
+              platform: msg.platform,
+              channelId: msg.channelId,
+              replyTo: msg.replyTo,
+            });
+            await platform.send(
+              `⏰ Scheduled job added: ${job.id}\n${job.schedule}\n${job.prompt}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          if (action === 'remove' || action === 'delete' || action === 'rm') {
+            const id = rest[0];
+            if (!id) {
+              await platform.send('Usage: /cron remove <id>', msg.channelId, msg.replyTo);
+              return;
+            }
+            const removed = await this.cronDaemon.removeJob(id);
+            await platform.send(
+              removed ? `Removed scheduled job: ${id}` : `No scheduled job found: ${id}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          if (action === 'run') {
+            const id = rest[0];
+            if (!id) {
+              await platform.send('Usage: /cron run <id>', msg.channelId, msg.replyTo);
+              return;
+            }
+            const run = await this.cronDaemon.runJob(id);
+            await platform.send(
+              run.status === 'success'
+                ? `Cron job ${id} completed.\n\n${stripMarkdown(run.result || '')}`
+                : `Cron job ${id} failed: ${run.error || 'unknown error'}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          await platform.send(
+            'Usage: /cron list | /cron add <expr> | <prompt> | /cron remove <id> | /cron run <id>',
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`Cron error: ${e.message}`, msg.channelId, msg.replyTo);
+        }
         return;
       }
 
@@ -1417,7 +1380,6 @@ export class Gateway extends EventEmitter {
 
       try {
         let fullResponse = '';
-        let lastToolStatus = '';
         const progressMode = isProgressPlatform(platform);
         let progressMessageId: string | undefined;
         let progressCanEdit = false;
@@ -1443,6 +1405,9 @@ export class Gateway extends EventEmitter {
           await platform.send(thinking.text, msg.channelId, msg.replyTo, thinking.options);
         }
 
+        let lastChunkAt = 0;
+        let pendingChunkText = '';
+        let lastPublishedChunkText = '';
         const publishProgress = async (rendered: { text: string; options?: any }) => {
           if (progressMode && progressCanEdit && progressMessageId && platform.edit) {
             await platform.edit(rendered.text, msg.channelId, progressMessageId, rendered.options);
@@ -1469,16 +1434,49 @@ export class Gateway extends EventEmitter {
           imagePaths.length > 0 ? imagePaths : undefined
         )) {
           if (event.type === 'tool_start') {
+            pendingChunkText = '';
+            lastPublishedChunkText = '';
+            lastChunkAt = 0;
             const toolName = event.toolName || event.data;
-            const args = event.toolArgs;
-            const renderedStatus = gatewayText(formatToolStatus(toolName, args), platform.name);
-            const newStatus = renderedStatus.text;
-            if (newStatus !== lastToolStatus) {
+            const renderedStatus = gatewayText(
+              renderToolStart({ toolName, args: event.toolArgs }),
+              platform.name
+            );
+            await publishProgress(renderedStatus);
+            sawToolStatus = true;
+          } else if (event.type === 'tool_chunk') {
+            pendingChunkText = `${pendingChunkText}\n${event.data}`.trim().slice(-1200);
+            const now = Date.now();
+            if (now - lastChunkAt >= 1500) {
+              lastChunkAt = now;
+              lastPublishedChunkText = pendingChunkText;
+              const renderedStatus = gatewayText(
+                `📡 Live ${event.toolName || 'tool'} output\n${pendingChunkText}`,
+                platform.name
+              );
               await publishProgress(renderedStatus);
-              lastToolStatus = newStatus;
-              sawToolStatus = true;
             }
+            sawToolStatus = true;
           } else if (event.type === 'tool_end') {
+            if (pendingChunkText && pendingChunkText !== lastPublishedChunkText) {
+              lastPublishedChunkText = pendingChunkText;
+              const liveStatus = gatewayText(
+                `📡 Live ${event.toolName || 'tool'} output\n${pendingChunkText}`,
+                platform.name
+              );
+              await publishProgress(liveStatus);
+            }
+            const renderedStatus = gatewayText(
+              renderToolEnd({
+                toolName: event.toolName,
+                data: event.data,
+                durationMs: event.durationMs,
+                status: event.status,
+                errorType: event.errorType,
+              }),
+              platform.name
+            );
+            await publishProgress(renderedStatus);
             const files = extractSendableFiles(event.data);
             for (const file of files) {
               if (platform.sendFile) {

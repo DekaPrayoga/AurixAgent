@@ -11,8 +11,11 @@ import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
 import { ContextManager } from './ContextManager.js';
 import { MemoryEngine } from './MemoryEngine.js';
+import { MemoryManager } from './MemoryManager.js';
 import { ResearchPipeline } from './ResearchPipeline.js';
 import type { ResearchDepth } from './research/types.js';
+import { getSessionStore, type SessionSummary } from './SessionStore.js';
+import type { EvidenceItem, SessionStore } from './SessionStore.js';
 import { loadTodos, saveTodos, addTodo, completeTodo, getTodoStats } from '../utils/TodoManager.js';
 
 const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
@@ -74,6 +77,12 @@ type ErrorType =
   | 'network'
   | 'server_error'
   | 'proxy_error'
+  | 'tool_timeout'
+  | 'build_failure'
+  | 'test_failure'
+  | 'permission_denied'
+  | 'source_unavailable'
+  | 'gateway_delivery_failure'
   | 'abort'
   | 'unknown';
 
@@ -84,6 +93,33 @@ function classifyError(e: any): ErrorType {
 
   if (name === 'aborterror' || msg.includes('aborted') || msg.includes('abort')) {
     return 'abort';
+  }
+  if (
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('command killed after timeout')
+  ) {
+    return 'tool_timeout';
+  }
+  if (
+    msg.includes('permission denied') ||
+    msg.includes('not permitted') ||
+    msg.includes('eacces')
+  ) {
+    return 'permission_denied';
+  }
+  if (
+    msg.includes('gateway delivery') ||
+    msg.includes('send failed') ||
+    msg.includes('message delivery')
+  ) {
+    return 'gateway_delivery_failure';
+  }
+  if (/npm err!|tsc|typescript|build failed|compilation failed|vite build|webpack/.test(msg)) {
+    return 'build_failure';
+  }
+  if (/test failed|failing tests|jest|vitest|mocha|pytest|bun test/.test(msg)) {
+    return 'test_failure';
   }
 
   if (
@@ -156,14 +192,32 @@ function classifyError(e: any): ErrorType {
   ) {
     return 'proxy_error';
   }
+  if (msg.includes('not found') || msg.includes('404') || msg.includes('source unavailable')) {
+    return msg.includes('model') ? 'proxy_error' : 'source_unavailable';
+  }
   return 'unknown';
 }
 
 export interface AgentEvent {
-  type: 'text' | 'tool_start' | 'tool_end' | 'error' | 'done' | 'route' | 'compact' | 'research';
+  type:
+    | 'text'
+    | 'tool_start'
+    | 'tool_chunk'
+    | 'tool_end'
+    | 'error'
+    | 'done'
+    | 'route'
+    | 'compact'
+    | 'research';
   data: string;
   toolName?: string;
   toolArgs?: Record<string, unknown>;
+  toolCallId?: string;
+  turnId?: string;
+  sessionId?: string;
+  durationMs?: number;
+  status?: 'running' | 'success' | 'error' | 'timeout' | 'cancelled';
+  errorType?: string;
 }
 
 export class AgentLoop {
@@ -175,9 +229,12 @@ export class AgentLoop {
   private multiAgentMode = false;
   private multiAgent?: MultiAgentSystem;
   private contextManager: ContextManager;
+  private memoryManager: MemoryManager;
   private memoryEngine: MemoryEngine;
   private researchPipeline?: ResearchPipeline;
   private sessionKey = 'default';
+  private sessionId = `sess_${Date.now()}_${randomUUID().slice(0, 8)}`;
+  private sessionStore?: SessionStore;
   private interrupted = false;
   private ledger = new TokenLedger();
   private abortController = new AbortController();
@@ -187,7 +244,8 @@ export class AgentLoop {
     this.provider = createProvider(config);
     this.registry = registry;
     this.contextManager = new ContextManager(this.provider, config.model);
-    this.memoryEngine = new MemoryEngine(this.provider);
+    this.memoryManager = new MemoryManager(this.provider);
+    this.memoryEngine = this.memoryManager.getEngine();
 
     // Wire the provider into the module-level memory tool so `memory remember`
     // can auto-enrich user input before saving. Dynamic import avoids a
@@ -197,6 +255,154 @@ export class AgentLoop {
     const systemPrompt = buildSystemPrompt(config, registry.list());
     this.ledger.set('systemPrompt', countTokens(systemPrompt));
     this.messages.push({ role: 'system', content: systemPrompt });
+  }
+
+  private async getSessionStore(): Promise<SessionStore> {
+    if (!this.sessionStore) this.sessionStore = await getSessionStore();
+    return this.sessionStore;
+  }
+
+  private async ensureDurableSession(): Promise<SessionStore> {
+    const store = await this.getSessionStore();
+    store.upsertSession({
+      id: this.sessionId,
+      platform: this.sessionKey.includes(':') ? this.sessionKey.split(':', 1)[0] : 'cli',
+      userKey: this.sessionKey,
+      model: this.config.model,
+      provider: this.config.provider,
+      cwd: process.cwd(),
+      status: 'active',
+    });
+    return store;
+  }
+
+  private classifyVerificationCommand(command: string): EvidenceItem['kind'] | null {
+    const cmd = command.toLowerCase();
+    if (/\b(tsc|typecheck|type-check)\b/.test(cmd)) return 'typecheck';
+    if (/\b(test|vitest|jest|mocha|pytest|bun test|npm test|pnpm test|yarn test)\b/.test(cmd))
+      return 'test';
+    if (/\b(lint|eslint|biome|prettier --check)\b/.test(cmd)) return 'lint';
+    if (
+      /\b(build|webpack|vite build|rollup|esbuild|cargo build|go build|mvn package|gradle build)\b/.test(
+        cmd
+      )
+    )
+      return 'build';
+    if (/\b(deploy|vercel|railway|flyctl|gcloud run deploy)\b/.test(cmd)) return 'deploy';
+    return null;
+  }
+
+  private hasFailureOutput(output: string): boolean {
+    return /(^|\n)(\[exit \d+\]|\[timeout\]|error:|npm err!|failed|failure|traceback|syntaxerror|typeerror|referenceerror)/i.test(
+      output
+    );
+  }
+
+  private classifyToolResultError(toolName: string, result: string): ErrorType | undefined {
+    const lower = result.toLowerCase();
+    if (lower.includes('[timeout]') || lower.includes('timed out')) return 'tool_timeout';
+    if (
+      lower.includes('permission denied') ||
+      lower.includes('permission required') ||
+      lower.includes('eacces')
+    )
+      return 'permission_denied';
+    if (lower.startsWith('error executing') || lower.startsWith('error:')) return 'unknown';
+    if (toolName === 'terminal') {
+      if (!this.hasFailureOutput(result)) return undefined;
+      if (
+        /tsc|typescript|npm err!|build failed|compilation failed|vite build|webpack/.test(lower)
+      ) {
+        return 'build_failure';
+      }
+      if (/test failed|failing tests|jest|vitest|mocha|pytest|bun test/.test(lower)) {
+        return 'test_failure';
+      }
+    }
+    if (lower.includes('404') || lower.includes('not found')) return 'source_unavailable';
+    if (this.hasFailureOutput(result)) return 'unknown';
+    return undefined;
+  }
+
+  private recordEvidenceFromToolResult(
+    store: SessionStore,
+    turnId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    result: string,
+    status: 'success' | 'error',
+    errorType?: string
+  ): void {
+    if (toolName !== 'terminal') return;
+    const command = String(args.command || '').trim();
+    const kind = this.classifyVerificationCommand(command);
+    if (!kind) return;
+    const failed = status !== 'success' || this.hasFailureOutput(result);
+    store.recordEvidenceItem({
+      sessionId: this.sessionId,
+      turnId,
+      kind,
+      label: `${kind}: ${command}`.slice(0, 220),
+      command,
+      status: failed ? 'failed' : 'passed',
+      result,
+      errorType: failed ? errorType || this.classifyToolResultError(toolName, result) : undefined,
+    });
+  }
+
+  private buildEvidenceSummary(store: SessionStore, turnId?: string): string {
+    const items = store.listEvidenceItems(this.sessionId, 8, turnId).reverse();
+    if (items.length === 0) return '';
+    const lines = items.map((item) => {
+      const icon = item.status === 'passed' ? '✅' : item.status === 'failed' ? '❌' : '⚪';
+      const suffix = item.errorType ? ` (${item.errorType})` : '';
+      return `- ${icon} ${item.label}${suffix}`;
+    });
+    return `\n\nVerified evidence:\n${lines.join('\n')}`;
+  }
+
+  private withEvidenceSummary(text: string, store: SessionStore, turnId?: string): string {
+    const summary = this.buildEvidenceSummary(store, turnId);
+    if (!summary || text.includes('Verified evidence:')) return text;
+    return `${text}${summary}`;
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  async searchSessions(query: string, limit = 10): Promise<SessionSummary[]> {
+    const store = await this.getSessionStore();
+    return store.searchSessions(query, limit);
+  }
+
+  async listDurableSessions(limit = 20): Promise<SessionSummary[]> {
+    const store = await this.getSessionStore();
+    return store.listSessions(limit);
+  }
+
+  async findLatestSession(query?: string): Promise<SessionSummary | null> {
+    const store = await this.getSessionStore();
+    return store.getLatestSession(query);
+  }
+
+  async getToolUsageStats(limit = 15) {
+    const store = await this.getSessionStore();
+    return store.getToolUsageStats(limit);
+  }
+
+  async detectWorkflowPatterns(limit = 10) {
+    const store = await this.getSessionStore();
+    return store.detectWorkflowPatterns(limit);
+  }
+
+  async listAgentJobs(limit = 10) {
+    const store = await this.getSessionStore();
+    return store.listAgentJobs(limit);
+  }
+
+  getMemoryStatus() {
+    return this.memoryManager.getStatus();
   }
 
   toggleMultiAgent(): boolean {
@@ -347,6 +553,8 @@ export class AgentLoop {
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     this.abortController = new AbortController();
+    const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const store = await this.ensureDurableSession();
 
     const executionMode = images?.length ? 'single' : this.selectExecutionMode(userMessage);
     if (executionMode === 'research') {
@@ -371,6 +579,7 @@ export class AgentLoop {
     const msg: Message = { role: 'user', content: userMessage };
     if (images?.length) msg.images = images;
     this.messages.push(msg);
+    store.appendMessage({ sessionId: this.sessionId, turnId, message: msg });
     this.ledger.add('userInput', userMessage);
 
     const loadedSkills = this.autoLoadSkills(userMessage);
@@ -407,6 +616,12 @@ export class AgentLoop {
       server_error: 'server error',
       proxy_error: 'proxy error',
       network: 'network error',
+      tool_timeout: 'tool timeout',
+      build_failure: 'build failure',
+      test_failure: 'test failure',
+      permission_denied: 'permission denied',
+      source_unavailable: 'source unavailable',
+      gateway_delivery_failure: 'gateway delivery failure',
       unknown: 'error',
     };
     const FINAL_MESSAGES: Record<string, (msg: string) => string> = {
@@ -438,7 +653,7 @@ export class AgentLoop {
               // Determine vision provider config
               const { createProvider } = await import('../providers/index.js');
               const vConfig = {
-                provider: this.config.provider,
+                provider: this.config.visionProvider || this.config.provider,
                 baseUrl: this.config.visionBaseUrl || this.config.baseUrl,
                 apiKey: this.config.visionApiKey || this.config.apiKey,
                 model: this.config.visionModel || 'gpt-4o', // Default fallback
@@ -1008,11 +1223,13 @@ export class AgentLoop {
         for (const tc of response.toolCalls) {
           this.ledger.add('toolCalls', `${tc.name} ${JSON.stringify(tc.arguments)}`);
         }
-        this.messages.push({
+        const assistantToolMessage: Message = {
           role: 'assistant',
           content: response.text || '',
           toolCalls: response.toolCalls,
-        });
+        };
+        this.messages.push(assistantToolMessage);
+        store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantToolMessage });
 
         if (response.text) {
           this.ledger.add('agentText', response.text);
@@ -1119,7 +1336,26 @@ export class AgentLoop {
         if (readOnlyCalls.length > 0) {
           if (readOnlyCalls.length === 1) {
             const call = readOnlyCalls[0];
-            yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
+            const startedAt = Date.now();
+            store.recordToolEvent({
+              sessionId: this.sessionId,
+              turnId,
+              toolCallId: call.id,
+              toolName: call.name,
+              phase: 'start',
+              args: call.arguments,
+              status: 'running',
+            });
+            yield {
+              type: 'tool_start',
+              data: '',
+              toolName: call.name,
+              toolArgs: call.arguments,
+              toolCallId: call.id,
+              turnId,
+              sessionId: this.sessionId,
+              status: 'running',
+            };
             try {
               if (SESSION_KEY_TOOLS.has(call.name)) {
                 call.arguments._sessionKey = this.sessionKey;
@@ -1129,10 +1365,41 @@ export class AgentLoop {
                 getToolTimeout(call.name, call.arguments),
                 call.name
               );
+              const rawResult = result;
+              const errorType = this.classifyToolResultError(call.name, rawResult);
+              const toolStatus = errorType ? 'error' : 'success';
               const processed = processResult(result, call.name);
+              const durationMs = Date.now() - startedAt;
               this.ledger.add('toolResults', processed);
-              yield { type: 'tool_end', data: processed, toolName: call.name };
-              this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
+              store.recordToolEvent({
+                sessionId: this.sessionId,
+                turnId,
+                toolCallId: call.id,
+                toolName: call.name,
+                phase: 'end',
+                result: processed,
+                status: toolStatus,
+                durationMs,
+                errorType,
+              });
+              yield {
+                type: 'tool_end',
+                data: processed,
+                toolName: call.name,
+                toolCallId: call.id,
+                turnId,
+                sessionId: this.sessionId,
+                durationMs,
+                status: toolStatus,
+                errorType,
+              };
+              const toolMessage: Message = {
+                role: 'tool',
+                content: processed,
+                toolCallId: call.id,
+              };
+              this.messages.push(toolMessage);
+              store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
 
               const errorKw = [
                 'Traceback (most recent call last):',
@@ -1170,9 +1437,34 @@ export class AgentLoop {
               }
             } catch (e: any) {
               const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
+              const durationMs = Date.now() - startedAt;
+              const errorType = classifyError(e);
               this.ledger.add('toolResults', errMsg);
-              yield { type: 'tool_end', data: errMsg, toolName: call.name };
-              this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
+              store.recordToolEvent({
+                sessionId: this.sessionId,
+                turnId,
+                toolCallId: call.id,
+                toolName: call.name,
+                phase: 'end',
+                result: errMsg,
+                status: errorType === 'abort' ? 'cancelled' : 'error',
+                durationMs,
+                errorType,
+              });
+              yield {
+                type: 'tool_end',
+                data: errMsg,
+                toolName: call.name,
+                toolCallId: call.id,
+                turnId,
+                sessionId: this.sessionId,
+                durationMs,
+                status: errorType === 'abort' ? 'cancelled' : 'error',
+                errorType,
+              };
+              const toolMessage: Message = { role: 'tool', content: errMsg, toolCallId: call.id };
+              this.messages.push(toolMessage);
+              store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
 
               if (['terminal', 'code_exec', 'file_edit', 'write_file'].includes(call.name)) {
                 let retryCount = 0;
@@ -1204,6 +1496,16 @@ export class AgentLoop {
 
             const results = await Promise.all(
               readOnlyCalls.map(async (call) => {
+                const startedAt = Date.now();
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'start',
+                  args: call.arguments,
+                  status: 'running',
+                });
                 try {
                   if (SESSION_KEY_TOOLS.has(call.name)) {
                     call.arguments._sessionKey = this.sessionKey;
@@ -1213,32 +1515,97 @@ export class AgentLoop {
                     getToolTimeout(call.name, call.arguments),
                     call.name
                   );
-                  return { call, result, error: null as any };
+                  return { call, result, error: null as any, startedAt };
                 } catch (e: any) {
-                  return { call, result: '', error: e };
+                  return { call, result: '', error: e, startedAt };
                 }
               })
             );
 
-            for (const { call, result, error } of results) {
+            for (const { call, result, error, startedAt } of results) {
               if (this.interrupted) {
                 this.interrupted = false;
                 yield { type: 'error', data: 'Interrupted during tool execution.' };
                 return;
               }
 
-              yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
+              yield {
+                type: 'tool_start',
+                data: '',
+                toolName: call.name,
+                toolArgs: call.arguments,
+                toolCallId: call.id,
+                turnId,
+                sessionId: this.sessionId,
+                status: 'running',
+              };
 
               if (error) {
                 const errMsg = `Error executing ${call.name}: ${error.message}\n\nTry a different approach.`;
+                const durationMs = Date.now() - startedAt;
+                const errorType = classifyError(error);
                 this.ledger.add('toolResults', errMsg);
-                yield { type: 'tool_end', data: errMsg, toolName: call.name };
-                this.messages.push({ role: 'tool', content: errMsg, toolCallId: call.id });
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'end',
+                  result: errMsg,
+                  status: errorType === 'abort' ? 'cancelled' : 'error',
+                  durationMs,
+                  errorType,
+                });
+                yield {
+                  type: 'tool_end',
+                  data: errMsg,
+                  toolName: call.name,
+                  toolCallId: call.id,
+                  turnId,
+                  sessionId: this.sessionId,
+                  durationMs,
+                  status: errorType === 'abort' ? 'cancelled' : 'error',
+                  errorType,
+                };
+                const toolMessage: Message = { role: 'tool', content: errMsg, toolCallId: call.id };
+                this.messages.push(toolMessage);
+                store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
               } else {
+                const rawResult = result;
+                const errorType = this.classifyToolResultError(call.name, rawResult);
+                const toolStatus = errorType ? 'error' : 'success';
                 const processed = processResult(result, call.name);
+                const durationMs = Date.now() - startedAt;
                 this.ledger.add('toolResults', processed);
-                yield { type: 'tool_end', data: processed, toolName: call.name };
-                this.messages.push({ role: 'tool', content: processed, toolCallId: call.id });
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'end',
+                  result: processed,
+                  status: toolStatus,
+                  durationMs,
+                  errorType,
+                });
+                yield {
+                  type: 'tool_end',
+                  data: processed,
+                  toolName: call.name,
+                  toolCallId: call.id,
+                  turnId,
+                  sessionId: this.sessionId,
+                  durationMs,
+                  status: toolStatus,
+                  errorType,
+                };
+                const toolMessage: Message = {
+                  role: 'tool',
+                  content: processed,
+                  toolCallId: call.id,
+                };
+                this.messages.push(toolMessage);
+                store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
               }
             }
           }
@@ -1255,27 +1622,147 @@ export class AgentLoop {
             call.arguments._sessionKey = this.sessionKey;
           }
 
-          yield { type: 'tool_start', data: '', toolName: call.name, toolArgs: call.arguments };
+          const startedAt = Date.now();
+          store.recordToolEvent({
+            sessionId: this.sessionId,
+            turnId,
+            toolCallId: call.id,
+            toolName: call.name,
+            phase: 'start',
+            args: call.arguments,
+            status: 'running',
+          });
+          yield {
+            type: 'tool_start',
+            data: '',
+            toolName: call.name,
+            toolArgs: call.arguments,
+            toolCallId: call.id,
+            turnId,
+            sessionId: this.sessionId,
+            status: 'running',
+          };
 
           let result: string;
+          let toolStatus: 'success' | 'error' = 'success';
+          let errorType: string | undefined;
           try {
-            result = await withTimeout(
-              this.registry.execute(call.name, call.arguments),
-              getToolTimeout(call.name, call.arguments),
-              call.name
-            );
+            if (call.name === 'terminal') {
+              const pendingChunks: AgentEvent[] = [];
+              let wakeChunk: (() => void) | undefined;
+              const wakeOnChunk = () =>
+                new Promise<void>((resolve) => {
+                  wakeChunk = resolve;
+                });
+              const pushChunk = (chunk: string) => {
+                const data = chunk.trim();
+                if (!data) return;
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'chunk',
+                  result: data,
+                  status: 'running',
+                });
+                pendingChunks.push({
+                  type: 'tool_chunk',
+                  data,
+                  toolName: call.name,
+                  toolCallId: call.id,
+                  turnId,
+                  sessionId: this.sessionId,
+                  status: 'running',
+                });
+                if (wakeChunk) {
+                  const wake = wakeChunk;
+                  wakeChunk = undefined;
+                  wake();
+                }
+              };
+              const execution = withTimeout(
+                this.registry.executeWithEvents(
+                  call.name,
+                  { ...call.arguments, timeout: getToolTimeout(call.name, call.arguments) },
+                  {
+                    onEvent: (event) =>
+                      pushChunk(event.stream === 'stderr' ? `[stderr] ${event.data}` : event.data),
+                  }
+                ),
+                getToolTimeout(call.name, call.arguments),
+                call.name
+              ).then(
+                (value) => ({ value }),
+                (error) => ({ error })
+              );
+              let settled: { value?: string; error?: any } | undefined;
+              while (!settled) {
+                while (pendingChunks.length > 0) yield pendingChunks.shift()!;
+                const next = await Promise.race([execution, wakeOnChunk().then(() => null)]);
+                if (next) settled = next;
+              }
+              while (pendingChunks.length > 0) yield pendingChunks.shift()!;
+              if (settled.error) throw settled.error;
+              result = settled.value || '';
+            } else {
+              result = await withTimeout(
+                this.registry.execute(call.name, call.arguments),
+                getToolTimeout(call.name, call.arguments),
+                call.name
+              );
+            }
           } catch (e: any) {
+            errorType = classifyError(e);
+            toolStatus = 'error';
             result = `Error executing ${call.name}: ${e.message}\n\nDiagnose the error before retrying.`;
           }
+          const rawResult = result;
+          const resultErrorType = this.classifyToolResultError(call.name, rawResult);
           result = processResult(result, call.name);
           result = addPostExecutionHint(result, call.name, call.arguments);
+          if (resultErrorType && toolStatus === 'success') {
+            toolStatus = 'error';
+            errorType = resultErrorType;
+          }
           if (call.name === 'skill_loader' && call.arguments?.action === 'load') {
             this.ledger.add('skills', result);
           } else {
             this.ledger.add('toolResults', result);
           }
 
-          yield { type: 'tool_end', data: result, toolName: call.name };
+          const durationMs = Date.now() - startedAt;
+          store.recordToolEvent({
+            sessionId: this.sessionId,
+            turnId,
+            toolCallId: call.id,
+            toolName: call.name,
+            phase: 'end',
+            result,
+            status: toolStatus,
+            durationMs,
+            errorType,
+          });
+          this.recordEvidenceFromToolResult(
+            store,
+            turnId,
+            call.name,
+            call.arguments,
+            rawResult,
+            toolStatus,
+            errorType
+          );
+          yield {
+            type: 'tool_end',
+            data: result,
+            toolName: call.name,
+            toolCallId: call.id,
+            turnId,
+            sessionId: this.sessionId,
+            durationMs,
+            status: toolStatus,
+            errorType,
+          };
 
           if (this.interrupted) {
             this.interrupted = false;
@@ -1283,11 +1770,13 @@ export class AgentLoop {
             return;
           }
 
-          this.messages.push({
+          const toolMessage: Message = {
             role: 'tool',
             content: result,
             toolCallId: call.id,
-          });
+          };
+          this.messages.push(toolMessage);
+          store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
         }
 
         for (const call of response.toolCalls) {
@@ -1326,9 +1815,12 @@ export class AgentLoop {
         continue;
       }
 
-      this.messages.push({ role: 'assistant', content: response.text });
-      this.ledger.add('agentText', response.text);
-      yield { type: 'text', data: response.text };
+      const finalText = this.withEvidenceSummary(response.text, store, turnId);
+      const assistantMessage: Message = { role: 'assistant', content: finalText };
+      this.messages.push(assistantMessage);
+      store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantMessage });
+      this.ledger.add('agentText', finalText);
+      yield { type: 'text', data: finalText };
       yield { type: 'done', data: '' };
       return;
     }
@@ -1341,7 +1833,16 @@ export class AgentLoop {
 
   private async *runMultiAgent(userMessage: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
-    this.messages.push({ role: 'user', content: userMessage });
+    const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const store = await this.ensureDurableSession();
+    const userMsg: Message = { role: 'user', content: userMessage };
+    this.messages.push(userMsg);
+    store.appendMessage({
+      sessionId: this.sessionId,
+      turnId,
+      message: userMsg,
+      metadata: { mode: 'multiagent' },
+    });
     this.ledger.add('userInput', userMessage);
 
     try {
@@ -1364,7 +1865,20 @@ export class AgentLoop {
 
       while (!done || pendingEvents.length > 0) {
         while (pendingEvents.length > 0) {
-          yield pendingEvents.shift()!;
+          const event = pendingEvents.shift()!;
+          if (event.type === 'tool_start' || event.type === 'tool_end' || event.type === 'route') {
+            store.recordToolEvent({
+              sessionId: this.sessionId,
+              turnId,
+              toolName: event.toolName || event.type,
+              phase: event.type === 'tool_end' ? 'end' : 'start',
+              result: event.data,
+              status: event.type === 'tool_end' ? 'success' : 'running',
+              durationMs: event.durationMs,
+              errorType: event.errorType,
+            });
+          }
+          yield { ...event, turnId, sessionId: this.sessionId };
         }
         if (!done) await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -1382,8 +1896,16 @@ export class AgentLoop {
         yield { type: 'route', data: `Routed to ${result.specialistUsed}`, toolName: result.route };
       }
 
-      this.messages.push({ role: 'assistant', content: result.answer });
-      yield { type: 'text', data: result.answer };
+      const finalText = this.withEvidenceSummary(result.answer, store, turnId);
+      const assistantMessage: Message = { role: 'assistant', content: finalText };
+      this.messages.push(assistantMessage);
+      store.appendMessage({
+        sessionId: this.sessionId,
+        turnId,
+        message: assistantMessage,
+        metadata: { route: result.route, specialistUsed: result.specialistUsed },
+      });
+      yield { type: 'text', data: finalText };
       yield { type: 'done', data: '' };
     } catch (e: any) {
       yield { type: 'error', data: `Multi-agent error: ${e.message}` };
@@ -1396,6 +1918,16 @@ export class AgentLoop {
 
   async *runResearch(query: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
+    const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const store = await this.ensureDurableSession();
+    const userMsg: Message = { role: 'user', content: query };
+    this.messages.push(userMsg);
+    store.appendMessage({
+      sessionId: this.sessionId,
+      turnId,
+      message: userMsg,
+      metadata: { mode: 'research' },
+    });
     this.ledger.add('userInput', query);
 
     if (!this.researchPipeline) {
@@ -1414,11 +1946,30 @@ export class AgentLoop {
         }
 
         if (event.type === 'text') {
-          this.messages.push({ role: 'user', content: query });
-          this.messages.push({ role: 'assistant', content: event.data });
+          const assistantMessage: Message = { role: 'assistant', content: event.data };
+          this.messages.push(assistantMessage);
+          store.appendMessage({
+            sessionId: this.sessionId,
+            turnId,
+            message: assistantMessage,
+            metadata: { mode: 'research' },
+          });
           yield { type: 'text', data: event.data };
         } else {
-          yield { type: 'research', data: `[${event.agent}] ${event.data}` };
+          store.recordToolEvent({
+            sessionId: this.sessionId,
+            turnId,
+            toolName: `research:${event.agent}`,
+            phase: 'chunk',
+            result: event.data,
+            status: 'running',
+          });
+          yield {
+            type: 'research',
+            data: `[${event.agent}] ${event.data}`,
+            turnId,
+            sessionId: this.sessionId,
+          };
         }
       }
       yield { type: 'done', data: '' };
@@ -1452,12 +2003,16 @@ export class AgentLoop {
 
   setSessionKey(sessionKey: string): void {
     this.sessionKey = sessionKey || 'default';
+    if (this.sessionKey !== 'default') {
+      this.sessionId = `gw_${this.sessionKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)}`;
+    }
   }
 
   setProvider(config: Partial<AurixConfig>): void {
     this.config = { ...this.config, ...config };
     this.provider = createProvider(this.config);
     this.contextManager = new ContextManager(this.provider, config.model || this.config.model);
+    this.memoryManager.setProvider(this.provider);
     if (this.multiAgent) {
       this.multiAgent = new MultiAgentSystem(this.config, this.registry);
     }
@@ -1481,16 +2036,44 @@ export class AgentLoop {
     const loaded = this.memoryEngine.loadSession(sessionId);
     if (loaded.length > 0) {
       this.messages = loaded;
+      this.sessionId = sessionId;
     }
     return loaded.length;
   }
 
-  saveSession(sessionId?: string): string {
+  async loadSessionAsync(sessionId: string): Promise<number> {
+    const store = await this.getSessionStore();
+    const loaded = store.loadSession(sessionId);
+    if (loaded.length > 0) {
+      const system = this.messages[0];
+      this.messages =
+        system && system.role === 'system'
+          ? [system, ...loaded.filter((m) => m.role !== 'system')]
+          : loaded;
+      this.sessionId = sessionId;
+      return loaded.length;
+    }
+    return this.loadSession(sessionId);
+  }
+
+  async saveSessionAsync(sessionId?: string): Promise<string> {
     try {
-      const id = this.memoryEngine.saveSession(this.messages, sessionId);
+      const id =
+        sessionId || this.sessionId || this.memoryEngine.saveSession(this.messages, sessionId);
+      this.sessionId = id;
+      const store = await this.getSessionStore();
+      store.saveSnapshot(id, this.messages, {
+        title: sessionId,
+        platform: this.sessionKey.includes(':') ? this.sessionKey.split(':', 1)[0] : 'cli',
+        userKey: this.sessionKey,
+        model: this.config.model,
+        provider: this.config.provider,
+        cwd: process.cwd(),
+      });
+      this.memoryEngine.saveSession(this.messages, id);
       const learnings = this.memoryEngine.extractSessionLearnings(this.messages);
       if (learnings) {
-        this.memoryEngine.appendRaw(
+        this.memoryManager.rememberRaw(
           `# Session learnings (${new Date().toLocaleDateString()})\n${learnings}`
         );
       }
@@ -1498,5 +2081,11 @@ export class AgentLoop {
     } catch {
       return '';
     }
+  }
+
+  saveSession(sessionId?: string): string {
+    const id = sessionId || this.sessionId;
+    this.saveSessionAsync(sessionId).catch(() => {});
+    return id;
   }
 }

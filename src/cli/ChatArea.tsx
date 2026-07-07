@@ -3,6 +3,7 @@ import { TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
+import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 class CustomSpeedScroll implements ScrollAcceleration {
@@ -590,69 +591,14 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
     return () => clearInterval(id);
   }, []);
 
-  let detail = '';
-  if (args) {
-    if ((name === 'terminal' || name === 'bash') && args.command) {
-      const cmd = String(args.command);
-      detail = cmd.length > 100 ? cmd.slice(0, 97) + '...' : cmd;
-    } else if (name === 'file_edit' && (args.file_path || args.path)) {
-      const file = String(args.file_path || args.path || '');
-      const shortFile = file.split('/').pop() || file;
-      const oldStr = args.old_string ? String(args.old_string).slice(0, 30) : '';
-      const newStr = args.new_string ? String(args.new_string).slice(0, 30) : '';
-      if (oldStr && newStr) {
-        detail = `${shortFile} "${oldStr}..." → "${newStr}..."`;
-      } else {
-        detail = file;
-      }
-    } else if (name === 'write_file' && (args.file_path || args.path)) {
-      detail = String(args.file_path || args.path || '');
-    } else if (name === 'read_file' && (args.file_path || args.path)) {
-      const file = String(args.file_path || args.path || '');
-      const offset = args.offset ? ` :${args.offset}` : '';
-      detail = file + offset;
-    } else if (name === 'search_files') {
-      const pattern = args.pattern ? String(args.pattern) : '';
-      const path = args.path ? ` in ${String(args.path)}` : '';
-      detail = pattern + path;
-    } else if (name === 'browser') {
-      const action = args.action ? String(args.action) : '';
-      const target = args.target ? ` → ${String(args.target).slice(0, 40)}` : '';
-      const value = args.value ? ` "${String(args.value).slice(0, 30)}"` : '';
-      detail = action + target + value;
-    } else if (name === 'web_search' && args.query) {
-      detail = String(args.query);
-    } else if (name === 'code_exec') {
-      const lang = args.language ? String(args.language) : 'python';
-      const code = args.code ? String(args.code) : '';
-      detail = `[${lang}] ${code.length > 200 ? code.slice(0, 197) + '...' : code}`;
-    } else if (name === 'research') {
-      const depth = args.depth ? ` (${String(args.depth)})` : '';
-      const query = args.query ? String(args.query).slice(0, 50) : '';
-      detail = query + depth;
-    } else if (name === 'research_forums') {
-      const sources = args.sources ? String(args.sources) : 'all';
-      detail = `sources: ${sources}`;
-    } else if (args.file_path || args.path) {
-      detail = String(args.file_path || args.path || '');
-    } else if (args.pattern) {
-      detail = String(args.pattern);
-    } else if (args.url) {
-      detail = String(args.url);
-    } else if (args.query) {
-      detail = String(args.query);
-    }
-  }
-
+  const detail = renderToolSpinnerText({ toolName: name, args });
   const color = toolColor(name);
 
   return (
     <box paddingX={2} flexDirection="column">
       <box flexDirection="row">
-        <text fg={color}>
-          {frames[tick % frames.length]} {name}
-        </text>
-        {detail && <text fg={theme.textMuted}> {safeDisplayText(detail)}</text>}
+        <text fg={color}>{frames[tick % frames.length]} </text>
+        <text fg={theme.textMuted}>{safeDisplayText(detail)}</text>
       </box>
     </box>
   );
@@ -719,7 +665,8 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
 function ToolMessage({ msg }: { msg: ChatMessage }) {
   const content = safeDisplayText(msg.content);
   const color = toolColor(msg.toolName);
-  const diff = parseToolEditOutput(content);
+  const canRenderDiff = msg.toolName === 'file_edit' || msg.toolName === 'write_file';
+  const diff = canRenderDiff ? parseToolEditOutput(content) : null;
   if (diff) {
     return (
       <box flexDirection="column" flexShrink={0}>

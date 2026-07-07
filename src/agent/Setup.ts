@@ -11,7 +11,7 @@ import {
   drawWarning,
 } from '../cli/SetupUI.js';
 import type { AurixConfig } from './Config.js';
-import { saveConfig, ensureConfigDir, CONFIG_PATH } from './Config.js';
+import { loadConfig, saveConfig, ensureConfigDir, CONFIG_PATH } from './Config.js';
 import { banner } from '../utils/ascii-logo.js';
 import { normalizeBaseUrl } from '../utils/base-url.js';
 
@@ -23,27 +23,43 @@ const bright = chalk.hex('#eeeeee');
 const CONFIG_FILE = path.join(CONFIG_PATH, 'config.yaml');
 const SETUP_STATE = path.join(CONFIG_PATH, '.setup-state.json');
 
+function setupProviderFromConfig(config: AurixConfig): string | undefined {
+  if (config.provider === 'custom-anthropic') return 'custom-anthropic';
+  if (config.provider === 'custom') {
+    if (config.apiStyle === 'openai') return 'custom-openai';
+    if (config.apiStyle === 'anthropic') return 'custom-anthropic';
+    return 'custom-auto';
+  }
+  return config.provider;
+}
+
 export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   console.clear();
   console.log(banner('setup', 'wizard'));
 
+  const existingConfig = loadConfig();
+  const existingSetupProvider = setupProviderFromConfig(existingConfig);
   const state = continueFrom ? loadSetupState() : {};
 
   drawInfo('Configure your AI agent step by step.');
   drawInfo('You can skip any step and run ' + teal('aurix setup --continue') + ' later.\n');
 
   // Step 0: Terminal theme
-  const themeChoice = state.themeChoice?.name ? state.themeChoice : await stepTheme();
+  const themeChoice = state.themeChoice?.name
+    ? state.themeChoice
+    : await stepTheme(existingConfig.themeName, existingConfig.accentColor);
 
   // Step 1: Provider
-  const provider = state.provider || (await stepProvider());
+  const provider = state.provider || (await stepProvider(existingSetupProvider));
   if (provider === '__skip__' || provider === '__back__') {
     saveSetupState({ step: 'provider' });
     return await loadConfigOrDefault();
   }
+  const providerChanged = Boolean(existingSetupProvider && provider !== existingSetupProvider);
 
   // Step 2: Base URL (custom providers)
-  let baseUrl: string | undefined = state.baseUrl;
+  let baseUrl: string | undefined =
+    state.baseUrl || (providerChanged ? undefined : existingConfig.baseUrl);
   const isCustom =
     provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto';
   if (isCustom && !baseUrl) {
@@ -54,9 +70,9 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     }
   }
 
-  // Step 3: API Key — always offer for custom providers
-  let apiKey = state.apiKey;
-  if (!apiKey || isCustom) {
+  // Step 3: API Key — always offer for custom providers and provider changes
+  let apiKey = state.apiKey || (providerChanged ? '' : existingConfig.apiKey);
+  if (!apiKey || isCustom || providerChanged) {
     const existingHint = apiKey
       ? `\nCurrent key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}\nLeave blank to keep existing key.`
       : '';
@@ -74,29 +90,32 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   }
 
   // Step 4: Model
-  const model = state.model || (await stepModel(provider));
+  const model = state.model || (await stepModel(provider, existingConfig.model));
   if (model === '__skip__' || model === '__back__') {
     saveSetupState({ step: 'model', provider, baseUrl, apiKey });
     return await loadConfigOrDefault();
   }
 
   // Step 5: Gateway — always offer to set/update tokens
-  const gateway = await stepGateway(state.gateway);
+  const gateway = await stepGateway(state.gateway || existingConfig.gateway);
 
   // Step 7: Features
-  const features = await stepFeatures();
+  const features = await stepFeatures(existingConfig.features);
 
   // Step 8: Account integrations
-  const integrations = await stepIntegrations();
+  const integrations = await stepIntegrations(existingConfig.integrations);
 
   // Step 9: Plugin/skill loading
-  const plugins = await stepPlugins();
+  const plugins = await stepPlugins(existingConfig.plugins);
 
   // Step 10: Captcha solving method
-  const captchaAudio = await stepCaptcha();
+  const captchaAudio = await stepCaptcha(existingConfig.captchaAudio, existingConfig.groqApiKey);
 
   // Step 11: Web search engine
-  const searchEngine = await stepSearchEngine();
+  const searchEngine = await stepSearchEngine(
+    existingConfig.searchEngine,
+    existingConfig.searchApiKey
+  );
 
   const resolvedProvider =
     provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto'
@@ -112,21 +131,24 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
           ? 'auto'
           : undefined;
 
+  const finalBaseUrl = isCustom ? baseUrl : providerChanged ? undefined : baseUrl;
+
   const config: AurixConfig = {
+    ...existingConfig,
     provider: resolvedProvider as AurixConfig['provider'],
     apiKey,
-    baseUrl,
+    baseUrl: finalBaseUrl,
     model,
-    maxTokens: 4096,
-    temperature: 0.7,
+    maxTokens: existingConfig.maxTokens || 4096,
+    temperature: existingConfig.temperature ?? 0.7,
     apiStyle: resolvedApiStyle,
-    researchMode: 'low',
+    researchMode: existingConfig.researchMode || 'low',
     themeName: themeChoice.name,
     accentColor: themeChoice.accent,
     gateway: gateway as AurixConfig['gateway'],
     integrations,
     plugins,
-    features: (Array.isArray(features) ? features : []) as string[],
+    features: (Array.isArray(features) ? features : existingConfig.features || []) as string[],
     captchaAudio: captchaAudio.mode,
     groqApiKey: captchaAudio.groqApiKey,
     searchEngine: searchEngine.engine,
@@ -145,7 +167,10 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
   return config;
 }
 
-async function stepTheme(): Promise<{
+async function stepTheme(
+  existingName?: AurixConfig['themeName'],
+  existingAccent?: string
+): Promise<{
   name: NonNullable<AurixConfig['themeName']>;
   accent: string;
 }> {
@@ -165,7 +190,14 @@ async function stepTheme(): Promise<{
       { id: 'nebula', label: 'Nebula', desc: 'Purple + pink cosmic gradient' },
     ],
     allowSkip: true,
+    extra: existingName
+      ? [`Current theme: ${existingName}`, 'Skip keeps current theme.']
+      : undefined,
   });
+
+  if ((choice === '__skip__' || choice === '__back__') && existingName) {
+    return { name: existingName, accent: existingAccent || '#fab283' };
+  }
 
   const palette: Record<string, { name: NonNullable<AurixConfig['themeName']>; accent: string }> = {
     aurix: { name: 'aurix', accent: '#fab283' },
@@ -184,22 +216,42 @@ async function stepTheme(): Promise<{
   return palette[choice] || palette.aurix;
 }
 
-async function stepProvider(): Promise<string> {
+async function stepProvider(existing?: string): Promise<string> {
   const choice = await drawSelector({
     title: 'LLM Provider',
     items: [
-      { id: 'openai', label: 'OpenAI', desc: 'GPT-4o, GPT-4, o1, etc.' },
-      { id: 'anthropic', label: 'Anthropic', desc: 'Claude 4, Claude 3.5, etc.' },
-      { id: 'custom-openai', label: 'Custom (OpenAI-compatible)', desc: 'Ollama, LM Studio, vLLM' },
+      {
+        id: 'openai',
+        label: 'OpenAI',
+        desc: existing === 'openai' ? 'Current provider' : 'GPT-4o, GPT-4, o1, etc.',
+      },
+      {
+        id: 'anthropic',
+        label: 'Anthropic',
+        desc: existing === 'anthropic' ? 'Current provider' : 'Claude 4, Claude 3.5, etc.',
+      },
+      {
+        id: 'custom-openai',
+        label: 'Custom (OpenAI-compatible)',
+        desc: existing === 'custom-openai' ? 'Current provider' : 'Ollama, LM Studio, vLLM',
+      },
       {
         id: 'custom-anthropic',
         label: 'Custom (Anthropic-compatible)',
-        desc: 'Any /v1/messages API',
+        desc: existing === 'custom-anthropic' ? 'Current provider' : 'Any /v1/messages API',
       },
-      { id: 'custom-auto', label: 'Custom (auto-detect)', desc: 'Auto-detect endpoint style' },
+      {
+        id: 'custom-auto',
+        label: 'Custom (auto-detect)',
+        desc: existing === 'custom-auto' ? 'Current provider' : 'Auto-detect endpoint style',
+      },
     ],
     allowSkip: true,
+    extra: existing
+      ? [`Current provider: ${existing}`, 'Skip keeps the current provider and key.']
+      : undefined,
   });
+  if ((choice === '__skip__' || choice === '__back__') && existing) return existing;
   return choice;
 }
 
@@ -286,7 +338,7 @@ async function stepBaseUrl(provider: string): Promise<string | undefined> {
   return normalizeBaseUrl(choice, apiStyle);
 }
 
-async function stepModel(provider: string): Promise<string> {
+async function stepModel(provider: string, existingModel?: string): Promise<string> {
   const models: Record<string, { id: string; label: string; desc?: string }[]> = {
     openai: [
       { id: 'gpt-4o', label: 'GPT-4o', desc: 'Best balance of speed and capability' },
@@ -315,20 +367,25 @@ async function stepModel(provider: string): Promise<string> {
     title: 'Model',
     items,
     allowSkip: true,
+    extra: existingModel
+      ? [`Current model: ${existingModel}`, 'Skip keeps the current model.']
+      : undefined,
   });
 
   if (choice === '__skip__' || choice === '__back__') {
-    return provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o';
+    return existingModel || (provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o');
   }
 
   if (choice === 'custom') {
     const model = await drawInputScreen({
       title: 'Custom Model',
-      hint: 'Enter the exact model ID your provider supports',
+      hint: existingModel
+        ? `Enter the exact model ID your provider supports\nCurrent: ${existingModel}`
+        : 'Enter the exact model ID your provider supports',
       label: 'Model ID:',
       masked: false,
     });
-    return !model || model === '__back__' ? 'gpt-4o' : model;
+    return !model || model === '__back__' ? existingModel || 'gpt-4o' : model;
   }
 
   return choice;
@@ -456,7 +513,7 @@ async function stepGateway(existing?: AurixConfig['gateway']): Promise<AurixConf
   return gateway;
 }
 
-async function stepFeatures(): Promise<string[]> {
+async function stepFeatures(existing?: string[]): Promise<string[]> {
   const selected = await drawSelector({
     title: 'Extra Features',
     items: [
@@ -475,13 +532,18 @@ async function stepFeatures(): Promise<string[]> {
     ],
     allowSkip: true,
     multi: true,
+    extra: existing?.length
+      ? [`Current features: ${existing.join(', ')}`, 'Skip keeps current features.']
+      : undefined,
   });
 
-  if (!Array.isArray(selected)) return [];
+  if (!Array.isArray(selected) || selected.length === 0) return existing || [];
   return selected;
 }
 
-async function stepIntegrations(): Promise<AurixConfig['integrations']> {
+async function stepIntegrations(
+  existing?: AurixConfig['integrations']
+): Promise<AurixConfig['integrations']> {
   const selected = await drawSelector({
     title: 'Connect Accounts (Optional)',
     items: [
@@ -490,14 +552,22 @@ async function stepIntegrations(): Promise<AurixConfig['integrations']> {
     ],
     allowSkip: true,
     multi: true,
+    extra: existing
+      ? [
+          `Current integrations: ${Object.keys(existing).join(', ') || 'none'}`,
+          'Skip keeps current integrations.',
+        ]
+      : undefined,
   });
 
   if (!Array.isArray(selected) || selected.length === 0) {
-    drawInfo('No account integrations selected.\n');
-    return undefined;
+    drawInfo(
+      existing ? 'Keeping existing account integrations.\n' : 'No account integrations selected.\n'
+    );
+    return existing;
   }
 
-  const integrations: AurixConfig['integrations'] = {};
+  const integrations: AurixConfig['integrations'] = existing ? { ...existing } : {};
 
   if (selected.includes('github')) {
     const method = await drawSelector({
@@ -547,7 +617,7 @@ async function stepIntegrations(): Promise<AurixConfig['integrations']> {
   return integrations;
 }
 
-async function stepPlugins(): Promise<AurixConfig['plugins']> {
+async function stepPlugins(existing?: AurixConfig['plugins']): Promise<AurixConfig['plugins']> {
   const selected = await drawSelector({
     title: 'Plugins and Skills',
     items: [
@@ -561,13 +631,16 @@ async function stepPlugins(): Promise<AurixConfig['plugins']> {
     ],
     allowSkip: true,
     multi: true,
+    extra: existing
+      ? ['Current plugin settings detected.', 'Skip keeps current plugin settings.']
+      : undefined,
   });
 
   if (!Array.isArray(selected) || selected.length === 0) {
-    return { enabled: true, sources: [], allowClaudeStore: false };
+    return existing || { enabled: true, sources: [], allowClaudeStore: false };
   }
 
-  const sources: string[] = [];
+  const sources: string[] = existing?.sources ? [...existing.sources] : [];
   if (selected.includes('claude-store')) {
     const source = await drawInputScreen({
       title: 'Plugin Store Source (Optional)',
@@ -588,7 +661,10 @@ async function stepPlugins(): Promise<AurixConfig['plugins']> {
   };
 }
 
-async function stepCaptcha(): Promise<{ mode: AurixConfig['captchaAudio']; groqApiKey?: string }> {
+async function stepCaptcha(
+  existingMode?: AurixConfig['captchaAudio'],
+  existingGroqApiKey?: string
+): Promise<{ mode: AurixConfig['captchaAudio']; groqApiKey?: string }> {
   const selected = await drawSelector({
     title: 'CAPTCHA Solving Method',
     items: [
@@ -601,9 +677,16 @@ async function stepCaptcha(): Promise<{ mode: AurixConfig['captchaAudio']; groqA
       { id: 'audio', label: 'Audio Captcha', desc: 'Whisper STT transcribes audio challenge' },
     ],
     allowSkip: true,
+    extra: existingMode
+      ? [`Current CAPTCHA mode: ${existingMode}`, 'Skip keeps current CAPTCHA settings.']
+      : undefined,
   });
 
   if (!selected || selected === '__skip__' || selected === '__back__') {
+    if (existingMode) {
+      drawInfo('Keeping existing CAPTCHA settings.\n');
+      return { mode: existingMode, groqApiKey: existingGroqApiKey };
+    }
     drawInfo('Defaulting to hybrid captcha mode.\n');
     return { mode: 'hybrid' };
   }
@@ -640,12 +723,15 @@ async function stepCaptcha(): Promise<{ mode: AurixConfig['captchaAudio']; groqA
     }
   }
 
-  return { mode };
+  return { mode, groqApiKey: existingGroqApiKey };
 }
 
 // ─── Search Engine Step ─────────────────────────────────────────────────────
 
-async function stepSearchEngine(): Promise<{
+async function stepSearchEngine(
+  existingEngine?: AurixConfig['searchEngine'],
+  existingApiKey?: string
+): Promise<{
   engine: AurixConfig['searchEngine'];
   apiKey?: string;
 }> {
@@ -669,9 +755,16 @@ async function stepSearchEngine(): Promise<{
       },
     ],
     allowSkip: true,
+    extra: existingEngine
+      ? [`Current search engine: ${existingEngine}`, 'Skip keeps current search settings.']
+      : undefined,
   });
 
   if (!selected || selected === '__skip__' || selected === '__back__') {
+    if (existingEngine) {
+      drawInfo('Keeping existing search settings.\n');
+      return { engine: existingEngine, apiKey: existingApiKey };
+    }
     drawInfo('Defaulting to DuckDuckGo (free, no API key).\n');
     return { engine: 'ddg' };
   }
@@ -698,6 +791,11 @@ async function stepSearchEngine(): Promise<{
 
   if (apiKey && apiKey !== '__back__') {
     return { engine: selected as AurixConfig['searchEngine'], apiKey };
+  }
+
+  if (existingEngine === selected && existingApiKey) {
+    drawInfo('No new key provided. Keeping existing search API key.\n');
+    return { engine: existingEngine, apiKey: existingApiKey };
   }
 
   drawInfo('No key provided. Defaulting to DDG.\n');

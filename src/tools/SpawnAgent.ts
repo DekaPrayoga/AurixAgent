@@ -1,6 +1,7 @@
 import type { Tool, ToolRegistry } from './Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { EventEmitter } from 'events';
+import crypto from 'crypto';
 
 export const orchestratorEvents = new EventEmitter();
 
@@ -24,7 +25,11 @@ function buildSubRegistry(parent: ToolRegistry, RegistryClass: any): ToolRegistr
 }
 
 // Run async jobs with a bounded concurrency. Preserves input order in results.
-async function runBounded<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+async function runBounded<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
@@ -39,28 +44,37 @@ async function runBounded<T, R>(items: T[], limit: number, fn: (item: T, index: 
 }
 
 // Drain a sub-agent's run() generator and collect its final text output.
-async function collectAgentResult(agent: any, prompt: string, agentIndex: number): Promise<string> {
+async function collectAgentResult(
+  agent: any,
+  prompt: string,
+  agentIndex: number,
+  jobId?: string
+): Promise<string> {
   let lastText = '';
   const chunks: string[] = [];
-  orchestratorEvents.emit('status', { index: agentIndex, status: 'thinking' });
+  orchestratorEvents.emit('status', { jobId, index: agentIndex, status: 'thinking' });
   try {
     for await (const evt of agent.run(prompt)) {
       if (evt.type === 'tool_start') {
-         orchestratorEvents.emit('status', { index: agentIndex, status: `running tool: ${evt.data}` });
+        orchestratorEvents.emit('status', {
+          jobId,
+          index: agentIndex,
+          status: `running tool: ${evt.data}`,
+        });
       } else if (evt.type === 'tool_end') {
-         orchestratorEvents.emit('status', { index: agentIndex, status: 'thinking' });
+        orchestratorEvents.emit('status', { jobId, index: agentIndex, status: 'thinking' });
       } else if (evt.type === 'text' && evt.data) {
         lastText = evt.data;
         chunks.push(evt.data);
       } else if (evt.type === 'error') {
         return `[sub-agent error] ${evt.data}`;
       } else if (evt.type === 'done') {
-        orchestratorEvents.emit('status', { index: agentIndex, status: 'done' });
+        orchestratorEvents.emit('status', { jobId, index: agentIndex, status: 'done' });
         break;
       }
     }
   } catch (e: any) {
-    orchestratorEvents.emit('status', { index: agentIndex, status: 'crashed' });
+    orchestratorEvents.emit('status', { jobId, index: agentIndex, status: 'crashed' });
     return `[sub-agent crashed] ${e?.message || String(e)}`;
   }
   // prefer the final assistant message; fall back to the joined stream
@@ -77,7 +91,8 @@ export function createSpawnAgentTool(config: AurixConfig, registry: ToolRegistry
         tasks: {
           type: 'array',
           items: { type: 'string' },
-          description: 'List of self-contained task prompts, one per sub-agent. Each runs independently and in parallel.',
+          description:
+            'List of self-contained task prompts, one per sub-agent. Each runs independently and in parallel.',
         },
       },
       required: ['tasks'],
@@ -87,7 +102,10 @@ export function createSpawnAgentTool(config: AurixConfig, registry: ToolRegistry
       if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
         return 'Error: spawn_agent requires a non-empty "tasks" array of prompt strings.';
       }
-      const tasks = rawTasks.map(t => String(t)).filter(t => t.trim().length > 0).slice(0, MAX_AGENTS);
+      const tasks = rawTasks
+        .map((t) => String(t))
+        .filter((t) => t.trim().length > 0)
+        .slice(0, MAX_AGENTS);
       if (tasks.length === 0) return 'Error: all tasks were empty.';
 
       // Lazy imports to avoid a circular dependency (AgentLoop imports tools).
@@ -95,15 +113,48 @@ export function createSpawnAgentTool(config: AurixConfig, registry: ToolRegistry
       const { ToolRegistry } = await import('./Registry.js');
 
       const subRegistry = buildSubRegistry(registry, ToolRegistry);
+      const jobId = `agent_${crypto.randomBytes(5).toString('hex')}`;
+      const startedAt = new Date().toISOString();
+      const { getSessionStore } = await import('../agent/SessionStore.js');
+      const store = await getSessionStore();
+      store.recordAgentJobStart({
+        id: jobId,
+        kind: 'spawn_agent',
+        prompt: tasks.join('\n---\n'),
+        status: 'running',
+        totalAgents: tasks.length,
+        completedAgents: 0,
+        startedAt,
+        lastStatus: 'queued',
+      });
 
-      orchestratorEvents.emit('start', { total: tasks.length, maxConcurrency: MAX_CONCURRENCY });
+      orchestratorEvents.emit('start', {
+        jobId,
+        total: tasks.length,
+        maxConcurrency: MAX_CONCURRENCY,
+      });
+      let completedAgents = 0;
       const results = await runBounded(tasks, MAX_CONCURRENCY, async (prompt, index) => {
         const sub = new AgentLoop(config, subRegistry);
-        if (typeof sub.setMaxIterations === 'function') sub.setMaxIterations(SUBAGENT_MAX_ITERATIONS);
-        orchestratorEvents.emit('status', { index, status: 'queued' });
-        return collectAgentResult(sub, prompt, index);
+        if (typeof sub.setMaxIterations === 'function')
+          sub.setMaxIterations(SUBAGENT_MAX_ITERATIONS);
+        orchestratorEvents.emit('status', { jobId, index, status: 'queued' });
+        const result = await collectAgentResult(sub, prompt, index, jobId);
+        completedAgents += 1;
+        store.updateAgentJob(jobId, {
+          completedAgents,
+          lastStatus: `${completedAgents}/${tasks.length} complete`,
+        });
+        return result;
       });
-      orchestratorEvents.emit('end');
+      const hasError = results.some((r) => /^\[sub-agent (error|crashed)\]/.test(String(r)));
+      store.updateAgentJob(jobId, {
+        status: hasError ? 'error' : 'success',
+        completedAgents,
+        finishedAt: new Date().toISOString(),
+        lastStatus: hasError ? 'completed with sub-agent errors' : 'done',
+      });
+      orchestratorEvents.emit('end', { jobId });
 
       const out = results
         .map((r, i) => `## Sub-agent ${i + 1}\nTask: ${tasks[i].slice(0, 120)}\n\n${r}`)

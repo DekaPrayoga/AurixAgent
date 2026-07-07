@@ -20,6 +20,7 @@ delete process.env.all_proxy;
 import { applyTheme } from './cli/theme.js';
 import { loadConfig } from './agent/Config.js';
 import { runSetup } from './agent/Setup.js';
+import { createProvider } from './providers/index.js';
 import { ToolRegistry } from './tools/Registry.js';
 import { terminalTool } from './tools/Terminal.js';
 import {
@@ -244,6 +245,10 @@ async function main() {
 
   registry.register(createSpawnAgentTool(config, registry));
 
+  const { CronDaemon } = await import('./agent/CronDaemon.js');
+  const cronDaemon = new CronDaemon(registry);
+  cronDaemon.start().catch(() => {});
+
   await mcpManager.startAll();
   const mcpToolCount = await registerMcpTools((tool) => registry.register(tool));
   if (mcpToolCount > 0) {
@@ -256,21 +261,29 @@ async function main() {
   // If the user is on an old version, they'll see the banner here.
   await updateCheckPromise;
 
-  // Background memory consolidation every 10 minutes
-  const { MemoryEngine } = await import('./agent/MemoryEngine.js');
-  const bgMemory = new MemoryEngine();
+  // Background memory lifecycle sync every 10 minutes
+  const { MemoryManager } = await import('./agent/MemoryManager.js');
+  const bgMemory = new MemoryManager(createProvider(config));
   const consolidateTimer = setInterval(
     () => {
-      bgMemory.consolidate().catch(() => {});
+      bgMemory.sync().catch(() => {});
     },
     10 * 60 * 1000
   );
 
-  process.on('exit', () => {
+  let memorySyncedOnShutdown = false;
+  process.once('beforeExit', async () => {
+    if (memorySyncedOnShutdown) return;
+    memorySyncedOnShutdown = true;
     clearInterval(consolidateTimer);
     try {
-      bgMemory.consolidate();
+      await bgMemory.sync();
     } catch {}
+  });
+
+  process.on('exit', () => {
+    clearInterval(consolidateTimer);
+    cronDaemon.stop();
     try {
       mcpManager.stopAll();
     } catch {}
@@ -354,6 +367,7 @@ async function main() {
       config,
       registry,
       resumeId,
+      cronDaemon,
     })
   );
 }

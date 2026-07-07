@@ -12,6 +12,7 @@ export interface AurixConfig {
   visionModel?: string;
   visionBaseUrl?: string;
   visionApiKey?: string;
+  visionProvider?: 'anthropic' | 'openai' | 'custom' | 'custom-anthropic';
   visionApiStyle?: 'openai' | 'anthropic' | 'auto';
   maxTokens?: number;
   temperature?: number;
@@ -97,6 +98,8 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     visionModel: process.env.AURIX_VISION_MODEL || file.visionModel,
     visionBaseUrl: process.env.AURIX_VISION_BASE_URL || file.visionBaseUrl,
     visionApiKey: process.env.AURIX_VISION_API_KEY || file.visionApiKey,
+    visionProvider:
+      (process.env.AURIX_VISION_PROVIDER as AurixConfig['visionProvider']) || file.visionProvider,
     visionApiStyle: (process.env.AURIX_VISION_API_STYLE as any) || file.visionApiStyle,
     maxTokens: file.maxTokens || 4096,
     temperature: file.temperature ?? 0.7,
