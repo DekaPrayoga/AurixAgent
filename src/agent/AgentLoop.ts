@@ -648,7 +648,7 @@ export class AgentLoop {
         for (let i = this.messages.length - 1; i >= 0; i--) {
           const m = this.messages[i];
           if (m.images && m.images.length > 0 && !m.content.includes('[Vision Analysis:')) {
-            yield { type: 'text', data: `[Vision] Analysing image...` };
+            yield { type: 'route', data: `[Vision] Analysing image...`, toolName: 'vision' };
             try {
               // Determine vision provider config
               const { createProvider } = await import('../providers/index.js');
