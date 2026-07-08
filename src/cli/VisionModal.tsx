@@ -27,7 +27,7 @@ export function VisionModal({
   onCancel,
 }: VisionModalProps) {
   const [step, setStep] = useState(0);
-  const [model, setModel] = useState(currentModel || 'gpt-4o');
+  const [model, setModel] = useState(currentModel || '');
   const [baseUrl, setBaseUrl] = useState(currentBaseUrl || '');
   const [apiKey, setApiKey] = useState('');
   const [provider, setProvider] = useState(currentProvider || 'custom');

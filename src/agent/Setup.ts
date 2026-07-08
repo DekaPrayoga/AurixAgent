@@ -151,6 +151,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     plugins,
     features: (Array.isArray(features) ? features : existingConfig.features || []) as string[],
     captchaAudio: captchaAudio.mode,
+    useGroqAudio: captchaAudio.useGroqAudio,
     groqApiKey: captchaAudio.groqApiKey,
     searchEngine: searchEngine.engine,
     searchApiKey: searchEngine.apiKey || '',
@@ -666,7 +667,7 @@ async function stepPlugins(existing?: AurixConfig['plugins']): Promise<AurixConf
 async function stepCaptcha(
   existingMode?: AurixConfig['captchaAudio'],
   existingGroqApiKey?: string
-): Promise<{ mode: AurixConfig['captchaAudio']; groqApiKey?: string }> {
+): Promise<{ mode: AurixConfig['captchaAudio']; groqApiKey?: string; useGroqAudio?: boolean }> {
   const selected = await drawSelector({
     title: 'CAPTCHA Solving Method',
     items: [
@@ -701,7 +702,11 @@ async function stepCaptcha(
       title: 'Audio Transcription Method',
       items: [
         { id: 'groq', label: 'Groq API (Recommended)', desc: 'Free 2000 req/day, fast & accurate' },
-        { id: 'local', label: 'Local Whisper', desc: 'Auto-install whisper, no API key needed' },
+        {
+          id: 'local',
+          label: 'Local Whisper',
+          desc: 'Use existing local whisper CLI, no API key needed',
+        },
       ],
       allowSkip: true,
     });
@@ -715,13 +720,15 @@ async function stepCaptcha(
         masked: true,
       });
       if (groqKey && groqKey !== '__back__') {
-        return { mode, groqApiKey: groqKey };
+        return { mode, useGroqAudio: true, groqApiKey: groqKey };
       }
     }
 
     if (audioMethod === 'local') {
-      drawInfo('Local Whisper will be auto-installed on first use.');
-      drawInfo('Requires Python 3.8+ and pip.');
+      drawInfo(
+        'Local Whisper mode will use the existing `whisper` CLI only. It will not install packages automatically.'
+      );
+      return { mode, useGroqAudio: false, groqApiKey: existingGroqApiKey };
     }
   }
 

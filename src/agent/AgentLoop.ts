@@ -14,8 +14,17 @@ import { MemoryEngine } from './MemoryEngine.js';
 import { MemoryManager } from './MemoryManager.js';
 import { ResearchPipeline } from './ResearchPipeline.js';
 import type { ResearchDepth } from './research/types.js';
-import { getSessionStore, type SessionSummary } from './SessionStore.js';
+import {
+  getSessionStore,
+  installObserverBusSessionSink,
+  type SessionSummary,
+} from './SessionStore.js';
 import type { EvidenceItem, SessionStore } from './SessionStore.js';
+import { agentObserverBus, type AgentObserverSource } from './AgentObserverBus.js';
+import { recordTrashUserTurn } from './TrashStore.js';
+import { AurixBrain } from '../brain/AurixBrain.js';
+import type { BrainToolResult } from '../brain/types.js';
+import { setBrainInstance } from '../tools/Brain.js';
 import { loadTodos, saveTodos, addTodo, completeTodo, getTodoStats } from '../utils/TodoManager.js';
 
 const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
@@ -68,7 +77,15 @@ const WRITE_TOOLS = new Set([
   'delete_folder',
 ]);
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
-const SESSION_KEY_TOOLS = new Set(['ask_user', 'delete_file', 'delete_folder']);
+const SESSION_KEY_TOOLS = new Set([
+  'ask_user',
+  'terminal',
+  'delete_file',
+  'delete_folder',
+  'recovery_file',
+  'recovery_folder',
+  'spawn_agent',
+]);
 
 type ErrorType =
   | 'rate_limit'
@@ -238,14 +255,18 @@ export class AgentLoop {
   private interrupted = false;
   private ledger = new TokenLedger();
   private abortController = new AbortController();
+  private brain: AurixBrain;
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
+    installObserverBusSessionSink();
     this.config = config;
     this.provider = createProvider(config);
     this.registry = registry;
     this.contextManager = new ContextManager(this.provider, config.model);
     this.memoryManager = new MemoryManager(this.provider);
     this.memoryEngine = this.memoryManager.getEngine();
+    this.brain = new AurixBrain({ config, sessionId: this.sessionId, cwd: process.cwd() });
+    setBrainInstance(this.brain);
 
     // Wire the provider into the module-level memory tool so `memory remember`
     // can auto-enrich user input before saving. Dynamic import avoids a
@@ -274,6 +295,28 @@ export class AgentLoop {
       status: 'active',
     });
     return store;
+  }
+
+  private observe(
+    source: AgentObserverSource,
+    eventType: string,
+    turnId?: string,
+    patch: Partial<Parameters<typeof agentObserverBus.publish>[0]> = {}
+  ): void {
+    agentObserverBus.publish({
+      sessionId: this.sessionId,
+      turnId,
+      source,
+      eventType,
+      ...patch,
+    });
+  }
+
+  private observeAgentEvent(source: AgentObserverSource, event: AgentEvent, turnId?: string): void {
+    agentObserverBus.publishAgentEvent(source, event, {
+      sessionId: event.sessionId || this.sessionId,
+      turnId: event.turnId || turnId,
+    });
   }
 
   private classifyVerificationCommand(command: string): EvidenceItem['kind'] | null {
@@ -365,6 +408,20 @@ export class AgentLoop {
     const summary = this.buildEvidenceSummary(store, turnId);
     if (!summary || text.includes('Verified evidence:')) return text;
     return `${text}${summary}`;
+  }
+
+  private recordBrainToolResult(input: BrainToolResult, bucket?: BrainToolResult[]): void {
+    this.brain.recordToolResult(input);
+    bucket?.push(input);
+  }
+
+  private resetBrain(): void {
+    this.brain = new AurixBrain({
+      config: this.config,
+      sessionId: this.sessionId,
+      cwd: process.cwd(),
+    });
+    setBrainInstance(this.brain);
   }
 
   getSessionId(): string {
@@ -550,10 +607,33 @@ export class AgentLoop {
     return 'single';
   }
 
+  private hasDistinctVisionFallback(): boolean {
+    const capabilities = this.brain.getCapabilities();
+    if (capabilities.vision) return false;
+    const hasDedicatedEndpoint = Boolean(
+      (this.config.visionProvider && this.config.visionProvider !== this.config.provider) ||
+      (this.config.visionBaseUrl && this.config.visionBaseUrl !== this.config.baseUrl) ||
+      (this.config.visionApiKey && this.config.visionApiKey !== this.config.apiKey) ||
+      (this.config.visionApiStyle && this.config.visionApiStyle !== this.config.apiStyle)
+    );
+    const hasExplicitFallbackModel = Boolean(
+      this.config.visionModel &&
+      this.config.visionModel !== this.config.model &&
+      this.config.visionModel !== 'gpt-4o'
+    );
+    return hasDedicatedEndpoint || hasExplicitFallbackModel;
+  }
+
+  private modelSupportsVision(): boolean {
+    return this.brain.getCapabilities().vision;
+  }
+
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     this.abortController = new AbortController();
     const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const toolResultsThisTurn: BrainToolResult[] = [];
+    this.brain.startTurn(turnId, userMessage);
     const store = await this.ensureDurableSession();
 
     const executionMode = images?.length ? 'single' : this.selectExecutionMode(userMessage);
@@ -577,9 +657,21 @@ export class AgentLoop {
     }
 
     const msg: Message = { role: 'user', content: userMessage };
-    if (images?.length) msg.images = images;
+    if (images?.length) {
+      if (this.modelSupportsVision() || this.hasDistinctVisionFallback()) {
+        msg.images = images;
+      } else {
+        msg.content += `\n\n[Attached images: ${images.length}. Current model "${this.config.model}" is text-only, so images were not sent to the provider. Use the user's text and conversation context; if they refer to the image, explain that this model cannot inspect it unless a visionModel/vision endpoint is configured.]`;
+      }
+    }
     this.messages.push(msg);
     store.appendMessage({ sessionId: this.sessionId, turnId, message: msg });
+    recordTrashUserTurn(this.sessionId);
+    this.observe('agent_loop', 'turn_start', turnId, {
+      status: 'running',
+      summary: userMessage,
+      payload: { executionMode, hasImages: Boolean(images?.length) },
+    });
     this.ledger.add('userInput', userMessage);
 
     const loadedSkills = this.autoLoadSkills(userMessage);
@@ -643,50 +735,53 @@ export class AgentLoop {
 
       let response;
       try {
-        // VISION FALLBACK LOGIC
-        // Check if there are any images in the conversation that haven't been analyzed yet
-        for (let i = this.messages.length - 1; i >= 0; i--) {
-          const m = this.messages[i];
-          if (m.images && m.images.length > 0 && !m.content.includes('[Vision Analysis:')) {
-            yield { type: 'route', data: `[Vision] Analysing image...`, toolName: 'vision' };
-            try {
-              // Determine vision provider config
-              const { createProvider } = await import('../providers/index.js');
-              const vConfig = {
-                provider: this.config.visionProvider || this.config.provider,
-                baseUrl: this.config.visionBaseUrl || this.config.baseUrl,
-                apiKey: this.config.visionApiKey || this.config.apiKey,
-                model: this.config.visionModel || 'gpt-4o', // Default fallback
-                apiStyle: this.config.visionApiStyle || this.config.apiStyle,
-                maxTokens: 1024,
-                temperature: 0.1,
-              };
-              const vProvider = createProvider(vConfig as any);
+        // Vision-capable main models should receive image inputs directly. Only
+        // collapse images into text when the user configured a distinct fallback
+        // vision model/provider for blind main models.
+        if (this.hasDistinctVisionFallback()) {
+          for (let i = this.messages.length - 1; i >= 0; i--) {
+            const m = this.messages[i];
+            if (m.images && m.images.length > 0 && !m.content.includes('[Vision Analysis:')) {
+              yield { type: 'route', data: `[Vision] Analysing image...`, toolName: 'vision' };
+              try {
+                const { createProvider } = await import('../providers/index.js');
+                const vProvider = createProvider({
+                  ...this.config,
+                  provider: this.config.visionProvider || this.config.provider,
+                  baseUrl: this.config.visionBaseUrl || this.config.baseUrl,
+                  apiKey: this.config.visionApiKey || this.config.apiKey,
+                  model: this.config.visionModel || this.config.model,
+                  apiStyle: this.config.visionApiStyle || this.config.apiStyle,
+                  maxTokens: 1024,
+                  temperature: 0.1,
+                } as any);
 
-              // Ask the vision model to explain the image
-              const visionMsg = {
-                role: 'user' as const,
-                content:
-                  'Describe this image in detail. If it is a web page or application, list all visible buttons, input fields, and important text so a blind automation agent can understand the state.',
-                images: m.images,
-              };
+                const vRes = await vProvider.chat([
+                  {
+                    role: 'user' as const,
+                    content:
+                      'Describe this image in detail. If it is a web page or application, list all visible buttons, input fields, and important text so a blind automation agent can understand the state.',
+                    images: m.images,
+                  },
+                ]);
 
-              const vRes = await vProvider.chat([visionMsg]);
-
-              // Replace the image in the main conversation with the text description
-              m.content += `\n\n[Vision Analysis: ${vRes.text}]`;
-              m.images = []; // Remove the image so the main agent doesn't see it
-            } catch (e: any) {
-              m.content += `\n\n[Vision Analysis Failed: ${e.message}]`;
-              m.images = [];
+                m.content += `\n\n[Vision Analysis: ${vRes.text}]`;
+                m.images = [];
+              } catch (e: any) {
+                m.content += `\n\n[Vision Analysis Failed: ${e.message}]`;
+                m.images = [];
+              }
             }
           }
         }
 
-        // Resume normal operation
         const finalOptimizedMessages = this.contextManager.pruneToolResults(this.messages);
+        const brainContext = this.brain.buildTransientContext();
+        const messagesForModel = brainContext
+          ? [...finalOptimizedMessages, { role: 'system' as const, content: brainContext }]
+          : finalOptimizedMessages;
         response = await this.provider.chat(
-          finalOptimizedMessages,
+          messagesForModel,
           this.registry.getToolDefs(),
           this.abortController.signal
         );
@@ -1382,6 +1477,17 @@ export class AgentLoop {
                 durationMs,
                 errorType,
               });
+              this.recordBrainToolResult(
+                {
+                  toolName: call.name,
+                  args: call.arguments,
+                  result: processed,
+                  status: toolStatus,
+                  errorType,
+                  turnId,
+                },
+                toolResultsThisTurn
+              );
               yield {
                 type: 'tool_end',
                 data: processed,
@@ -1451,6 +1557,17 @@ export class AgentLoop {
                 durationMs,
                 errorType,
               });
+              this.recordBrainToolResult(
+                {
+                  toolName: call.name,
+                  args: call.arguments,
+                  result: errMsg,
+                  status: errorType === 'abort' ? 'cancelled' : 'error',
+                  errorType,
+                  turnId,
+                },
+                toolResultsThisTurn
+              );
               yield {
                 type: 'tool_end',
                 data: errMsg,
@@ -1509,6 +1626,8 @@ export class AgentLoop {
                 try {
                   if (SESSION_KEY_TOOLS.has(call.name)) {
                     call.arguments._sessionKey = this.sessionKey;
+                    call.arguments._sessionId = this.sessionId;
+                    call.arguments._turnId = turnId;
                   }
                   const result = await withTimeout(
                     this.registry.execute(call.name, call.arguments),
@@ -1556,6 +1675,17 @@ export class AgentLoop {
                   durationMs,
                   errorType,
                 });
+                this.recordBrainToolResult(
+                  {
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: errMsg,
+                    status: errorType === 'abort' ? 'cancelled' : 'error',
+                    errorType,
+                    turnId,
+                  },
+                  toolResultsThisTurn
+                );
                 yield {
                   type: 'tool_end',
                   data: errMsg,
@@ -1588,6 +1718,17 @@ export class AgentLoop {
                   durationMs,
                   errorType,
                 });
+                this.recordBrainToolResult(
+                  {
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: processed,
+                    status: toolStatus,
+                    errorType,
+                    turnId,
+                  },
+                  toolResultsThisTurn
+                );
                 yield {
                   type: 'tool_end',
                   data: processed,
@@ -1620,6 +1761,8 @@ export class AgentLoop {
 
           if (SESSION_KEY_TOOLS.has(call.name)) {
             call.arguments._sessionKey = this.sessionKey;
+            call.arguments._sessionId = this.sessionId;
+            call.arguments._turnId = turnId;
           }
 
           const startedAt = Date.now();
@@ -1743,6 +1886,17 @@ export class AgentLoop {
             durationMs,
             errorType,
           });
+          this.recordBrainToolResult(
+            {
+              toolName: call.name,
+              args: call.arguments,
+              result,
+              status: toolStatus,
+              errorType,
+              turnId,
+            },
+            toolResultsThisTurn
+          );
           this.recordEvidenceFromToolResult(
             store,
             turnId,
@@ -1815,25 +1969,56 @@ export class AgentLoop {
         continue;
       }
 
-      const finalText = this.withEvidenceSummary(response.text, store, turnId);
+      const gate = this.brain.evaluateFinalAnswer({
+        userMessage,
+        assistantText: response.text,
+        evidence: store.listEvidenceItems(this.sessionId, 8, turnId),
+        toolResultsThisTurn,
+      });
+      if (
+        this.config.brain?.evidenceGate !== false &&
+        gate.action === 'block' &&
+        gate.systemMessage
+      ) {
+        this.messages.push({ role: 'system', content: gate.systemMessage });
+        continue;
+      }
+      const gatedText =
+        gate.action === 'allow_with_caveat'
+          ? `${response.text}\n\nVerification note: ${gate.reason}`
+          : response.text;
+      const finalText = this.withEvidenceSummary(gatedText, store, turnId);
+      this.brain.recordAssistantText(finalText);
       const assistantMessage: Message = { role: 'assistant', content: finalText };
       this.messages.push(assistantMessage);
       store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantMessage });
       this.ledger.add('agentText', finalText);
+      this.observe('agent_loop', 'turn_end', turnId, {
+        status: 'success',
+        summary: finalText,
+        payload: { executionMode: 'single' },
+      });
       yield { type: 'text', data: finalText };
       yield { type: 'done', data: '' };
       return;
     }
 
+    const maxIterationError = `Max iterations (${this.maxIterations}) reached. Agent stopped.\nThe task was too complex for the current iteration limit. Try breaking it into smaller steps, or increase with: agent.setMaxIterations(5000)`;
+    this.observe('agent_loop', 'turn_end', turnId, {
+      status: 'error',
+      summary: maxIterationError,
+      payload: { maxIterations: this.maxIterations },
+    });
     yield {
       type: 'error',
-      data: `Max iterations (${this.maxIterations}) reached. Agent stopped.\nThe task was too complex for the current iteration limit. Try breaking it into smaller steps, or increase with: agent.setMaxIterations(5000)`,
+      data: maxIterationError,
     };
   }
 
   private async *runMultiAgent(userMessage: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    this.brain.startTurn(turnId, userMessage);
     const store = await this.ensureDurableSession();
     const userMsg: Message = { role: 'user', content: userMessage };
     this.messages.push(userMsg);
@@ -1843,7 +2028,13 @@ export class AgentLoop {
       message: userMsg,
       metadata: { mode: 'multiagent' },
     });
+    recordTrashUserTurn(this.sessionId);
     this.ledger.add('userInput', userMessage);
+    this.observe('multi_agent', 'turn_start', turnId, {
+      status: 'running',
+      summary: userMessage,
+      payload: { executionMode: 'multiagent' },
+    });
 
     try {
       const pendingEvents: AgentEvent[] = [];
@@ -1851,6 +2042,8 @@ export class AgentLoop {
       let runError: any;
       let done = false;
       this.multiAgent!.run(userMessage, {
+        sessionId: this.sessionId,
+        turnId,
         onEvent: (event) => pendingEvents.push(event),
       })
         .then((value) => {
@@ -1878,7 +2071,9 @@ export class AgentLoop {
               errorType: event.errorType,
             });
           }
-          yield { ...event, turnId, sessionId: this.sessionId };
+          const observedEvent = { ...event, turnId, sessionId: this.sessionId };
+          if (event.type === 'error') this.observeAgentEvent('multi_agent', observedEvent, turnId);
+          yield observedEvent;
         }
         if (!done) await new Promise((resolve) => setTimeout(resolve, 50));
       }
@@ -1893,7 +2088,13 @@ export class AgentLoop {
       }
 
       if (result.route !== 'direct') {
-        yield { type: 'route', data: `Routed to ${result.specialistUsed}`, toolName: result.route };
+        const routeEvent: AgentEvent = {
+          type: 'route',
+          data: `Routed to ${result.specialistUsed}`,
+          toolName: result.route,
+        };
+        this.observeAgentEvent('multi_agent', routeEvent, turnId);
+        yield routeEvent;
       }
 
       const finalText = this.withEvidenceSummary(result.answer, store, turnId);
@@ -1905,9 +2106,18 @@ export class AgentLoop {
         message: assistantMessage,
         metadata: { route: result.route, specialistUsed: result.specialistUsed },
       });
+      this.observe('multi_agent', 'turn_end', turnId, {
+        status: 'success',
+        summary: finalText,
+        payload: { route: result.route, specialistUsed: result.specialistUsed },
+      });
       yield { type: 'text', data: finalText };
       yield { type: 'done', data: '' };
     } catch (e: any) {
+      this.observe('multi_agent', 'turn_end', turnId, {
+        status: 'error',
+        summary: `Multi-agent error: ${e.message}`,
+      });
       yield { type: 'error', data: `Multi-agent error: ${e.message}` };
     }
   }
@@ -1919,6 +2129,7 @@ export class AgentLoop {
   async *runResearch(query: string): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    this.brain.startTurn(turnId, query);
     const store = await this.ensureDurableSession();
     const userMsg: Message = { role: 'user', content: query };
     this.messages.push(userMsg);
@@ -1928,7 +2139,13 @@ export class AgentLoop {
       message: userMsg,
       metadata: { mode: 'research' },
     });
+    recordTrashUserTurn(this.sessionId);
     this.ledger.add('userInput', query);
+    this.observe('research', 'turn_start', turnId, {
+      status: 'running',
+      summary: query,
+      payload: { executionMode: 'research' },
+    });
 
     if (!this.researchPipeline) {
       this.researchPipeline = new ResearchPipeline(this.config);
@@ -1954,6 +2171,10 @@ export class AgentLoop {
             message: assistantMessage,
             metadata: { mode: 'research' },
           });
+          this.observe('research', 'text', turnId, {
+            status: 'running',
+            summary: event.data,
+          });
           yield { type: 'text', data: event.data };
         } else {
           store.recordToolEvent({
@@ -1964,16 +2185,25 @@ export class AgentLoop {
             result: event.data,
             status: 'running',
           });
-          yield {
+          const researchEvent: AgentEvent = {
             type: 'research',
             data: `[${event.agent}] ${event.data}`,
             turnId,
             sessionId: this.sessionId,
+            toolName: event.agent,
+            status: 'running',
           };
+          this.observeAgentEvent('research', researchEvent, turnId);
+          yield researchEvent;
         }
       }
+      this.observe('research', 'turn_end', turnId, { status: 'success', summary: query });
       yield { type: 'done', data: '' };
     } catch (e: any) {
+      this.observe('research', 'turn_end', turnId, {
+        status: 'error',
+        summary: `Research pipeline error: ${e.message}`,
+      });
       yield { type: 'error', data: `Research pipeline error: ${e.message}` };
     }
   }
@@ -2006,6 +2236,7 @@ export class AgentLoop {
     if (this.sessionKey !== 'default') {
       this.sessionId = `gw_${this.sessionKey.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120)}`;
     }
+    this.resetBrain();
   }
 
   setProvider(config: Partial<AurixConfig>): void {
@@ -2013,6 +2244,7 @@ export class AgentLoop {
     this.provider = createProvider(this.config);
     this.contextManager = new ContextManager(this.provider, config.model || this.config.model);
     this.memoryManager.setProvider(this.provider);
+    this.resetBrain();
     if (this.multiAgent) {
       this.multiAgent = new MultiAgentSystem(this.config, this.registry);
     }

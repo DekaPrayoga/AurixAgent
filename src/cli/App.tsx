@@ -81,6 +81,7 @@ const HANDLED_COMMANDS = new Set([
   'doctor',
   'editor',
   'effort',
+  'evals',
   'exit',
   'export',
   'fast',
@@ -124,6 +125,7 @@ const HANDLED_COMMANDS = new Set([
   'reload-mcp',
   'reload-skills',
   'research-forums',
+  'replay',
   'reset',
   'restart',
   'resume',
@@ -153,6 +155,7 @@ const HANDLED_COMMANDS = new Set([
   'theme',
   'todo',
   'tools',
+  'trash',
   'toolsets',
   'undo',
   'update',
@@ -757,6 +760,116 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           } catch (e: any) {
             addAssistant(`History search failed: ${e.message}`);
           }
+          return;
+        }
+
+        if (commandName === 'trash') {
+          const raw = slash.args.trim();
+          const [subcmd = 'list', id] = raw.split(/\s+/);
+          const { formatTrashList, recoverTrashEntry } = await import('../agent/TrashStore.js');
+          if (!raw || subcmd === 'list') {
+            addAssistant(`Recoverable trash\n\n${formatTrashList(agent.getSessionId())}`);
+            return;
+          }
+          if (subcmd === 'recover' || subcmd === 'restore') {
+            if (!id) {
+              addAssistant('Usage: /trash recover <recovery-id-or-original-path>');
+              return;
+            }
+            addAssistant(recoverTrashEntry(id, { sessionId: agent.getSessionId() }));
+            return;
+          }
+          addAssistant('Usage: /trash list | /trash recover <id>');
+          return;
+        }
+
+        if (commandName === 'replay') {
+          const raw = slash.args.trim();
+          const parts = raw.split(/\s+/).filter(Boolean);
+          const { getSessionStore } = await import('../agent/SessionStore.js');
+          const store = await getSessionStore();
+          let sessionId: string | undefined = agent.getSessionId();
+          let jobId: string | undefined;
+          if (parts[0] === 'session' && parts[1]) sessionId = parts[1];
+          else if (parts[0] === 'job' && parts[1]) {
+            sessionId = undefined;
+            jobId = parts[1];
+          } else if (parts[0] === 'latest') sessionId = agent.getSessionId();
+          const events = store.listObserverEvents({ sessionId, jobId }, 40).reverse();
+          if (events.length === 0) {
+            addAssistant('No observer events found for replay target.');
+            return;
+          }
+          const lines = events.map((event) => {
+            const time = event.createdAt ? event.createdAt.slice(11, 19) : '--:--:--';
+            const status = event.status ? ` ${event.status}` : '';
+            const tool = event.toolName ? ` ${event.toolName}` : '';
+            const summary = event.summary
+              ? ` — ${event.summary.replace(/\s+/g, ' ').slice(0, 120)}`
+              : '';
+            return `${time} ${event.source}:${event.eventType}${status}${tool}${summary}`;
+          });
+          addAssistant(
+            `Replay timeline\nTarget: ${jobId ? `job ${jobId}` : `session ${sessionId}`}\n\n${lines.join('\n')}`
+          );
+          return;
+        }
+
+        if (commandName === 'evals') {
+          const raw = slash.args.trim();
+          const parts = raw.split(/\s+/).filter(Boolean);
+          const { getSessionStore } = await import('../agent/SessionStore.js');
+          const store = await getSessionStore();
+          let sessionId: string | undefined = agent.getSessionId();
+          let jobId: string | undefined;
+          if (parts[0] === 'session' && parts[1]) sessionId = parts[1];
+          else if (parts[0] === 'job' && parts[1]) {
+            sessionId = undefined;
+            jobId = parts[1];
+          } else if (parts[0] === 'latest') sessionId = agent.getSessionId();
+          const events = store.listObserverEvents({ sessionId, jobId }, 200);
+          const evidence = sessionId ? store.listEvidenceItems(sessionId, 20) : [];
+          const errors = events.filter(
+            (e) => e.status === 'error' || e.eventType.includes('failed')
+          );
+          const toolErrors = events.filter(
+            (e) => e.eventType === 'tool_end' && e.status === 'error'
+          );
+          const denied = events.filter((e) => e.eventType === 'delete_denied');
+          const recovered = events.filter((e) => e.eventType === 'recovery_success');
+          const deleteTrash = events.filter((e) => e.eventType === 'delete_moved_to_trash');
+          const passedEvidence = evidence.filter((e) => e.status === 'passed');
+          const failedEvidence = evidence.filter((e) => e.status === 'failed');
+          let score = 100;
+          score -= Math.min(30, toolErrors.length * 10);
+          score -= Math.min(25, errors.length * 8);
+          score -= denied.length * 5;
+          score -= failedEvidence.length * 15;
+          if (passedEvidence.length > 0) score += 5;
+          if (recovered.length > 0) score += 5;
+          score = Math.max(0, Math.min(100, score));
+          const notes = [
+            `Score: ${score}/100`,
+            `Observer events: ${events.length}`,
+            `Tool errors: ${toolErrors.length}`,
+            `Evidence passed/failed: ${passedEvidence.length}/${failedEvidence.length}`,
+            `Deletes moved to trash: ${deleteTrash.length}`,
+            `Recoveries: ${recovered.length}`,
+          ];
+          if (errors.length > 0) {
+            notes.push('', 'Recent errors:');
+            notes.push(
+              ...errors
+                .slice(0, 5)
+                .map(
+                  (e) =>
+                    `- ${e.source}:${e.eventType} ${e.summary ? e.summary.replace(/\s+/g, ' ').slice(0, 120) : ''}`
+                )
+            );
+          }
+          addAssistant(
+            `Agent evaluation\nTarget: ${jobId ? `job ${jobId}` : `session ${sessionId}`}\n\n${notes.join('\n')}`
+          );
           return;
         }
 
@@ -2042,7 +2155,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               `  Provider: ${config.visionProvider || config.provider || 'openai'}${config.visionProvider ? '' : ' (main)'}`,
               `  API Style: ${config.visionApiStyle || config.apiStyle || 'auto'}${config.visionApiStyle ? '' : ' (main)'}`,
               `  Base URL: ${config.visionBaseUrl || config.baseUrl || '(default provider URL)'}`,
-              `  Model: ${config.visionModel || 'gpt-4o'}`,
+              `  Model: ${config.visionModel || config.model || 'main model'}`,
               `  API Key: ${config.visionApiKey ? 'vision key set' : 'using main key'}`,
               '',
               'Commands:',
@@ -2057,7 +2170,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           }
 
           if (action === 'test') {
-            addAssistant('Testing vision fallback with a tiny image...');
+            addAssistant('Testing image input with a tiny image...');
             try {
               const { createProvider } = await import('../providers/index.js');
               const vProvider = createProvider({
@@ -2065,7 +2178,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 provider: config.visionProvider || config.provider,
                 baseUrl: config.visionBaseUrl || config.baseUrl,
                 apiKey: config.visionApiKey || config.apiKey,
-                model: config.visionModel || 'gpt-4o',
+                model: config.visionModel || config.model,
                 apiStyle: config.visionApiStyle || config.apiStyle,
                 maxTokens: 64,
                 temperature: 0,

@@ -52,6 +52,16 @@ export interface AurixConfig {
   browser?: {
     proxies?: string[];
   };
+  brain?: {
+    enabled?: boolean;
+    repoIndex?: boolean;
+    evidenceGate?: boolean;
+    capabilities?: Partial<{
+      vision: boolean;
+      tools: boolean;
+      json: boolean;
+    }>;
+  };
   tools?: {
     enabled?: string[];
     disabled?: string[];
@@ -116,6 +126,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     plugins: file.plugins,
     gateway: file.gateway,
     browser: file.browser,
+    brain: file.brain,
     tools: file.tools,
     features: file.features,
     searchEngine: file.searchEngine || 'ddg',

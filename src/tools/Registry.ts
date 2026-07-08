@@ -32,6 +32,10 @@ export interface ToolPermissionRequest {
 export type PermissionHandler = (request: ToolPermissionRequest) => Promise<PermissionReply>;
 
 import { askUserTool } from './AskUser.js';
+import {
+  requiresManualDeleteApproval,
+  requiresManualDependencyInstallApproval,
+} from '../agent/DestructiveActionPolicy.js';
 
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
@@ -66,6 +70,10 @@ export class ToolRegistry {
 
   setPermissionHandler(handler: PermissionHandler): void {
     this.permissionHandler = handler;
+  }
+
+  getPermissionHandler(): PermissionHandler | undefined {
+    return this.permissionHandler;
   }
 
   setPermissionMode(mode: PermissionMode): void {
@@ -133,19 +141,42 @@ export class ToolRegistry {
     }
 
     const permission = this.getPermissionRequest(tool, args);
-    if (permission && !this.allowedTools.has(name)) {
-      if (this.permissionMode === 'deny') {
+    const manualDeleteApproval = requiresManualDeleteApproval(name);
+    const dependencyInstallApproval = requiresManualDependencyInstallApproval(name, args);
+    const manualApproval = manualDeleteApproval || Boolean(dependencyInstallApproval);
+    if (manualDeleteApproval) {
+      delete args.confirmed;
+      delete args._approvedByUser;
+    }
+    if (dependencyInstallApproval) {
+      delete args._approvedDependencyInstall;
+    }
+    if (permission && (manualApproval || !this.allowedTools.has(name))) {
+      if (this.permissionMode === 'deny' && !manualApproval) {
         return `Permission denied for ${name}. Use /permissions mode ask to allow prompts.`;
       }
 
-      if (this.permissionMode !== 'bypass') {
+      if (manualApproval || this.permissionMode !== 'bypass') {
         if (!this.permissionHandler) {
           return `Permission required for ${name}, but no interactive permission handler is available.`;
         }
 
-        const reply = await this.permissionHandler(permission);
+        const manualPermission = dependencyInstallApproval
+          ? {
+              ...permission,
+              risk: 'execute' as const,
+              summary: `${dependencyInstallApproval.reason}: ${dependencyInstallApproval.command}`,
+              arguments: {
+                ...permission.arguments,
+                dependencyInstall: dependencyInstallApproval,
+              },
+            }
+          : permission;
+        const reply = await this.permissionHandler(manualPermission);
         if (reply === 'deny') return `Permission denied for ${name}.`;
-        if (reply === 'always') this.allowedTools.add(name);
+        if (manualDeleteApproval) args._approvedByUser = true;
+        if (dependencyInstallApproval) args._approvedDependencyInstall = true;
+        if (!manualApproval && reply === 'always') this.allowedTools.add(name);
       }
     }
 
@@ -208,7 +239,13 @@ function summarizeToolUse(name: string, args: Record<string, unknown>): string {
     const code = String(args.code || '');
     return `[${lang}] ${code}`;
   }
-  if (name === 'write_file' || name === 'read_file') return String(args.path || '').slice(0, 180);
+  if (
+    name === 'write_file' ||
+    name === 'read_file' ||
+    name === 'delete_file' ||
+    name === 'delete_folder'
+  )
+    return String(args.path || '').slice(0, 180);
   if (name === 'search_files') return `${args.pattern || ''} in ${args.path || '.'}`.slice(0, 180);
   if (name === 'email') return `${args.action || 'email'} ${args.to ? `to ${args.to}` : ''}`.trim();
   if (name.startsWith('gh_')) return JSON.stringify(redactArgs(args)).slice(0, 180);

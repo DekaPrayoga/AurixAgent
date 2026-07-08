@@ -3,7 +3,13 @@ import crypto from 'crypto';
 import { AgentLoop } from './AgentLoop.js';
 import { loadConfig } from './Config.js';
 import type { ToolRegistry } from '../tools/Registry.js';
-import { getSessionStore, type ScheduledJob, type ScheduledJobRun } from './SessionStore.js';
+import {
+  getSessionStore,
+  installObserverBusSessionSink,
+  type ScheduledJob,
+  type ScheduledJobRun,
+} from './SessionStore.js';
+import { agentObserverBus } from './AgentObserverBus.js';
 
 export interface CronTarget {
   platform?: string;
@@ -22,7 +28,9 @@ export class CronDaemon {
   constructor(
     private registry: ToolRegistry,
     private deliver?: CronDelivery
-  ) {}
+  ) {
+    installObserverBusSessionSink();
+  }
 
   setDelivery(deliver: CronDelivery): void {
     this.deliver = deliver;
@@ -68,6 +76,14 @@ export class CronDaemon {
       targetReplyTo: target.replyTo,
     });
     this.scheduleJob(job);
+    agentObserverBus.publish({
+      jobId: id,
+      source: 'cron',
+      eventType: 'job_added',
+      status: 'success',
+      summary: `Scheduled ${schedule}: ${prompt}`,
+      payload: { schedule, target },
+    });
     return job;
   }
 
@@ -79,7 +95,15 @@ export class CronDaemon {
       this.scheduledTasks.delete(id);
     }
     const store = await getSessionStore();
-    return store.removeScheduledJob(id);
+    const removed = store.removeScheduledJob(id);
+    agentObserverBus.publish({
+      jobId: id,
+      source: 'cron',
+      eventType: 'job_removed',
+      status: removed ? 'success' : 'error',
+      summary: removed ? `Removed cron job ${id}` : `Cron job not found: ${id}`,
+    });
+    return removed;
   }
 
   async listJobs(): Promise<CronJob[]> {
@@ -88,7 +112,7 @@ export class CronDaemon {
     return store.listScheduledJobs(true);
   }
 
-  async runJob(id: string): Promise<ScheduledJobRun> {
+  async runJob(id: string, options: { deliver?: boolean } = {}): Promise<ScheduledJobRun> {
     await this.start();
     const store = await getSessionStore();
     const job = store.listScheduledJobs(true).find((j) => j.id === id);
@@ -97,6 +121,14 @@ export class CronDaemon {
 
     const startedAt = new Date().toISOString();
     const runId = store.recordScheduledJobRun({ jobId: id, startedAt, status: 'running' });
+    agentObserverBus.publish({
+      jobId: id,
+      source: 'cron',
+      eventType: 'run_start',
+      status: 'running',
+      summary: job.prompt,
+      payload: { runId, schedule: job.schedule },
+    });
 
     try {
       const config = loadConfig();
@@ -105,13 +137,30 @@ export class CronDaemon {
       let finalText = '';
       const prompt = `[CRON TRIGGERED TASK]\n${job.prompt}\n\nRun autonomously. If this job has a gateway delivery target, produce a concise final answer suitable for sending to that chat.`;
       for await (const event of agent.run(prompt)) {
+        agentObserverBus.publishAgentEvent('cron', event, {
+          sessionId: event.sessionId || agent.getSessionId(),
+          turnId: event.turnId,
+          jobId: id,
+        });
         if (event.type === 'text' && event.data) finalText = event.data;
         if (event.type === 'error' && event.data) finalText = `Error: ${event.data}`;
       }
       const finishedAt = new Date().toISOString();
       const result = finalText || '(cron job completed with no final text)';
-      if (this.deliver && job.targetPlatform && job.targetChannelId) {
+      if (options.deliver !== false && this.deliver && job.targetPlatform && job.targetChannelId) {
         await this.deliver(job, result);
+        agentObserverBus.publish({
+          jobId: id,
+          source: 'cron',
+          eventType: 'delivery_success',
+          status: 'success',
+          summary: `${job.targetPlatform}:${job.targetChannelId}`,
+          payload: {
+            runId,
+            targetPlatform: job.targetPlatform,
+            targetChannelId: job.targetChannelId,
+          },
+        });
       }
       const run: ScheduledJobRun = {
         id: runId,
@@ -122,6 +171,14 @@ export class CronDaemon {
         result,
       };
       store.recordScheduledJobRun(run);
+      agentObserverBus.publish({
+        jobId: id,
+        source: 'cron',
+        eventType: 'run_end',
+        status: 'success',
+        summary: result,
+        payload: { runId, finishedAt },
+      });
       return run;
     } catch (err: any) {
       const finishedAt = new Date().toISOString();
@@ -134,6 +191,14 @@ export class CronDaemon {
         error: err?.message || String(err),
       };
       store.recordScheduledJobRun(run);
+      agentObserverBus.publish({
+        jobId: id,
+        source: 'cron',
+        eventType: 'run_end',
+        status: 'error',
+        summary: err?.message || String(err),
+        payload: { runId, finishedAt },
+      });
       return run;
     }
   }

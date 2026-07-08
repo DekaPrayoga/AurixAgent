@@ -1,7 +1,14 @@
 import type { Provider } from '../providers/index.js';
 import { createProvider } from '../providers/index.js';
 import type { AurixConfig } from './Config.js';
-import type { ResearchEvent, ResearchDepth, Claim, Source, DebateRound, ClaimVerdict } from './research/types.js';
+import type {
+  ResearchEvent,
+  ResearchDepth,
+  Claim,
+  Source,
+  DebateRound,
+  ClaimVerdict,
+} from './research/types.js';
 import { RequestAnalyzer } from './research/RequestAnalyzer.js';
 import { PlanningAgent } from './research/PlanningAgent.js';
 import { ResearchAgent } from './research/ResearchAgent.js';
@@ -15,14 +22,68 @@ import { CitationGuardian } from './research/CitationGuardian.js';
 import { LogicCritic } from './research/LogicCritic.js';
 import { WriterAgent } from './research/WriterAgent.js';
 import { FinalReviewer } from './research/FinalReviewer.js';
+import {
+  formatStructuredOutput,
+  STRUCTURED_OUTPUT_PROMPT,
+} from '../utils/StructuredOutputFormat.js';
 
 const DEPTH_AGENTS: Record<ResearchDepth, string[]> = {
   low: [],
   medium: ['RequestAnalyzer', 'ResearchAgent', 'WriterAgent'],
-  high: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
-  xhigh: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'WriterAgent'],
-  max: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent'],
-  ultra: ['RequestAnalyzer', 'PlanningAgent', 'ResearchAgent', 'VideoAgent', 'ClaimExtractor', 'SupporterAgent', 'SkepticAgent', 'DebateSystem', 'JudgeAgent', 'CitationGuardian', 'LogicCritic', 'WriterAgent', 'FinalReviewer'],
+  high: [
+    'RequestAnalyzer',
+    'PlanningAgent',
+    'ResearchAgent',
+    'VideoAgent',
+    'ClaimExtractor',
+    'SupporterAgent',
+    'SkepticAgent',
+    'JudgeAgent',
+    'CitationGuardian',
+    'WriterAgent',
+  ],
+  xhigh: [
+    'RequestAnalyzer',
+    'PlanningAgent',
+    'ResearchAgent',
+    'VideoAgent',
+    'ClaimExtractor',
+    'SupporterAgent',
+    'SkepticAgent',
+    'DebateSystem',
+    'JudgeAgent',
+    'CitationGuardian',
+    'WriterAgent',
+  ],
+  max: [
+    'RequestAnalyzer',
+    'PlanningAgent',
+    'ResearchAgent',
+    'VideoAgent',
+    'ClaimExtractor',
+    'SupporterAgent',
+    'SkepticAgent',
+    'DebateSystem',
+    'JudgeAgent',
+    'CitationGuardian',
+    'LogicCritic',
+    'WriterAgent',
+  ],
+  ultra: [
+    'RequestAnalyzer',
+    'PlanningAgent',
+    'ResearchAgent',
+    'VideoAgent',
+    'ClaimExtractor',
+    'SupporterAgent',
+    'SkepticAgent',
+    'DebateSystem',
+    'JudgeAgent',
+    'CitationGuardian',
+    'LogicCritic',
+    'WriterAgent',
+    'FinalReviewer',
+  ],
 };
 
 export class ResearchPipeline {
@@ -66,16 +127,27 @@ export class ResearchPipeline {
     const mode = depth || (this.config.researchMode as ResearchDepth) || 'low';
     const active = new Set(DEPTH_AGENTS[mode] || []);
 
-    yield { type: 'agent_start', agent: 'Pipeline', data: `Research depth: ${mode} | Active agents: ${active.size}` };
+    yield {
+      type: 'agent_start',
+      agent: 'Pipeline',
+      data: `Research depth: ${mode} | Active agents: ${active.size}`,
+    };
 
     if (mode === 'low') {
-      yield { type: 'agent_start', agent: 'Direct', data: 'Single-agent mode — answering directly' };
+      yield {
+        type: 'agent_start',
+        agent: 'Direct',
+        data: 'Single-agent mode — answering directly',
+      };
       const messages = [
-        { role: 'system' as const, content: 'You are AURIX, an AI research assistant. Answer clearly and accurately.' },
+        {
+          role: 'system' as const,
+          content: `You are AURIX, an AI research assistant. Answer clearly and accurately.\n\n${STRUCTURED_OUTPUT_PROMPT}`,
+        },
         { role: 'user' as const, content: query },
       ];
       const res = await this.provider.chat(messages);
-      yield { type: 'text', agent: 'Direct', data: res.text };
+      yield { type: 'text', agent: 'Direct', data: formatStructuredOutput(res.text, 'terminal') };
       yield { type: 'agent_end', agent: 'Direct', data: 'Done' };
       return;
     }
@@ -85,14 +157,22 @@ export class ResearchPipeline {
     if (active.has('RequestAnalyzer')) {
       yield { type: 'agent_start', agent: 'RequestAnalyzer', data: 'Analyzing request...' };
       analysis = await this.requestAnalyzer.analyze(query);
-      yield { type: 'agent_end', agent: 'RequestAnalyzer', data: `Intent: ${analysis.intent} | Format: ${analysis.format} | Complexity: ${analysis.complexity}` };
+      yield {
+        type: 'agent_end',
+        agent: 'RequestAnalyzer',
+        data: `Intent: ${analysis.intent} | Format: ${analysis.format} | Complexity: ${analysis.complexity}`,
+      };
     }
 
     // Step 2: Plan
     if (active.has('PlanningAgent')) {
       yield { type: 'agent_start', agent: 'PlanningAgent', data: 'Creating research plan...' };
       const plan = await this.planningAgent.plan(query, analysis);
-      yield { type: 'agent_end', agent: 'PlanningAgent', data: `Plan: ${plan.agents.join(', ') || 'direct research'}` };
+      yield {
+        type: 'agent_end',
+        agent: 'PlanningAgent',
+        data: `Plan: ${plan.agents.join(', ') || 'direct research'}`,
+      };
     }
 
     // Step 3: Research
@@ -103,16 +183,27 @@ export class ResearchPipeline {
       const research = await this.researchAgent.research(query, analysis.topics || []);
       findings = research.findings;
       sources = research.sources;
-      yield { type: 'finding', agent: 'ResearchAgent', data: `${findings.length} findings, ${sources.length} sources` };
+      yield {
+        type: 'finding',
+        agent: 'ResearchAgent',
+        data: `${findings.length} findings, ${sources.length} sources`,
+      };
       yield { type: 'agent_end', agent: 'ResearchAgent', data: 'Research complete' };
     }
 
     // Step 4: Video analysis (if video context detected)
-    if (active.has('VideoAgent') && analysis.topics?.some((t: string) => /video|youtube|tiktok/i.test(t))) {
+    if (
+      active.has('VideoAgent') &&
+      analysis.topics?.some((t: string) => /video|youtube|tiktok/i.test(t))
+    ) {
       yield { type: 'agent_start', agent: 'VideoAgent', data: 'Analyzing video content...' };
       const videoResult = await this.videoAgent.analyze(query);
       findings = [...findings, ...videoResult.claims];
-      yield { type: 'agent_end', agent: 'VideoAgent', data: `${videoResult.claims.length} claims extracted` };
+      yield {
+        type: 'agent_end',
+        agent: 'VideoAgent',
+        data: `${videoResult.claims.length} claims extracted`,
+      };
     }
 
     // Step 5: Extract claims
@@ -120,7 +211,14 @@ export class ResearchPipeline {
     if (active.has('ClaimExtractor') && findings.length > 0) {
       yield { type: 'agent_start', agent: 'ClaimExtractor', data: 'Classifying claims...' };
       claims = await this.claimExtractor.extract(findings);
-      yield { type: 'claim', agent: 'ClaimExtractor', data: `${claims.length} claims: ${claims.map(c => c.type).filter((v, i, a) => a.indexOf(v) === i).join(', ')}` };
+      yield {
+        type: 'claim',
+        agent: 'ClaimExtractor',
+        data: `${claims.length} claims: ${claims
+          .map((c) => c.type)
+          .filter((v, i, a) => a.indexOf(v) === i)
+          .join(', ')}`,
+      };
       yield { type: 'agent_end', agent: 'ClaimExtractor', data: 'Classification complete' };
     }
 
@@ -132,25 +230,49 @@ export class ResearchPipeline {
       const topClaims = claims.slice(0, 3);
 
       for (const claim of topClaims) {
-        yield { type: 'agent_start', agent: 'SupporterAgent', data: `Building case FOR: "${claim.text.slice(0, 60)}..."` };
+        yield {
+          type: 'agent_start',
+          agent: 'SupporterAgent',
+          data: `Building case FOR: "${claim.text.slice(0, 60)}..."`,
+        };
         const supportResult = await this.supporter.support(claim, findings);
         yield { type: 'agent_end', agent: 'SupporterAgent', data: 'Argument constructed' };
 
-        yield { type: 'agent_start', agent: 'SkepticAgent', data: `Challenging: "${claim.text.slice(0, 60)}..."` };
+        yield {
+          type: 'agent_start',
+          agent: 'SkepticAgent',
+          data: `Challenging: "${claim.text.slice(0, 60)}..."`,
+        };
         const skepticResult = await this.skeptic.attack(claim, findings);
         yield { type: 'agent_end', agent: 'SkepticAgent', data: 'Objections raised' };
 
-        yield { type: 'debate', agent: 'DebateSystem', data: `Debating: "${claim.text.slice(0, 60)}..."` };
-        const debateResult = await this.debateSystem.debate(claim.text, supportResult.raw, skepticResult.raw);
+        yield {
+          type: 'debate',
+          agent: 'DebateSystem',
+          data: `Debating: "${claim.text.slice(0, 60)}..."`,
+        };
+        const debateResult = await this.debateSystem.debate(
+          claim.text,
+          supportResult.raw,
+          skepticResult.raw
+        );
         debates.push(debateResult);
         yield { type: 'debate', agent: 'DebateSystem', data: `Winner: ${debateResult.winner}` };
 
         // Step 7: Judge
         if (active.has('JudgeAgent')) {
-          yield { type: 'agent_start', agent: 'JudgeAgent', data: `Issuing verdict on: "${claim.text.slice(0, 60)}..."` };
+          yield {
+            type: 'agent_start',
+            agent: 'JudgeAgent',
+            data: `Issuing verdict on: "${claim.text.slice(0, 60)}..."`,
+          };
           const verdict = await this.judge.judge(claim.text, debateResult, findings);
           verdicts.push(verdict);
-          yield { type: 'verdict', agent: 'JudgeAgent', data: `${verdict.verdict} (confidence: ${verdict.confidence}%)` };
+          yield {
+            type: 'verdict',
+            agent: 'JudgeAgent',
+            data: `${verdict.verdict} (confidence: ${verdict.confidence}%)`,
+          };
           yield { type: 'agent_end', agent: 'JudgeAgent', data: 'Verdict issued' };
         }
       }
@@ -166,35 +288,60 @@ export class ResearchPipeline {
         };
         const verdict = await this.judge.judge(claim.text, mockDebate, findings);
         verdicts.push(verdict);
-        yield { type: 'verdict', agent: 'JudgeAgent', data: `${verdict.verdict}: "${claim.text.slice(0, 60)}..."` };
+        yield {
+          type: 'verdict',
+          agent: 'JudgeAgent',
+          data: `${verdict.verdict}: "${claim.text.slice(0, 60)}..."`,
+        };
       }
     }
 
     // Step 8: Citation verification
     if (active.has('CitationGuardian') && sources.length > 0) {
-      yield { type: 'agent_start', agent: 'CitationGuardian', data: `Verifying ${sources.length} sources...` };
+      yield {
+        type: 'agent_start',
+        agent: 'CitationGuardian',
+        data: `Verifying ${sources.length} sources...`,
+      };
       const verification = await this.citationGuardian.verify(sources, findings.join('\n'));
-      yield { type: 'agent_end', agent: 'CitationGuardian', data: `${verification.verified.length} verified, ${verification.flagged.length} flagged` };
+      yield {
+        type: 'agent_end',
+        agent: 'CitationGuardian',
+        data: `${verification.verified.length} verified, ${verification.flagged.length} flagged`,
+      };
     }
 
     // Step 9: Logic check
     if (active.has('LogicCritic') && verdicts.length > 0) {
       yield { type: 'agent_start', agent: 'LogicCritic', data: 'Checking reasoning...' };
       const logicResult = await this.logicCritic.critique(verdicts, findings.join('\n'));
-      yield { type: 'agent_end', agent: 'LogicCritic', data: `Logic score: ${logicResult.score}/100` };
+      yield {
+        type: 'agent_end',
+        agent: 'LogicCritic',
+        data: `Logic score: ${logicResult.score}/100`,
+      };
     }
 
     // Step 10: Write output
     let output = '';
     if (active.has('WriterAgent')) {
       yield { type: 'agent_start', agent: 'WriterAgent', data: 'Composing response...' };
-      const writeVerdicts = verdicts.length > 0 ? verdicts : claims.map(c => ({
-        claim: c.text,
-        verdict: 'UNSOURCED' as const,
-        reasoning: 'No formal verdict at this depth.',
-        confidence: c.confidence,
-      }));
-      output = await this.writer.write(query, writeVerdicts, sources, mode, analysis.format || 'DETAILED');
+      const writeVerdicts =
+        verdicts.length > 0
+          ? verdicts
+          : claims.map((c) => ({
+              claim: c.text,
+              verdict: 'UNSOURCED' as const,
+              reasoning: 'No formal verdict at this depth.',
+              confidence: c.confidence,
+            }));
+      output = await this.writer.write(
+        query,
+        writeVerdicts,
+        sources,
+        mode,
+        analysis.format || 'DETAILED'
+      );
       yield { type: 'agent_end', agent: 'WriterAgent', data: 'Response composed' };
     } else {
       output = findings.join('\n\n');
@@ -205,14 +352,23 @@ export class ResearchPipeline {
       yield { type: 'agent_start', agent: 'FinalReviewer', data: 'Running final quality check...' };
       const review = await this.finalReviewer.review(query, output);
       if (!review.approved) {
-        yield { type: 'agent_end', agent: 'FinalReviewer', data: `Score: ${review.score}/100 — issues found, revising` };
-        output += '\n\n[Note: Final review flagged quality concerns. Consider increasing research depth.]';
+        yield {
+          type: 'agent_end',
+          agent: 'FinalReviewer',
+          data: `Score: ${review.score}/100 — issues found, revising`,
+        };
+        output +=
+          '\n\n[Note: Final review flagged quality concerns. Consider increasing research depth.]';
       } else {
-        yield { type: 'agent_end', agent: 'FinalReviewer', data: `Approved (score: ${review.score}/100)` };
+        yield {
+          type: 'agent_end',
+          agent: 'FinalReviewer',
+          data: `Approved (score: ${review.score}/100)`,
+        };
       }
     }
 
-    yield { type: 'text', agent: 'Pipeline', data: output };
+    yield { type: 'text', agent: 'Pipeline', data: formatStructuredOutput(output, 'terminal') };
     yield { type: 'agent_end', agent: 'Pipeline', data: 'Research complete' };
   }
 }

@@ -11,6 +11,7 @@ import { CronDaemon } from '../agent/CronDaemon.js';
 import { getSessionStore } from '../agent/SessionStore.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import { formatStructuredOutput } from '../utils/StructuredOutputFormat.js';
 
 function cryptoRandomId(): string {
   return crypto.randomBytes(6).toString('hex');
@@ -203,6 +204,10 @@ const KNOWN_COMMANDS = new Set([
   'tools',
   'skills',
   'review',
+  'code-review',
+  'security-review',
+  'diff',
+  'verify',
   'plan',
   'research',
   'research-forums',
@@ -210,8 +215,22 @@ const KNOWN_COMMANDS = new Set([
   'pdf',
   'pptx',
   'xlsx',
+  'deep',
+  'deep-research',
   'compress',
   'agents',
+  'sessions',
+  'new',
+  'usage',
+  'insights',
+  'evals',
+  'replay',
+  'trash',
+  'whoami',
+  'cost',
+  'doctor',
+  'permissions',
+  'yolo',
   'cron',
   'btw',
   'proxy',
@@ -220,7 +239,7 @@ const KNOWN_COMMANDS = new Set([
 
 function cleanResponse(text: string): string {
   return safeDisplayText(text)
-    .replace(/\$([^\s$][^$\n]*[^\s$])\$/g, '')
+    .replace(/\$(?!\d)([^\s$][^$\n]*[^\s$])\$/g, '')
     .replace(/^>\s?/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -243,232 +262,6 @@ function extractSendableFiles(text: string): string[] {
 
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function charWidth(char: string): number {
-  const code = char.codePointAt(0) || 0;
-  if (code === 0x200d || (code >= 0x0300 && code <= 0x036f) || (code >= 0xfe00 && code <= 0xfe0f))
-    return 0;
-  if (
-    code >= 0x1100 &&
-    (code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1f300 && code <= 0x1faff))
-  )
-    return 2;
-  return 1;
-}
-
-function displayWidth(text: string): number {
-  return Array.from(text).reduce((sum, char) => sum + charWidth(char), 0);
-}
-
-function truncateDisplay(text: string, width: number): string {
-  let out = '';
-  let used = 0;
-  for (const char of Array.from(text)) {
-    const next = used + charWidth(char);
-    if (next > width) break;
-    out += char;
-    used = next;
-  }
-  return out;
-}
-
-function wrapDisplay(text: string, width: number, maxLines = Number.POSITIVE_INFINITY): string[] {
-  const value = (text || '').trim();
-  if (!value) return [''];
-  const words = value.split(/\s+/);
-  const lines: string[] = [];
-  let current = '';
-
-  const pushHardWrapped = (word: string) => {
-    let remaining = word;
-    while (displayWidth(remaining) > width) {
-      const part = truncateDisplay(remaining, width);
-      lines.push(part);
-      remaining = Array.from(remaining).slice(Array.from(part).length).join('');
-    }
-    current = remaining;
-  };
-
-  for (const word of words) {
-    if (!current) {
-      if (displayWidth(word) > width) pushHardWrapped(word);
-      else current = word;
-      continue;
-    }
-    const candidate = `${current} ${word}`;
-    if (displayWidth(candidate) <= width) current = candidate;
-    else {
-      lines.push(current);
-      if (displayWidth(word) > width) pushHardWrapped(word);
-      else current = word;
-    }
-  }
-
-  if (current || lines.length === 0) lines.push(current);
-  return Number.isFinite(maxLines) ? lines.slice(0, maxLines) : lines;
-}
-
-function parseMarkdownTable(
-  lines: string[],
-  start: number,
-  availableWidth = 72
-): { next: number; table: string; pre: boolean } | null {
-  if (!lines[start]?.trim().startsWith('|')) return null;
-  const rows: string[] = [];
-  let i = start;
-  while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].includes('|', 1)) {
-    rows.push(lines[i]);
-    i++;
-  }
-  if (rows.length < 2) return null;
-  const parseRow = (row: string) =>
-    row
-      .trim()
-      .replace(/^\||\|$/g, '')
-      .split('|')
-      .map((c) =>
-        c
-          .replace(/<br\s*\/?>/gi, ' / ')
-          .replace(/\s+/g, ' ')
-          .trim()
-      );
-  const isDivider = (row: string) => parseRow(row).every((cell) => /^:?-{3,}:?$/.test(cell));
-  const sepIdx = rows.findIndex((r, idx) => idx > 0 && isDivider(r));
-  if (sepIdx < 1) return null;
-  const header = parseRow(rows[0]);
-  const body = rows
-    .filter((_, idx) => idx !== 0 && idx !== sepIdx && !isDivider(rows[idx]))
-    .map(parseRow);
-  if (header.length === 0 || body.length === 0) return null;
-  const colCount = Math.max(header.length, ...body.map((r) => r.length));
-  const normalized = [header, ...body].map((row) =>
-    Array.from({ length: colCount }, (_, c) => row[c] || '')
-  );
-  const widths = Array.from({ length: colCount }, (_, c) =>
-    Math.max(3, ...normalized.map((row) => displayWidth(row[c] || '')))
-  );
-  const horizontalWidth = widths.reduce((sum, width) => sum + width, 0) + 3 * colCount + 1;
-
-  if (horizontalWidth <= Math.max(availableWidth, 20)) {
-    const pad = (value: string, width: number) =>
-      value + ' '.repeat(Math.max(0, width - displayWidth(value)));
-    const rowLine = (row: string[]) =>
-      '| ' + row.map((cell, idx) => pad(cell, widths[idx])).join(' | ') + ' |';
-    const divider = '|' + widths.map((width) => '-'.repeat(width + 2)).join('|') + '|';
-    return {
-      next: i,
-      table: [rowLine(normalized[0]), divider, ...normalized.slice(1).map(rowLine)].join('\n'),
-      pre: true,
-    };
-  }
-
-  const labels = normalized[0].map((label, idx) => label || `Column ${idx + 1}`);
-  const separator = '─'.repeat(Math.max(20, Math.min(40, availableWidth - 2)));
-  const vertical: string[] = [];
-  for (const [rowIdx, row] of normalized.slice(1).entries()) {
-    if (rowIdx > 0) vertical.push(separator);
-    for (let col = 0; col < colCount; col++) {
-      const label = labels[col];
-      const value = row[col] || '';
-      if (!value) {
-        vertical.push(`**${label}:**`);
-        continue;
-      }
-      const firstBudget = Math.max(10, availableWidth - displayWidth(label) - 2);
-      const contBudget = Math.max(10, availableWidth - 2);
-      const wrapped = wrapDisplay(value, firstBudget);
-      vertical.push(`**${label}:** ${wrapped[0]}`);
-      const rest = wrapped.slice(1).join(' ');
-      if (rest) {
-        for (const line of wrapDisplay(rest, contBudget)) {
-          if (line.trim()) vertical.push(`  ${line}`);
-        }
-      }
-    }
-  }
-  return { next: i, table: vertical.join('\n'), pre: false };
-}
-
-function formatMarkdownTablesForTelegram(text: string): string {
-  const lines = text.split('\n');
-  const out: string[] = [];
-  for (let i = 0; i < lines.length; ) {
-    const table = parseMarkdownTable(lines, i);
-    if (table) {
-      out.push(table.pre ? `\`\`\`text\n${table.table}\n\`\`\`` : table.table);
-      i = table.next;
-    } else {
-      out.push(lines[i]);
-      i++;
-    }
-  }
-  return out.join('\n');
-}
-
-function formatBoxDrawingTables(text: string): string {
-  const lines = text.split('\n');
-  const out: string[] = [];
-  const isTableLine = (line: string) => /^[\s]*[┌┬┐├┼┤└┴┘│─]+/.test(line);
-  const isBorderLine = (line: string) => /^[\s]*[┌┬┐├┼┤└┴┘─]+[\s]*$/.test(line);
-  const splitRow = (line: string) =>
-    line
-      .trim()
-      .replace(/^│|│$/g, '')
-      .split('│')
-      .map((cell) => cell.replace(/\s+/g, ' ').trim());
-  const renderRows = (rows: string[][]) => {
-    if (rows.length < 2) return rows.map((row) => row.join(' — ')).join('\n');
-    const headers = rows[0];
-    const body = rows.slice(1);
-    const isIndexColumn = /^(?:#|no\.?|num(?:ber)?)$/i.test(headers[0] || '');
-    return body
-      .map((row) => {
-        if (headers.length === 2)
-          return `• **${headers[0]}:** ${row[0] || ''} — **${headers[1]}:** ${row[1] || ''}`;
-        const startCol = isIndexColumn ? 1 : 0;
-        const prefix = startCol === 1 && row[0] ? `• **${row[0]}** ` : '• ';
-        const parts = headers
-          .slice(startCol)
-          .map((header, idx) => {
-            const value = row[idx + startCol] || '';
-            return value ? `**${header}:** ${value}` : '';
-          })
-          .filter(Boolean);
-        return prefix + parts.join(' — ');
-      })
-      .join('\n');
-  };
-
-  for (let i = 0; i < lines.length; ) {
-    if (!isTableLine(lines[i])) {
-      out.push(lines[i]);
-      i++;
-      continue;
-    }
-
-    const block: string[] = [];
-    while (i < lines.length && isTableLine(lines[i])) {
-      block.push(lines[i]);
-      i++;
-    }
-    const rows = block
-      .filter((line) => line.trim().startsWith('│') && !isBorderLine(line))
-      .map(splitRow);
-    out.push(rows.length > 0 ? renderRows(rows) : block.join('\n'));
-  }
-
-  return out.join('\n');
 }
 
 function renderInlineTelegramHtml(text: string): string {
@@ -506,10 +299,10 @@ function markdownToTelegramHtml(text: string): string {
 }
 
 function gatewayText(text: string, platformName?: string): { text: string; options?: any } {
-  const cleaned = formatBoxDrawingTables(cleanResponse(text));
+  const cleaned = formatStructuredOutput(cleanResponse(text), 'gateway');
   if (platformName === 'telegram') {
     return {
-      text: markdownToTelegramHtml(formatMarkdownTablesForTelegram(cleaned)),
+      text: markdownToTelegramHtml(cleaned),
       options: { parse_mode: 'HTML', disable_web_page_preview: true },
     };
   }
@@ -517,7 +310,24 @@ function gatewayText(text: string, platformName?: string): { text: string; optio
 }
 
 function gatewayPlainText(text: string): string {
-  return stripMarkdown(formatBoxDrawingTables(cleanResponse(text)));
+  return stripMarkdown(formatStructuredOutput(cleanResponse(text), 'gateway'));
+}
+
+function looksLikeMarkdownTable(text: string): boolean {
+  const lines = stripMarkdown(text).split('\n');
+  for (let i = 0; i < lines.length - 1; i++) {
+    const header = lines[i].trim();
+    const divider = lines[i + 1].trim();
+    if (!header.includes('|') || !divider.includes('|')) continue;
+    const dividerCells = divider
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((cell) => cell.trim());
+    if (dividerCells.length >= 2 && dividerCells.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isProgressPlatform(platform: Platform): boolean {
@@ -553,6 +363,7 @@ export class Gateway extends EventEmitter {
   >();
   private sessionNames = new Map<string, string>();
   private messageQueue = new Map<string, IncomingMessage>();
+  private pendingOptionValues = new Map<string, Map<string, string>>();
   private cronDaemon: CronDaemon;
 
   constructor(config: AurixConfig, registry: ToolRegistry, cronDaemon?: CronDaemon) {
@@ -564,26 +375,25 @@ export class Gateway extends EventEmitter {
     this.cronDaemon.setDelivery(async (job, result) => {
       const platform = job.targetPlatform ? this.platforms.get(job.targetPlatform) : undefined;
       if (platform && job.targetChannelId) {
-        await platform.send(
-          stripMarkdown(result).slice(0, 3900),
-          job.targetChannelId,
-          job.targetReplyTo
-        );
+        const rendered = gatewayText(result, platform.name);
+        const maxLen =
+          platform.name === 'discord'
+            ? 1900
+            : platform.name === 'telegram' && looksLikeMarkdownTable(rendered.text)
+              ? 32000
+              : 4000;
+        for (const chunk of splitMessage(rendered.text, maxLen)) {
+          await platform.send(chunk, job.targetChannelId, job.targetReplyTo, rendered.options);
+        }
       }
     });
     if (!cronDaemon) this.cronDaemon.start().catch(() => {});
 
-    setGlobalAskCallback((sessionKey, question, toolOptions) => {
-      if (sessionKey === 'default') {
-        let msg = `[AskUser] ${question}`;
-        if (toolOptions && toolOptions.length > 0) {
-          msg += `\nOptions: ${toolOptions.join(', ')}`;
-        }
-        console.log(msg);
-        return;
-      }
-
-      const ctx = this.lastContext.get(sessionKey);
+    const notifyAskUser = (sessionKey: string, question: string, toolOptions?: string[]) => {
+      const ctx =
+        this.lastContext.get(sessionKey) ||
+        (sessionKey === 'default' ? this.lastContext.get('default') : undefined) ||
+        this.getMostRecentContext();
       if (ctx) {
         const platform = this.platforms.get(ctx.platform);
         if (platform) {
@@ -596,11 +406,21 @@ export class Gateway extends EventEmitter {
 
           if (platform.name === 'telegram') {
             if (toolOptions && toolOptions.length > 0) {
-              // Convert toolOptions array into inline keyboard layout (1 button per row to handle long text safely)
+              const optionMap = new Map<string, string>();
               const keyboard = [
-                ...toolOptions.map((opt) => [{ text: opt, callback_data: opt }]),
+                ...toolOptions.slice(0, 8).map((opt, idx) => {
+                  const token = `__aurix_opt_${idx}__`;
+                  optionMap.set(token, opt);
+                  return [
+                    {
+                      text: opt.length > 48 ? `${opt.slice(0, 45)}...` : opt,
+                      callback_data: token,
+                    },
+                  ];
+                }),
                 [{ text: '✍️ Type Your Answer', callback_data: '__aurix_type_answer__' }],
               ];
+              this.pendingOptionValues.set(sessionKey, optionMap);
               sendOptions = {
                 reply_markup: {
                   inline_keyboard: keyboard,
@@ -622,7 +442,6 @@ export class Gateway extends EventEmitter {
 
           let promptText = `❓ Question from agent:\n${question}\n\nPlease reply to answer.`;
           if (toolOptions && toolOptions.length > 0 && platform.name !== 'telegram') {
-            // For platforms that don't support inline keyboards (like discord or whatsapp currently), append options to text
             promptText +=
               `\n\nOptions:\n` + toolOptions.map((opt, i) => `${i + 1}. ${opt}`).join('\n');
           }
@@ -636,7 +455,37 @@ export class Gateway extends EventEmitter {
             .catch((e) => console.error(e));
         }
       }
+    };
+
+    this.registry.setPermissionHandler(async (request) => {
+      let sessionKey = String(request.arguments._sessionKey || 'default');
+      const recentContext = this.getMostRecentContext();
+      if ((sessionKey === 'default' || !this.lastContext.has(sessionKey)) && recentContext) {
+        sessionKey = recentContext.userKey;
+      }
+      const destructive =
+        request.toolName === 'delete_file' || request.toolName === 'delete_folder';
+      const dependencyInstall = Boolean(request.arguments.dependencyInstall);
+      if (!this.lastContext.has(sessionKey)) {
+        console.warn(
+          `[Gateway] Denying ${request.toolName}: no gateway context for permission prompt (${sessionKey})`
+        );
+        return 'deny';
+      }
+      const answer = await AskUserManager.ask(
+        sessionKey,
+        destructive
+          ? `Destructive action requested:\n${request.toolName}\n${request.summary}\n\nReply allow to approve or deny to cancel.`
+          : dependencyInstall
+            ? `Dependency install requested:\n${request.summary}\n\nReply allow to run this install command or deny to cancel.`
+            : `Tool permission requested:\n${request.toolName} [${request.risk}]\n${request.summary}\n\nReply allow to approve once or deny to cancel.`,
+        ['deny', 'allow'],
+        (question, options) => notifyAskUser(sessionKey, question, options)
+      );
+      return /^(allow|yes|y)$/i.test(answer.trim()) ? 'once' : 'deny';
     });
+
+    setGlobalAskCallback(notifyAskUser);
   }
 
   register(platform: Platform): void {
@@ -690,14 +539,16 @@ export class Gateway extends EventEmitter {
         const rest = trimmed.slice(3).trim();
         const parts = rest.split(/\s+/);
         const first = (parts[0] || '').toLowerCase();
-        if (!first || !KNOWN_COMMANDS.has(first)) return { cmd: '', args: rest };
-        return { cmd: first, args: parts.slice(1).join(' ') };
+        const canonical = KNOWN_COMMANDS.has(first) ? first : first.replace(/_/g, '-');
+        if (!first || !KNOWN_COMMANDS.has(canonical)) return { cmd: '', args: rest };
+        return { cmd: canonical, args: parts.slice(1).join(' ') };
       }
       return { cmd: '', args: trimmed };
     }
     const parts = trimmed.split(/\s+/);
     if (parts[0].startsWith('/')) {
-      const cmd = parts[0].toLowerCase().slice(1);
+      const raw = parts[0].toLowerCase().slice(1).split('@')[0];
+      const cmd = KNOWN_COMMANDS.has(raw) ? raw : raw.replace(/_/g, '-');
       return { cmd, args: parts.slice(1).join(' ') };
     }
     return { cmd: '', args: trimmed };
@@ -713,8 +564,8 @@ export class Gateway extends EventEmitter {
     const isWA = this.isWhatsApp(msg);
     const { cmd, args } = this.normalizeCommand(text, msg.platform);
 
-    // Allow /btw and /cancel through even while agent is processing
-    if (cmd !== 'btw' && cmd !== 'cancel') {
+    // Allow /btw, /cancel, and pending approval/ask replies through while agent is processing.
+    if (cmd !== 'btw' && cmd !== 'cancel' && !AskUserManager.isWaiting(agentKey)) {
       if (this.processing.has(agentKey)) return;
     }
 
@@ -731,15 +582,20 @@ export class Gateway extends EventEmitter {
           await platform.send(rendered.text, msg.channelId, msg.replyTo, rendered.options);
           return;
         }
-        AskUserManager.submitAnswer(agentKey, msg.content.trim());
+        const rawAnswer = msg.content.trim();
+        const mappedAnswer = this.pendingOptionValues.get(agentKey)?.get(rawAnswer) || rawAnswer;
+        if (rawAnswer !== '__aurix_type_answer__') this.pendingOptionValues.delete(agentKey);
+        AskUserManager.submitAnswer(agentKey, mappedAnswer);
         return;
       }
 
-      this.lastContext.set(agentKey, {
+      const currentContext = {
         platform: msg.platform,
         channelId: msg.channelId,
         replyTo: msg.replyTo,
-      });
+      };
+      this.lastContext.set(agentKey, currentContext);
+      this.lastContext.set('default', currentContext);
 
       if (!this.isUserAllowed(msg)) {
         await platform.send(
@@ -1221,6 +1077,260 @@ export class Gateway extends EventEmitter {
         return;
       }
 
+      if (cmd === 'sessions') {
+        try {
+          const agent = this.getAgent(agentKey);
+          const sessions = await agent.listDurableSessions(10);
+          if (sessions.length === 0) {
+            await platform.send(
+              'No durable sessions found. Use /title <name> or send a message first.',
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          const lines = sessions.map(
+            (s, i) => `${i + 1}. ${s.id} — ${s.preview || '(empty)'} (${s.messageCount} msg)`
+          );
+          await platform.send(
+            `💾 Sessions\n\n${lines.join('\n')}\n\nResume: /resume <id> or /resume latest <query>`,
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`Sessions failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
+        return;
+      }
+
+      if (cmd === 'new') {
+        this.agents.get(agentKey)?.interrupt();
+        this.activeProcessing.delete(agentKey);
+        this.messageQueue.delete(agentKey);
+        this.agents.delete(agentKey);
+        await platform.send('🆕 New session started. Context reset.', msg.channelId, msg.replyTo);
+        return;
+      }
+
+      if (cmd === 'usage') {
+        const agent = this.getAgent(agentKey);
+        const subcmd = args.trim().toLowerCase();
+        if (subcmd === 'tools') {
+          try {
+            const stats = await agent.getToolUsageStats(12);
+            if (stats.length === 0) {
+              await platform.send('No tool usage stats recorded yet.', msg.channelId, msg.replyTo);
+              return;
+            }
+            const lines = stats.map(
+              (s, i) =>
+                `${i + 1}. ${s.toolName}: ${s.total} runs, ${s.successRate}% success (${s.success}/${s.total})${s.averageDurationMs ? `, avg ${s.averageDurationMs}ms` : ''}${s.topErrorType ? `, top error: ${s.topErrorType}` : ''}`
+            );
+            await platform.send(`📊 Tool usage\n\n${lines.join('\n')}`, msg.channelId, msg.replyTo);
+          } catch (e: any) {
+            await platform.send(`Tool usage failed: ${e.message}`, msg.channelId, msg.replyTo);
+          }
+          return;
+        }
+        const stats = agent.getContextStats();
+        const tokens = agent.getTokenStats();
+        await platform.send(
+          `📊 Usage\nMessages: ${stats.messageCount}\nContext: ${stats.totalTokens.toLocaleString()} tokens (~${stats.estimatedPct}%)\nAPI input/output: ${tokens.apiInput.toLocaleString()} / ${tokens.apiOutput.toLocaleString()}\n\nUse /usage tools for tool stats.`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'insights') {
+        try {
+          const agent = this.getAgent(agentKey);
+          const patterns = await agent.detectWorkflowPatterns(8);
+          if (patterns.length === 0) {
+            await platform.send(
+              'No repeated workflow patterns detected yet.',
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          const lines = patterns.map(
+            (p, i) =>
+              `${i + 1}. ${p.name} — ${p.sequence.join(' → ')} (${p.count}x, ${p.successfulSessions} successful)`
+          );
+          await platform.send(
+            `💡 Learning insights\n\n${lines.join('\n')}`,
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`Insights failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
+        return;
+      }
+
+      if (cmd === 'replay' || cmd === 'evals') {
+        try {
+          const agent = this.getAgent(agentKey);
+          const parts = args.trim().split(/\s+/).filter(Boolean);
+          const store = await getSessionStore();
+          let sessionId: string | undefined = agent.getSessionId();
+          let jobId: string | undefined;
+          if (parts[0] === 'session' && parts[1]) sessionId = parts[1];
+          else if (parts[0] === 'job' && parts[1]) {
+            sessionId = undefined;
+            jobId = parts[1];
+          }
+          const events = store.listObserverEvents({ sessionId, jobId }, cmd === 'evals' ? 200 : 40);
+          if (cmd === 'replay') {
+            if (events.length === 0) {
+              await platform.send(
+                'No observer events found for replay target.',
+                msg.channelId,
+                msg.replyTo
+              );
+              return;
+            }
+            const lines = events
+              .reverse()
+              .map(
+                (event) =>
+                  `${event.createdAt ? event.createdAt.slice(11, 19) : '--:--:--'} ${event.source}:${event.eventType}${event.status ? ` ${event.status}` : ''}${event.toolName ? ` ${event.toolName}` : ''}${event.summary ? ` — ${event.summary.replace(/\s+/g, ' ').slice(0, 100)}` : ''}`
+              );
+            await platform.send(
+              `🎬 Replay\nTarget: ${jobId ? `job ${jobId}` : `session ${sessionId}`}\n\n${lines.join('\n')}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          const evidence = sessionId ? store.listEvidenceItems(sessionId, 20) : [];
+          const errors = events.filter(
+            (e) => e.status === 'error' || e.eventType.includes('failed')
+          );
+          const toolErrors = events.filter(
+            (e) => e.eventType === 'tool_end' && e.status === 'error'
+          );
+          const failedEvidence = evidence.filter((e) => e.status === 'failed');
+          const passedEvidence = evidence.filter((e) => e.status === 'passed');
+          let score =
+            100 -
+            Math.min(30, toolErrors.length * 10) -
+            Math.min(25, errors.length * 8) -
+            failedEvidence.length * 15;
+          if (passedEvidence.length > 0) score += 5;
+          score = Math.max(0, Math.min(100, score));
+          await platform.send(
+            `🧪 Agent evaluation\nTarget: ${jobId ? `job ${jobId}` : `session ${sessionId}`}\n\nScore: ${score}/100\nObserver events: ${events.length}\nTool errors: ${toolErrors.length}\nEvidence passed/failed: ${passedEvidence.length}/${failedEvidence.length}`,
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`${cmd} failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
+        return;
+      }
+
+      if (cmd === 'trash') {
+        try {
+          const agent = this.getAgent(agentKey);
+          const [subcmd = 'list', id] = args.trim().split(/\s+/);
+          const { formatTrashList, recoverTrashEntry } = await import('../agent/TrashStore.js');
+          if (!args.trim() || subcmd === 'list') {
+            await platform.send(
+              `🗑️ Recoverable trash\n\n${formatTrashList(agent.getSessionId())}`,
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          if (subcmd === 'recover' || subcmd === 'restore') {
+            await platform.send(
+              id
+                ? recoverTrashEntry(id, { sessionId: agent.getSessionId() })
+                : 'Usage: /trash recover <id>',
+              msg.channelId,
+              msg.replyTo
+            );
+            return;
+          }
+          await platform.send(
+            'Usage: /trash list | /trash recover <id>',
+            msg.channelId,
+            msg.replyTo
+          );
+        } catch (e: any) {
+          await platform.send(`Trash failed: ${e.message}`, msg.channelId, msg.replyTo);
+        }
+        return;
+      }
+
+      if (cmd === 'whoami') {
+        const agent = this.getAgent(agentKey);
+        await platform.send(
+          `👤 ${msg.authorName}\nUser key: ${agentKey}\nProvider: ${agent.getProviderName()}\nModel: ${agent.getModel()}\nPlatform: ${msg.platform}`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'cost') {
+        const agent = this.getAgent(agentKey);
+        const stats = agent.getContextStats();
+        const tokens = agent.getTokenStats();
+        await platform.send(
+          `💰 Token usage\nContext: ${stats.totalTokens.toLocaleString()} (~${stats.estimatedPct}%)\nAPI input/output: ${tokens.apiInput.toLocaleString()} / ${tokens.apiOutput.toLocaleString()}\nMessages: ${stats.messageCount}\nActual cost depends on your provider.`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'doctor') {
+        const agent = this.getAgent(agentKey);
+        await platform.send(
+          `🩺 Gateway doctor\nNode: ${process.version}\nUptime: ${this.getUptime()}\nProvider: ${agent.getProviderName()}\nModel: ${agent.getModel()}\nTools: ${this.registry.list().length}\nPlatforms: ${this.getPlatforms().join(', ') || '(none)'}\nCron: available`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'permissions') {
+        const raw = args.trim();
+        if (raw === 'clear') {
+          this.registry.clearPermissionRules();
+          await platform.send('Permission allowlist cleared.', msg.channelId, msg.replyTo);
+          return;
+        }
+        if (raw.startsWith('mode ')) {
+          const mode = raw.slice(5).trim();
+          if (mode === 'ask' || mode === 'bypass' || mode === 'deny') {
+            this.registry.setPermissionMode(mode);
+            await platform.send(`Permission mode set to: ${mode}`, msg.channelId, msg.replyTo);
+            return;
+          }
+        }
+        const rules = this.registry.listPermissionRules();
+        await platform.send(
+          `🔐 Permission mode: ${this.registry.getPermissionMode()}\nAlways allowed: ${rules.length ? rules.join(', ') : '(none)'}\n\nUsage: /permissions mode ask|bypass|deny · /permissions clear`,
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
+      if (cmd === 'yolo') {
+        this.registry.setPermissionMode('bypass');
+        await platform.send(
+          '⚡ YOLO mode ON — tool calls auto-approved. Use /permissions mode ask to revert.',
+          msg.channelId,
+          msg.replyTo
+        );
+        return;
+      }
+
       if (cmd === 'cron') {
         const raw = args.trim();
         const [subcmd = 'list', ...rest] = raw.split(/\s+/);
@@ -1292,7 +1402,7 @@ export class Gateway extends EventEmitter {
               await platform.send('Usage: /cron run <id>', msg.channelId, msg.replyTo);
               return;
             }
-            const run = await this.cronDaemon.runJob(id);
+            const run = await this.cronDaemon.runJob(id, { deliver: false });
             await platform.send(
               run.status === 'success'
                 ? `Cron job ${id} completed.\n\n${stripMarkdown(run.result || '')}`
@@ -1314,17 +1424,81 @@ export class Gateway extends EventEmitter {
       }
 
       if (cmd === 'review') {
-        const reviewCode = args;
-        if (!reviewCode) {
+        text = args.trim()
+          ? `[REVIEW REQUEST] Review the following code for bugs, security issues, and improvements:\n\n${args}`
+          : '[REVIEW REQUEST] Review the current repository for bugs, regressions, security issues, and missing tests. Start by inspecting git status and the relevant diff.';
+      }
+
+      if (cmd === 'code-review') {
+        text =
+          '[CODE REVIEW REQUEST] Review the current git diff for correctness bugs, regressions, missing error handling, and risky changes. Return concrete findings with file paths and line numbers.';
+      }
+
+      if (cmd === 'security-review') {
+        text =
+          '[SECURITY REVIEW REQUEST] Scan the current codebase and diff for injection, auth, secrets, SSRF, unsafe file/network access, and OWASP-style vulnerabilities. Return concrete findings with file paths and line numbers.';
+      }
+
+      if (cmd === 'diff') {
+        text =
+          '[DIFF REVIEW REQUEST] Inspect the current git diff and summarize what changed, risks, and recommended verification steps.';
+      }
+
+      if (cmd === 'verify') {
+        text =
+          '[VERIFY REQUEST] Verify the current changes by running the relevant build/typecheck/tests or runtime smoke checks, then report exactly what passed, failed, or was skipped.';
+      }
+
+      if (cmd === 'research') {
+        if (!args.trim()) {
+          await platform.send('🔬 Usage: /research <topic>', msg.channelId, msg.replyTo);
+          return;
+        }
+        text = `[RESEARCH REQUEST] Research this topic with sources and a concise final synthesis:\n\n${args}`;
+      }
+
+      if (cmd === 'research-forums') {
+        if (!args.trim()) {
+          await platform.send('🌐 Usage: /research-forums <topic>', msg.channelId, msg.replyTo);
+          return;
+        }
+        text = `[FORUM RESEARCH REQUEST] Research this topic across public forums/social sources where available, cite sources, and summarize sentiment and concrete findings:\n\n${args}`;
+      }
+
+      if (cmd === 'summarize') {
+        if (!args.trim()) {
+          await platform.send('📝 Usage: /summarize <text or topic>', msg.channelId, msg.replyTo);
+          return;
+        }
+        text = `[SUMMARY REQUEST] Summarize the following clearly with key points, action items, and risks if any:\n\n${args}`;
+      }
+
+      if (cmd === 'pdf' || cmd === 'pptx' || cmd === 'xlsx') {
+        if (!args.trim()) {
+          await platform.send(`📄 Usage: /${cmd} <content or topic>`, msg.channelId, msg.replyTo);
+          return;
+        }
+        const kind =
+          cmd === 'pdf' ? 'PDF document' : cmd === 'pptx' ? 'PowerPoint deck' : 'Excel spreadsheet';
+        text = `[DOCUMENT REQUEST] Generate a ${kind} for the following request. Use the appropriate document/file tools when available, save the file, and mention the output path so the gateway can send it back:\n\n${args}`;
+      }
+
+      if (cmd === 'deep' || cmd === 'deep-research') {
+        const topic = args.trim();
+        this.userDepths.set(agentKey, 'ultra');
+        const deepAgent = this.getAgent(agentKey);
+        deepAgent.setResearchMode('ultra' as any);
+        this.config.researchMode = 'ultra' as any;
+        saveConfig(this.config);
+        if (!topic) {
           await platform.send(
-            '🔍 Usage: /review <code or paste>\nI will analyze your code for bugs, security, and improvements.',
+            '🧠 Deep mode enabled: depth set to ultra. Use /deep_research <topic> to run a research task.',
             msg.channelId,
             msg.replyTo
           );
           return;
         }
-        // Route as a code review prompt
-        text = `[REVIEW REQUEST] Review the following code for bugs, security issues, and improvements:\n\n${reviewCode}`;
+        text = `[DEEP RESEARCH REQUEST] Run maximum-depth research/multi-agent analysis on:\n\n${topic}`;
       }
 
       if (cmd === 'plan') {
@@ -1358,6 +1532,14 @@ export class Gateway extends EventEmitter {
       );
 
       const platformTag = `[sent from ${msg.platform}]`;
+      const wantsTable =
+        /\b(table|tabel|comparison|compare|perbandingan|harga|pricing|price|biaya|spec|specs|benchmark)\b/i.test(
+          userPrompt
+        );
+      const tableFormatTag =
+        wantsTable && msg.platform !== 'whatsapp'
+          ? ' [format requirement: user requested structured comparison/table; output a compact markdown pipe table with headers and rows, not bullet-card sections]'
+          : '';
       const forwardTag = msg.forwardedFrom ? ` [forwarded from ${msg.forwardedFrom}]` : '';
       const imagePaths: string[] = [];
       const attachTag = msg.attachments?.length
@@ -1371,7 +1553,7 @@ export class Gateway extends EventEmitter {
             })
             .join(' ')
         : '';
-      const taggedPrompt = `${platformTag}${forwardTag}${attachTag} ${userPrompt}`;
+      const taggedPrompt = `${platformTag}${tableFormatTag}${forwardTag}${attachTag} ${userPrompt}`;
 
       const agent = this.getAgent(agentKey);
       const selectedDepth = this.userDepths.get(agentKey);
@@ -1505,7 +1687,12 @@ export class Gateway extends EventEmitter {
 
         if (fullResponse) {
           const rendered = gatewayText(fullResponse, platform.name);
-          const maxLen = platform.name === 'discord' ? 1900 : 4000;
+          const maxLen =
+            platform.name === 'discord'
+              ? 1900
+              : platform.name === 'telegram' && looksLikeMarkdownTable(rendered.text)
+                ? 32000
+                : 4000;
           const chunks = splitMessage(rendered.text, maxLen);
           if (
             progressMode &&
@@ -1601,6 +1788,7 @@ export class Gateway extends EventEmitter {
     let latest: { userKey: string; platform: string; channelId: string; replyTo?: string } | null =
       null;
     for (const [userKey, ctx] of this.lastContext) {
+      if (userKey === 'default') continue;
       latest = { userKey, ...ctx };
     }
     return latest;

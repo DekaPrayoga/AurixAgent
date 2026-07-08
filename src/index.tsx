@@ -29,6 +29,8 @@ import {
   searchFilesTool,
   deleteFileTool,
   deleteFolderTool,
+  recoveryFileTool,
+  recoveryFolderTool,
 } from './tools/FileOps.js';
 import { fileEditTool } from './tools/FileEdit.js';
 import { mcpManageTool } from './tools/McpManage.js';
@@ -70,6 +72,8 @@ import { mapsTool } from './tools/Maps.js';
 import { notifierTool } from './tools/Notifier.js';
 import { diagramTool } from './tools/Diagram.js';
 import { archiveReaderTool } from './tools/ArchiveReader.js';
+import { brainTool } from './tools/Brain.js';
+import { audioCaptchaTool, audioCaptchaLocalTool } from './tools/AudioCaptcha.js';
 
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
@@ -81,6 +85,8 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(searchFilesTool);
   registry.register(deleteFileTool);
   registry.register(deleteFolderTool);
+  registry.register(recoveryFileTool);
+  registry.register(recoveryFolderTool);
   registry.register(fileEditTool);
   registry.register(mcpManageTool);
   for (const t of githubTools) registry.register(t);
@@ -93,6 +99,9 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(musicTool);
   registry.register(memoryTool);
   registry.register(archiveReaderTool);
+  registry.register(brainTool);
+  registry.register(audioCaptchaTool);
+  registry.register(audioCaptchaLocalTool);
 
   const f = features || [];
   const all = f.length === 0;
@@ -217,7 +226,10 @@ async function main() {
 
   if (args[0] === 'gateway') {
     const { startGateway } = await import('./gateway-entry.js');
-    await startGateway(createRegistry());
+    const gatewayConfig = loadConfig();
+    const gatewayRegistry = createRegistry(gatewayConfig.features);
+    gatewayRegistry.register(createSpawnAgentTool(gatewayConfig, gatewayRegistry));
+    await startGateway(gatewayRegistry);
     return;
   }
 

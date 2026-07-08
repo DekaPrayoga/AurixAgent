@@ -18,6 +18,8 @@ The docs are intentionally feature-scoped, not file-scoped. Do not create one ma
 - [Session Store](./session-store.md)
 - [Gateway](./gateway.md)
 - [Multi-Agent Orchestration](./multi-agent.md)
+- [Agent Observability](./agent-observability.md)
+- [Destructive Actions and Recovery](./destructive-actions.md)
 
 ## When to add a new feature doc
 

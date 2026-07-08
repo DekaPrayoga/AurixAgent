@@ -1,5 +1,9 @@
 import { exec, spawn } from 'child_process';
 import type { Tool, ToolExecutionContext } from './Registry.js';
+import {
+  detectBlockedDeleteCommand,
+  formatBlockedDeleteCommand,
+} from '../agent/DestructiveActionPolicy.js';
 
 function shellCommand(command: string): { cmd: string; args: string[]; shell?: true } {
   if (process.platform === 'win32') return { cmd: command, args: [], shell: true };
@@ -116,11 +120,15 @@ export const terminalTool: Tool = {
   },
   async execute(args) {
     const command = args.command as string;
+    const blocked = detectBlockedDeleteCommand(command);
+    if (blocked) return formatBlockedDeleteCommand(blocked);
     const timeout = (args.timeout as number) || 30000;
     return runCommand(command, timeout);
   },
   async executeWithEvents(args, context) {
     const command = args.command as string;
+    const blocked = detectBlockedDeleteCommand(command);
+    if (blocked) return formatBlockedDeleteCommand(blocked);
     const timeout = (args.timeout as number) || 30000;
     return runCommand(command, timeout, context);
   },

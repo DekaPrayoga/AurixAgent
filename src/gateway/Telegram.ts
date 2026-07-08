@@ -72,6 +72,21 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     replyTo?: string,
     options?: any
   ): Promise<{ messageId?: string } | void> {
+    if (looksLikeMarkdownTable(content) && !options?.reply_markup) {
+      try {
+        const result = await this.sendRichMarkdown(content, channelId, replyTo, options);
+        if (result) return result;
+      } catch (e: any) {
+        const msg = String(e.message || '');
+        if (
+          !/method not found|not found|endpoint|can't parse rich message|bad request/i.test(msg)
+        ) {
+          console.error(`  Telegram rich table send error: ${msg}`);
+          return;
+        }
+      }
+    }
+
     const params: Record<string, any> = {
       chat_id: channelId,
       text: content,
@@ -93,6 +108,16 @@ export class TelegramPlatform extends EventEmitter implements Platform {
       const result = await this.api('sendMessage', params);
       return { messageId: result?.message_id ? String(result.message_id) : undefined };
     } catch (e: any) {
+      if (/message is too long/i.test(String(e.message || '')) && content.length > 3900) {
+        const chunks = splitTelegramMessage(content, 3900);
+        let firstId: string | undefined;
+        for (let i = 0; i < chunks.length; i++) {
+          const chunkParams = { ...params, text: chunks[i] };
+          const result = await this.api('sendMessage', chunkParams);
+          if (i === 0 && result?.message_id) firstId = String(result.message_id);
+        }
+        return { messageId: firstId };
+      }
       if (e.message?.includes('parse')) {
         delete params.parse_mode;
         params.text = stripTelegramHtml(content);
@@ -197,6 +222,30 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     }
   }
 
+  private async sendRichMarkdown(
+    content: string,
+    channelId: string,
+    replyTo?: string,
+    options?: any
+  ): Promise<{ messageId?: string } | null> {
+    const markdown = stripTelegramHtml(content);
+    const params: Record<string, any> = {
+      chat_id: channelId,
+      rich_message: { markdown },
+    };
+
+    if (replyTo) {
+      const id = Number(replyTo);
+      params.reply_parameters = Number.isFinite(id) ? { message_id: id } : { message_id: replyTo };
+    }
+    if (options?.disable_web_page_preview !== undefined) {
+      params.link_preview_options = { is_disabled: Boolean(options.disable_web_page_preview) };
+    }
+
+    const result = await this.api('sendRichMessage', params);
+    return { messageId: result?.message_id ? String(result.message_id) : undefined };
+  }
+
   private async registerCommands(): Promise<void> {
     try {
       await this.api('setMyCommands', {
@@ -215,14 +264,39 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'depth', description: '📊 Research depth (low/medium/high/xhigh/max/ultra)' },
           { command: 'fast', description: '⚡ Toggle fast mode' },
           { command: 'review', description: '🔍 AI code review' },
+          { command: 'code_review', description: '🔍 Review current git diff' },
+          { command: 'security_review', description: '🛡️ Security review' },
+          { command: 'diff', description: '📋 Summarize git diff' },
+          { command: 'verify', description: '✅ Verify current changes' },
           { command: 'plan', description: '📋 Planning mode' },
           { command: 'research', description: '🔬 Deep research with sources' },
+          { command: 'research_forums', description: '🌐 Research forums/social sources' },
+          { command: 'summarize', description: '📝 Summarize text' },
+          { command: 'deep', description: '🧠 Enable ultra depth' },
+          { command: 'deep_research', description: '🧠 Ultra-depth research' },
+          { command: 'pdf', description: '📄 Generate PDF' },
+          { command: 'pptx', description: '📊 Generate PowerPoint' },
+          { command: 'xlsx', description: '📈 Generate spreadsheet' },
           { command: 'tools', description: '🔧 List available tools' },
           { command: 'skills', description: '📚 List available skills' },
           { command: 'status', description: '⏳ Show current status' },
           { command: 'history', description: '📝 Message count' },
+          { command: 'history_search', description: '🔎 Search durable sessions' },
+          { command: 'sessions', description: '💾 List saved sessions' },
           { command: 'compress', description: '📦 Compress context' },
           { command: 'agents', description: '🤖 Show active agents' },
+          { command: 'usage', description: '📊 Usage/tool stats' },
+          { command: 'insights', description: '💡 Learned workflow insights' },
+          { command: 'evals', description: '🧪 Evaluate recent run' },
+          { command: 'replay', description: '🎬 Replay observer timeline' },
+          { command: 'trash', description: '🗑️ Recover deleted files' },
+          { command: 'cron', description: '⏰ Manage scheduled jobs' },
+          { command: 'new', description: '🆕 Start fresh session' },
+          { command: 'whoami', description: '👤 Show access identity' },
+          { command: 'cost', description: '💰 Token usage' },
+          { command: 'doctor', description: '🩺 Gateway health check' },
+          { command: 'permissions', description: '🔐 Permission mode/status' },
+          { command: 'yolo', description: '⚡ Auto-approve tool calls' },
           { command: 'btw', description: '❄️ Check status or inject context' },
         ],
       });
@@ -434,6 +508,49 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     return data.result;
   }
+}
+
+function splitTelegramMessage(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
+  const chunks: string[] = [];
+  const lines = text.split('\n');
+  let current = '';
+
+  for (const line of lines) {
+    if (line.length > maxLen) {
+      if (current) {
+        chunks.push(current);
+        current = '';
+      }
+      for (let i = 0; i < line.length; i += maxLen) chunks.push(line.slice(i, i + maxLen));
+      continue;
+    }
+    if (current.length + line.length + 1 > maxLen) {
+      if (current) chunks.push(current);
+      current = line;
+    } else {
+      current += (current ? '\n' : '') + line;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks.length > 0 ? chunks : [text.slice(0, maxLen)];
+}
+
+function looksLikeMarkdownTable(text: string): boolean {
+  const plain = stripTelegramHtml(text);
+  const lines = plain.split('\n');
+  for (let i = 0; i < lines.length - 1; i++) {
+    const header = lines[i].trim();
+    const divider = lines[i + 1].trim();
+    if (!header.includes('|') || !divider.includes('|')) continue;
+    const dividerCells = divider
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((cell) => cell.trim());
+    if (dividerCells.length < 2) continue;
+    if (dividerCells.every((cell) => /^:?-{3,}:?$/.test(cell))) return true;
+  }
+  return false;
 }
 
 function stripTelegramHtml(text: string): string {

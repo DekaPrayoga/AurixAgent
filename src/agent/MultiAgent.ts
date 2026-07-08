@@ -2,6 +2,11 @@ import type { AurixConfig } from './Config.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { createProvider, type Message, type Provider } from '../providers/index.js';
 import type { AgentEvent } from './AgentLoop.js';
+import { agentObserverBus } from './AgentObserverBus.js';
+import {
+  formatStructuredOutput,
+  STRUCTURED_OUTPUT_PROMPT,
+} from '../utils/StructuredOutputFormat.js';
 
 interface SpecialistDef {
   name: string;
@@ -135,6 +140,9 @@ export interface MultiAgentResult {
 
 export interface MultiAgentRunOptions {
   onEvent?: (event: AgentEvent) => void;
+  sessionId?: string;
+  turnId?: string;
+  jobId?: string;
 }
 
 const MAX_SPECIALISTS = 3;
@@ -170,7 +178,26 @@ export class MultiAgentSystem {
   }
 
   async run(userMessage: string, options: MultiAgentRunOptions = {}): Promise<MultiAgentResult> {
+    agentObserverBus.publish({
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      jobId: options.jobId,
+      source: 'multi_agent',
+      eventType: 'supervisor_start',
+      status: 'running',
+      summary: userMessage,
+    });
     const plan = await this.supervisorPlan(userMessage);
+    agentObserverBus.publish({
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      jobId: options.jobId,
+      source: 'multi_agent',
+      eventType: 'supervisor_plan',
+      status: plan.route === 'direct' ? 'success' : 'running',
+      summary: `${plan.route}: ${plan.agents.join(', ') || 'direct'}`,
+      payload: { route: plan.route, agents: plan.agents },
+    });
 
     if (plan.route === 'direct' || plan.agents.length === 0) {
       const response = await this.provider.chat([
@@ -180,13 +207,34 @@ export class MultiAgentSystem {
         },
         { role: 'user', content: userMessage },
       ]);
-      return { answer: response.text, route: 'direct' };
+      agentObserverBus.publish({
+        sessionId: options.sessionId,
+        turnId: options.turnId,
+        jobId: options.jobId,
+        source: 'multi_agent',
+        eventType: 'direct_answer',
+        status: 'success',
+        summary: response.text,
+      });
+      return { answer: formatStructuredOutput(response.text, 'terminal'), route: 'direct' };
     }
 
     const selected = plan.agents.slice(0, MAX_SPECIALISTS);
+    const selectedSummary = `Selected specialists: ${selected.map((id) => SPECIALISTS[id]?.name || id).join(', ')}`;
+    agentObserverBus.publish({
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      jobId: options.jobId,
+      source: 'multi_agent',
+      eventType: 'specialists_selected',
+      status: 'running',
+      toolName: 'native-multiagent',
+      summary: selectedSummary,
+      payload: { selected },
+    });
     options.onEvent?.({
       type: 'route',
-      data: `Selected specialists: ${selected.map((id) => SPECIALISTS[id]?.name || id).join(', ')}`,
+      data: selectedSummary,
       toolName: 'native-multiagent',
     });
 
@@ -203,7 +251,7 @@ export class MultiAgentSystem {
     if (outputs.length > 1) {
       const answer = await this.runJudge(userMessage, specialistOutputs);
       return {
-        answer,
+        answer: formatStructuredOutput(answer, 'terminal'),
         route: 'multi-agent',
         specialistUsed: selected.map((id) => SPECIALISTS[id]?.name || id).join(', '),
       };
@@ -211,7 +259,7 @@ export class MultiAgentSystem {
 
     const only = outputs[0];
     return {
-      answer: only?.output || 'No specialist output generated.',
+      answer: formatStructuredOutput(only?.output || 'No specialist output generated.', 'terminal'),
       route: only?.agentId || 'multi-agent',
       specialistUsed: only ? SPECIALISTS[only.agentId]?.name || only.agentId : undefined,
     };
@@ -299,23 +347,66 @@ ${specialist.systemPrompt}
 USER REQUEST:
 ${userMessage}
 
+${STRUCTURED_OUTPUT_PROMPT}
+
 Return your specialist result only. Use tools when needed; do not claim actions you did not perform.`;
 
     const chunks: string[] = [];
+    agentObserverBus.publish({
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      jobId: options.jobId,
+      source: 'multi_agent',
+      eventType: 'specialist_start',
+      status: 'running',
+      toolName: agentId,
+      summary: `${specialist.name} started`,
+      payload: { agentId, index: _index },
+    });
     options.onEvent?.({ type: 'route', data: `${specialist.name} started`, toolName: agentId });
     try {
       for await (const event of sub.run(prompt)) {
         if (event.type === 'tool_start' || event.type === 'tool_end' || event.type === 'error') {
-          options.onEvent?.({ ...event, toolName: event.toolName || agentId });
+          const forwarded = { ...event, toolName: event.toolName || agentId };
+          if (!options.onEvent) {
+            agentObserverBus.publishAgentEvent('multi_agent', forwarded, {
+              sessionId: options.sessionId,
+              turnId: options.turnId,
+              jobId: options.jobId,
+            });
+          }
+          options.onEvent?.(forwarded);
         }
         if (event.type === 'text' && event.data) chunks.push(event.data);
       }
     } catch (e: any) {
+      agentObserverBus.publish({
+        sessionId: options.sessionId,
+        turnId: options.turnId,
+        jobId: options.jobId,
+        source: 'multi_agent',
+        eventType: 'specialist_end',
+        status: 'error',
+        toolName: agentId,
+        summary: `${specialist.name} failed: ${e.message}`,
+      });
       options.onEvent?.({ type: 'error', data: `${specialist.name} failed: ${e.message}` });
       return `[${specialist.name} failed] ${e.message}`;
     }
+    const output = chunks.join('\n') || `[${specialist.name}] No output generated.`;
+    agentObserverBus.publish({
+      sessionId: options.sessionId,
+      turnId: options.turnId,
+      jobId: options.jobId,
+      source: 'multi_agent',
+      eventType: 'specialist_end',
+      status: 'success',
+      toolName: agentId,
+      summary: `${specialist.name} finished`,
+      payload: { outputPreview: output.slice(0, 1000) },
+    });
     options.onEvent?.({ type: 'route', data: `${specialist.name} finished`, toolName: agentId });
-    return chunks.join('\n') || `[${specialist.name}] No output generated.`;
+    return output;
   }
 
   private async runJudge(userMessage: string, outputs: Record<string, string>): Promise<string> {
@@ -327,7 +418,7 @@ Return your specialist result only. Use tools when needed; do not claim actions 
       { role: 'system', content: SPECIALISTS.judge.systemPrompt },
       {
         role: 'user',
-        content: `USER REQUEST: ${userMessage}\n\nSPECIALIST OUTPUTS:\n\n${outputBlocks}\n\nSynthesize these into one final answer. Use only what is supported by the specialist outputs.`,
+        content: `USER REQUEST: ${userMessage}\n\nSPECIALIST OUTPUTS:\n\n${outputBlocks}\n\n${STRUCTURED_OUTPUT_PROMPT}\n\nSynthesize these into one final answer. Use only what is supported by the specialist outputs.`,
       },
     ]);
     return response.text;

@@ -5,6 +5,10 @@ import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import {
+  parseMarkdownTableBlock,
+  renderMarkdownTableAsBlocks,
+} from '../utils/StructuredOutputFormat.js';
 
 class CustomSpeedScroll implements ScrollAcceleration {
   constructor(private speed: number) {}
@@ -139,57 +143,6 @@ function displayWidth(text: string): number {
   return Array.from(text).reduce((sum, char) => sum + charWidth(char), 0);
 }
 
-function truncateDisplay(text: string, width: number): string {
-  let out = '';
-  let used = 0;
-  for (const char of Array.from(text)) {
-    const next = used + charWidth(char);
-    if (next > width) break;
-    out += char;
-    used = next;
-  }
-  return out;
-}
-
-function wrapDisplay(text: string, width: number): string[] {
-  const value = (text || '').trim();
-  if (!value) return [''];
-
-  const words = value.split(/\s+/);
-  const lines: string[] = [];
-  let current = '';
-
-  const pushHardWrapped = (word: string) => {
-    let remaining = word;
-    while (displayWidth(remaining) > width) {
-      const part = truncateDisplay(remaining, width);
-      lines.push(part);
-      remaining = Array.from(remaining).slice(Array.from(part).length).join('');
-    }
-    current = remaining;
-  };
-
-  for (const word of words) {
-    if (!current) {
-      if (displayWidth(word) > width) pushHardWrapped(word);
-      else current = word;
-      continue;
-    }
-
-    const candidate = `${current} ${word}`;
-    if (displayWidth(candidate) <= width) {
-      current = candidate;
-    } else {
-      lines.push(current);
-      if (displayWidth(word) > width) pushHardWrapped(word);
-      else current = word;
-    }
-  }
-
-  if (current || lines.length === 0) lines.push(current);
-  return lines.slice(0, 6);
-}
-
 function isRuleLine(line: string): boolean {
   return /^[\s|:─━═—\-]+$/.test(line.trim()) && displayWidth(line.trim()) >= 3;
 }
@@ -248,69 +201,18 @@ function collectLabeledTable(
 }
 
 function renderTable(headers: string[], rows: string[][], key: string): React.ReactNode {
-  const colCount = Math.max(headers.length, ...rows.map((r) => r.length));
-  const normalizedHeaders = Array.from(
-    { length: colCount },
-    (_, i) => headers[i] || `Column ${i + 1}`
-  );
-  const normalizedRows = rows.map((row) =>
-    Array.from({ length: colCount }, (_, i) => row[i] || '')
-  );
-  const maxTableWidth = 92;
-  const colWidths = normalizedHeaders.map((h, c) => {
-    let max = displayWidth(h);
-    for (const row of normalizedRows) {
-      const width = displayWidth(row[c] || '');
-      if (width > max) max = width;
-    }
-    return Math.min(Math.max(max, 6), 24);
-  });
-
-  let totalWidth = colWidths.reduce((sum, w) => sum + w + 3, 1);
-  while (totalWidth > maxTableWidth && colWidths.some((w) => w > 10)) {
-    let widest = 0;
-    for (let idx = 1; idx < colWidths.length; idx++) {
-      if (colWidths[idx] > colWidths[widest]) widest = idx;
-    }
-    colWidths[widest] -= 1;
-    totalWidth = colWidths.reduce((sum, w) => sum + w + 3, 1);
-  }
-
-  const padCell = (text: string, width: number) => {
-    const clean = truncateDisplay(text || '', width);
-    return clean + ' '.repeat(Math.max(0, width - displayWidth(clean)));
-  };
-
-  const border = (left: string, mid: string, right: string) =>
-    left + colWidths.map((w) => '─'.repeat(w + 2)).join(mid) + right;
-
-  const renderRow = (cells: string[], isHeader: boolean, rowKey: string) => {
-    const wrapped = colWidths.map((width, idx) => wrapDisplay(cells[idx] || '', width));
-    const height = Math.max(...wrapped.map((cell) => cell.length), 1);
-    return Array.from({ length: height }, (_, lineIdx) => {
-      const parts = colWidths.map(
-        (width, idx) => ` ${padCell(wrapped[idx][lineIdx] || '', width)} `
-      );
-      const text = '│' + parts.join('│') + '│';
-      return (
-        <text
-          key={`${rowKey}-${lineIdx}`}
-          fg={isHeader ? theme.primary : theme.text}
-          attributes={isHeader ? TextAttributes.BOLD : TextAttributes.NONE}
-        >
-          {text}
-        </text>
-      );
-    });
-  };
-
+  const tableText = renderMarkdownTableAsBlocks(headers, rows);
   return (
     <box key={key} flexDirection="column" marginTop={1} marginBottom={1} flexShrink={0}>
-      <text fg={theme.border}>{border('╭', '┬', '╮')}</text>
-      {renderRow(normalizedHeaders, true, 'header')}
-      <text fg={theme.border}>{border('├', '┼', '┤')}</text>
-      {normalizedRows.flatMap((row, r) => renderRow(row, false, `row-${r}`))}
-      <text fg={theme.border}>{border('╰', '┴', '╯')}</text>
+      {tableText.split('\n').map((line, idx) => (
+        <text
+          key={idx}
+          fg={idx === 0 ? theme.primary : isRuleLine(line) ? theme.border : theme.text}
+          attributes={idx === 0 ? TextAttributes.BOLD : TextAttributes.NONE}
+        >
+          {line}
+        </text>
+      ))}
     </box>
   );
 }
@@ -371,16 +273,24 @@ function MarkdownText({ content }: { content: string }) {
         tableLines.push(lines[i]);
         i++;
       }
-      if (tableLines.length >= 2) {
-        const parseRow = (row: string) =>
-          row
-            .split('|')
-            .slice(1, -1)
-            .map((c) => c.trim());
-        const headers = parseRow(tableLines[0]);
-        const sepIdx = tableLines.findIndex((r, idx) => idx > 0 && /^[\s|:-]+$/.test(r));
-        const dataRows = tableLines.filter((r, idx) => idx !== 0 && idx !== sepIdx).map(parseRow);
-        elements.push(renderTable(headers, dataRows, `table-${i}`));
+      const table = parseMarkdownTableBlock(tableLines, 0);
+      if (table) {
+        const blockText = renderMarkdownTableAsBlocks(table.headers, table.rows);
+        elements.push(
+          <box key={`table-${i}`} flexDirection="column" marginTop={1} marginBottom={1}>
+            {blockText.split('\n').map((blockLine: string, j: number) =>
+              isRuleLine(blockLine) ? (
+                <text key={j} fg={theme.border}>
+                  {blockLine}
+                </text>
+              ) : (
+                <box key={j} flexShrink={0}>
+                  <InlineText text={blockLine} />
+                </box>
+              )
+            )}
+          </box>
+        );
       }
       continue;
     }

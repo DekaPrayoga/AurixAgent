@@ -3,6 +3,8 @@ import path from 'path';
 import type { Tool } from './Registry.js';
 import { getCheckpointEngine } from '../agent/Checkpoint.js';
 import { AskUserManager, globalAskCallback } from './AskUser.js';
+import { moveToTrash, recoverTrashEntry, remainingRecoveryTurns } from '../agent/TrashStore.js';
+import { agentObserverBus } from '../agent/AgentObserverBus.js';
 
 export const readFileTool: Tool = {
   name: 'read_file',
@@ -74,10 +76,6 @@ export const deleteFileTool: Tool = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File path to delete' },
-      confirmed: {
-        type: 'boolean',
-        description: 'Set true only when user already explicitly approved deletion',
-      },
     },
     required: ['path'],
   },
@@ -87,12 +85,39 @@ export const deleteFileTool: Tool = {
     if (!fs.statSync(filePath).isFile())
       return `Not a file: ${filePath}. Use delete_folder for directories.`;
     const sessionKey = (args._sessionKey as string) || 'default';
-    if (!args.confirmed && !(await confirmDelete(sessionKey, 'file', filePath))) {
+    const sessionId = (args._sessionId as string) || sessionKey;
+    const turnId = args._turnId as string | undefined;
+    if (!args._approvedByUser && !(await confirmDelete(sessionKey, 'file', filePath))) {
+      agentObserverBus.publish({
+        sessionId,
+        turnId,
+        source: 'agent_loop',
+        eventType: 'delete_denied',
+        status: 'cancelled',
+        toolName: 'delete_file',
+        summary: filePath,
+      });
       return `Deletion cancelled for file: ${filePath}`;
     }
     getCheckpointEngine()?.trackBeforeEdit(filePath);
-    fs.unlinkSync(filePath);
-    return `Deleted file: ${filePath}`;
+    const entry = moveToTrash({
+      targetPath: filePath,
+      type: 'file',
+      sessionId,
+      turnId,
+      sessionKey,
+    });
+    agentObserverBus.publish({
+      sessionId,
+      turnId,
+      source: 'agent_loop',
+      eventType: 'delete_moved_to_trash',
+      status: 'success',
+      toolName: 'delete_file',
+      summary: filePath,
+      payload: { trashId: entry.id, remainingTurns: remainingRecoveryTurns(entry) },
+    });
+    return `Deleted file moved to recoverable trash: ${filePath}\nRecovery ID: ${entry.id}\nRecoverable for ${remainingRecoveryTurns(entry)} user chats. Use recovery_file or /trash recover ${entry.id}.`;
   },
 };
 
@@ -103,10 +128,6 @@ export const deleteFolderTool: Tool = {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Folder path to delete' },
-      confirmed: {
-        type: 'boolean',
-        description: 'Set true only when user already explicitly approved deletion',
-      },
     },
     required: ['path'],
   },
@@ -116,12 +137,91 @@ export const deleteFolderTool: Tool = {
     if (!fs.statSync(folderPath).isDirectory())
       return `Not a folder: ${folderPath}. Use delete_file for files.`;
     const sessionKey = (args._sessionKey as string) || 'default';
-    if (!args.confirmed && !(await confirmDelete(sessionKey, 'folder', folderPath))) {
+    const sessionId = (args._sessionId as string) || sessionKey;
+    const turnId = args._turnId as string | undefined;
+    if (!args._approvedByUser && !(await confirmDelete(sessionKey, 'folder', folderPath))) {
+      agentObserverBus.publish({
+        sessionId,
+        turnId,
+        source: 'agent_loop',
+        eventType: 'delete_denied',
+        status: 'cancelled',
+        toolName: 'delete_folder',
+        summary: folderPath,
+      });
       return `Deletion cancelled for folder: ${folderPath}`;
     }
     getCheckpointEngine()?.trackBeforeEdit(folderPath);
-    fs.rmSync(folderPath, { recursive: true, force: true });
-    return `Deleted folder: ${folderPath}`;
+    const entry = moveToTrash({
+      targetPath: folderPath,
+      type: 'folder',
+      sessionId,
+      turnId,
+      sessionKey,
+    });
+    agentObserverBus.publish({
+      sessionId,
+      turnId,
+      source: 'agent_loop',
+      eventType: 'delete_moved_to_trash',
+      status: 'success',
+      toolName: 'delete_folder',
+      summary: folderPath,
+      payload: { trashId: entry.id, remainingTurns: remainingRecoveryTurns(entry) },
+    });
+    return `Deleted folder moved to recoverable trash: ${folderPath}\nRecovery ID: ${entry.id}\nRecoverable for ${remainingRecoveryTurns(entry)} user chats. Use recovery_folder or /trash recover ${entry.id}.`;
+  },
+};
+
+export const recoveryFileTool: Tool = {
+  name: 'recovery_file',
+  description: `Recover a deleted file that Aurix moved to recoverable trash. Use the Recovery ID returned by delete_file or the original file path. Recovery expires after 5 user chats from deletion.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Recovery ID or original file path' },
+    },
+    required: ['id'],
+  },
+  async execute(args) {
+    const sessionId = (args._sessionId as string) || (args._sessionKey as string) || undefined;
+    const result = recoverTrashEntry(String(args.id || ''), { sessionId });
+    agentObserverBus.publish({
+      sessionId,
+      turnId: args._turnId as string | undefined,
+      source: 'agent_loop',
+      eventType: result.startsWith('Recovered') ? 'recovery_success' : 'recovery_failed',
+      status: result.startsWith('Recovered') ? 'success' : 'error',
+      toolName: 'recovery_file',
+      summary: result,
+    });
+    return result;
+  },
+};
+
+export const recoveryFolderTool: Tool = {
+  name: 'recovery_folder',
+  description: `Recover a deleted folder that Aurix moved to recoverable trash. Use the Recovery ID returned by delete_folder or the original folder path. Recovery expires after 5 user chats from deletion.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Recovery ID or original folder path' },
+    },
+    required: ['id'],
+  },
+  async execute(args) {
+    const sessionId = (args._sessionId as string) || (args._sessionKey as string) || undefined;
+    const result = recoverTrashEntry(String(args.id || ''), { sessionId });
+    agentObserverBus.publish({
+      sessionId,
+      turnId: args._turnId as string | undefined,
+      source: 'agent_loop',
+      eventType: result.startsWith('Recovered') ? 'recovery_success' : 'recovery_failed',
+      status: result.startsWith('Recovered') ? 'success' : 'error',
+      toolName: 'recovery_folder',
+      summary: result,
+    });
+    return result;
   },
 };
 

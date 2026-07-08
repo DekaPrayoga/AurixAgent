@@ -708,6 +708,27 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
+    name: 'evals',
+    argumentHint: '[latest|session <id>|job <id>]',
+    description: 'Score recent agent runs using observer events and evidence',
+    group: 'session',
+    source: 'aurix',
+  },
+  {
+    name: 'replay',
+    argumentHint: '[latest|session <id>|job <id>]',
+    description: 'Replay observer timeline for a session or agent job',
+    group: 'session',
+    source: 'aurix',
+  },
+  {
+    name: 'trash',
+    argumentHint: '[list|recover <id>]',
+    description: 'List and recover deleted files/folders within the 5-chat recovery window',
+    group: 'tools',
+    source: 'aurix',
+  },
+  {
     name: 'curator',
     argumentHint: '[status|run|pause|resume|pin|unpin|restore]',
     description: 'Background skill maintenance',

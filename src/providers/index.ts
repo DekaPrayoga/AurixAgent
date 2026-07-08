@@ -103,6 +103,28 @@ function imageToBase64(filePath: string): { data: string; mediaType: string } | 
   }
 }
 
+function messagesHaveImages(messages: Message[]): boolean {
+  return messages.some((m) => m.images?.length);
+}
+
+function parseToolArguments(
+  raw: string | null | undefined,
+  toolName: string
+): Record<string, unknown> {
+  if (!raw?.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : { value: parsed };
+  } catch {
+    return {
+      _parse_error: `Invalid JSON tool arguments for ${toolName}`,
+      _raw_arguments: raw.slice(0, 2000),
+    };
+  }
+}
+
 // ─── OpenAI Compatible Provider ────────────────────────────────────────────
 
 export class OpenAIProvider implements Provider {
@@ -247,36 +269,54 @@ export class OpenAIProvider implements Provider {
         let lastChunk = null;
         let usage = null;
         let toolCallsMap: Record<number, any> = {};
+        let streamBuffer = '';
 
         if (reader) {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            const chunkStr = decoder.decode(value, { stream: true });
-            const lines = chunkStr.split('\n');
+            streamBuffer += decoder.decode(value, { stream: true });
+            const lines = streamBuffer.split(/\r?\n/);
+            streamBuffer = lines.pop() || '';
+
             for (const line of lines) {
-              if (line.trim().startsWith('data: ') && !line.includes('[DONE]')) {
-                try {
-                  const chunk = JSON.parse(line.replace('data: ', '').trim());
-                  lastChunk = chunk;
-                  if (chunk.choices?.[0]?.delta?.content) {
-                    fullContent += chunk.choices[0].delta.content;
-                  }
-                  const tcs = chunk.choices?.[0]?.delta?.tool_calls;
-                  if (tcs && Array.isArray(tcs)) {
-                    for (const tc of tcs) {
-                      if (!toolCallsMap[tc.index]) {
-                        toolCallsMap[tc.index] = { ...tc, function: { ...tc.function } };
-                      } else {
-                        if (tc.function?.arguments) {
-                          toolCallsMap[tc.index].function.arguments += tc.function.arguments;
-                        }
-                      }
-                    }
-                  }
-                  if (chunk.usage) usage = chunk.usage;
-                } catch {}
+              const trimmedLine = line.trim();
+              if (!trimmedLine.startsWith('data: ') || trimmedLine.includes('[DONE]')) continue;
+              const payload = trimmedLine.replace(/^data:\s*/, '').trim();
+              if (!payload) continue;
+
+              let chunk: any;
+              try {
+                chunk = JSON.parse(payload);
+              } catch {
+                continue;
               }
+
+              lastChunk = chunk;
+              if (chunk.choices?.[0]?.delta?.content) {
+                fullContent += chunk.choices[0].delta.content;
+              }
+              const tcs = chunk.choices?.[0]?.delta?.tool_calls;
+              if (tcs && Array.isArray(tcs)) {
+                for (const tc of tcs) {
+                  const index = tc.index ?? 0;
+                  if (!toolCallsMap[index]) {
+                    toolCallsMap[index] = {
+                      index,
+                      id: tc.id || '',
+                      type: tc.type || 'function',
+                      function: { name: '', arguments: '' },
+                    };
+                  }
+                  if (tc.id) toolCallsMap[index].id = tc.id;
+                  if (tc.type) toolCallsMap[index].type = tc.type;
+                  if (tc.function?.name) toolCallsMap[index].function.name = tc.function.name;
+                  if (tc.function?.arguments) {
+                    toolCallsMap[index].function.arguments += tc.function.arguments;
+                  }
+                }
+              }
+              if (chunk.usage) usage = chunk.usage;
             }
           }
         }
@@ -355,7 +395,7 @@ export class OpenAIProvider implements Provider {
         toolCalls.push({
           id: tc.id,
           name: tc.function.name,
-          arguments: JSON.parse(tc.function.arguments || '{}'),
+          arguments: parseToolArguments(tc.function.arguments, tc.function.name),
         });
       }
     }
@@ -381,6 +421,9 @@ export class OpenAIProvider implements Provider {
   }
 
   private async completionFallback(messages: Message[]): Promise<ChatResponse> {
+    if (messagesHaveImages(messages)) {
+      throw new Error('Image input requires a chat/vision endpoint; completion fallback cannot process images.');
+    }
     const prompt = messagesToPrompt(messages);
 
     const url = openAIEndpoint(this.baseUrl, 'completions');
@@ -467,7 +510,10 @@ export class AnthropicProvider implements Provider {
 
   private async anthropicNative(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
     const clean = sanitizeMessages(messages);
-    const systemMsg = clean.find((m) => m.role === 'system');
+    const systemText = clean
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
     const nonSystem = clean.filter((m) => m.role !== 'system');
 
     const body: Record<string, unknown> = {
@@ -512,8 +558,8 @@ export class AnthropicProvider implements Provider {
       }),
     };
 
-    if (systemMsg) {
-      body.system = systemMsg.content;
+    if (systemText) {
+      body.system = systemText;
     }
 
     if (tools?.length) {
@@ -744,7 +790,7 @@ export class AnthropicProvider implements Provider {
         toolCalls.push({
           id: tc.id,
           name: tc.function.name,
-          arguments: JSON.parse(tc.function.arguments || '{}'),
+          arguments: parseToolArguments(tc.function.arguments, tc.function.name),
         });
       }
     }

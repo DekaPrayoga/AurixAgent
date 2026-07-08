@@ -1,4 +1,5 @@
 import { BaseAgent, type ClaimVerdict, type Source, type ResearchDepth } from './types.js';
+import { STRUCTURED_OUTPUT_PROMPT } from '../../utils/StructuredOutputFormat.js';
 
 export class WriterAgent extends BaseAgent {
   constructor(provider: any) {
@@ -29,14 +30,16 @@ Rules:
 - Include caveats and limitations
 ${includeSources ? '- Cite sources inline with [Source N] notation' : ''}
 
+${STRUCTURED_OUTPUT_PROMPT}
+
 Output format: ${format || 'DETAILED'}
 - SHORT_ANSWER: 1-3 paragraphs, direct
 - DETAILED: Structured sections with headers
 - REPORT: Full report with executive summary, findings, analysis, conclusion
 - LIST: Bullet-point summary`,
-      `Original query: "${query}"\n\nVerified claims and verdicts:\n${verdicts.map(v =>
-        `- "${v.claim}": ${v.verdict} (confidence: ${v.confidence}%) — ${v.reasoning}`
-      ).join('\n')}${sourceSection}`
+      `Original query: "${query}"\n\nVerified claims and verdicts:\n${verdicts
+        .map((v) => `- "${v.claim}": ${v.verdict} (confidence: ${v.confidence}%) — ${v.reasoning}`)
+        .join('\n')}${sourceSection}`
     );
 
     return result;

@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import initSqlJs, { type Database, type SqlJsStatic, type Statement } from 'sql.js';
 import type { Message, ToolCall } from '../providers/index.js';
+import { agentObserverBus, type AgentObserverEvent } from './AgentObserverBus.js';
 
 const STATE_DIR = path.join(os.homedir(), '.aurix', 'state');
 const DEFAULT_DB_PATH = path.join(STATE_DIR, 'aurix.sqlite');
@@ -19,6 +20,7 @@ const CREDENTIAL_PATTERNS = [
 
 let SQL: SqlJsStatic | null = null;
 let defaultStore: Promise<SessionStore> | null = null;
+let observerSinkInstalled = false;
 
 export interface SessionMeta {
   id: string;
@@ -128,6 +130,10 @@ export interface AgentJobSummary {
   lastStatus?: string;
 }
 
+export interface StoredObserverEvent extends AgentObserverEvent {
+  id?: number;
+}
+
 function ensureStateDir(): void {
   if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
 }
@@ -187,6 +193,20 @@ export async function getSessionStore(dbPath = DEFAULT_DB_PATH): Promise<Session
     return defaultStore;
   }
   return SessionStore.open(dbPath);
+}
+
+export function installObserverBusSessionSink(): void {
+  if (observerSinkInstalled) return;
+  observerSinkInstalled = true;
+  agentObserverBus.subscribe(async (event) => {
+    if (!event.sessionId && !event.jobId) return;
+    try {
+      const store = await getSessionStore();
+      store.recordObserverEvent(event);
+    } catch {
+      // Observer persistence must not affect agent execution.
+    }
+  });
 }
 
 export class SessionStore {
@@ -337,6 +357,22 @@ export class SessionStore {
         last_status TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_agent_jobs_started ON agent_jobs(started_at);
+      CREATE TABLE IF NOT EXISTS observer_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT,
+        turn_id TEXT,
+        job_id TEXT,
+        source TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        status TEXT,
+        tool_name TEXT,
+        summary TEXT,
+        payload_json TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_observer_events_session_created ON observer_events(session_id, created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_observer_events_job_created ON observer_events(job_id, created_at, id);
+      CREATE INDEX IF NOT EXISTS idx_observer_events_source_type ON observer_events(source, event_type);
     `);
 
     this.addColumnIfMissing('tool_events', 'duration_ms', 'INTEGER');
@@ -481,6 +517,70 @@ export class SessionStore {
     this.save();
   }
 
+  recordObserverEvent(event: StoredObserverEvent): void {
+    const ts = event.createdAt || nowIso();
+    const summary = event.summary ? redactSessionText(event.summary).slice(0, 1000) : null;
+    const stmt = this.db.prepare(`
+      INSERT INTO observer_events (session_id, turn_id, job_id, source, event_type, status, tool_name, summary, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run([
+      event.sessionId || null,
+      event.turnId || null,
+      event.jobId || null,
+      event.source,
+      event.eventType,
+      event.status || null,
+      event.toolName || null,
+      summary,
+      safeJson(event.payload),
+      ts,
+    ]);
+    stmt.free();
+    if (event.sessionId)
+      this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
+    this.save();
+  }
+
+  listObserverEvents(
+    filter: { sessionId?: string; jobId?: string } = {},
+    limit = 100
+  ): StoredObserverEvent[] {
+    const stmt = this.db.prepare(`
+      SELECT id, session_id, turn_id, job_id, source, event_type, status, tool_name, summary, payload_json, created_at
+      FROM observer_events
+      WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR job_id = ?)
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+    stmt.bind([
+      filter.sessionId || null,
+      filter.sessionId || null,
+      filter.jobId || null,
+      filter.jobId || null,
+      limit,
+    ]);
+    const out: StoredObserverEvent[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      out.push({
+        id: Number(row.id || 0),
+        sessionId: row.session_id ? String(row.session_id) : undefined,
+        turnId: row.turn_id ? String(row.turn_id) : undefined,
+        jobId: row.job_id ? String(row.job_id) : undefined,
+        source: String(row.source || 'agent_loop') as StoredObserverEvent['source'],
+        eventType: String(row.event_type || ''),
+        status: row.status ? (String(row.status) as StoredObserverEvent['status']) : undefined,
+        toolName: row.tool_name ? String(row.tool_name) : undefined,
+        summary: row.summary ? String(row.summary) : undefined,
+        payload: parseJson<Record<string, unknown> | undefined>(row.payload_json, undefined),
+        createdAt: row.created_at ? String(row.created_at) : undefined,
+      });
+    }
+    stmt.free();
+    return out;
+  }
+
   recordToolEvent(event: StoredToolEvent): void {
     const ts = nowIso();
     const resultPreview = event.result ? redactSessionText(event.result).slice(0, 4000) : null;
@@ -517,6 +617,23 @@ export class SessionStore {
     this.indexText(event.sessionId, 'tool', String(id || ''), event.toolName, searchable, ts);
     this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
     this.save();
+    agentObserverBus.publish({
+      sessionId: event.sessionId,
+      turnId: event.turnId,
+      source: 'agent_loop',
+      eventType: `tool_${event.phase}`,
+      status: event.status || (event.phase === 'start' ? 'running' : undefined),
+      toolName: event.toolName,
+      summary: event.result || event.toolName,
+      payload: {
+        toolCallId: event.toolCallId,
+        args: event.args,
+        resultPath: event.resultPath,
+        durationMs: event.durationMs,
+        errorType: event.errorType,
+      },
+      createdAt: ts,
+    });
   }
 
   recordEvidenceItem(item: EvidenceItem): number {

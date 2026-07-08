@@ -720,7 +720,7 @@ Step 4: If ALL 3 fail → take a snapshot to find a better selector, then retry
 # Action Reference
 Forms: signup-assist, signin-assist, fill, type, click, select, press-key, upload
 Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, open-tabs
-Read: screenshot, snapshot, text, html, url, title, cookies
+Read: state, screenshot, snapshot, text, html, url, title, cookies
 Advanced: evaluate (READ ONLY), drag-to, hold-click, wait
 Captcha: detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
 Config: set-proxy, set-ui, status, close
@@ -733,7 +733,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
       action: {
         type: 'string',
         description:
-          'Browser action to perform. Can be: navigate, click, fill, type, screenshot, snapshot, evaluate, signup-assist, signin-assist, close, export-state, import-state, etc.',
+          'Browser action to perform. Can be: navigate, click, fill, type, state, screenshot, snapshot, evaluate, signup-assist, signin-assist, close, export-state, import-state, etc.',
       },
       target: {
         type: 'string',
@@ -1337,6 +1337,52 @@ except Exception as e:
               'Use "snapshot" to check available options'
             );
           }
+        }
+
+        case 'state': {
+          const p = await ensureBrowser();
+          const screenshotPath = options.path || join(homedir(), '.aurix', 'browser-state.png');
+          await p.screenshot({ path: screenshotPath, fullPage: !!options.fullPage }).catch(() => {});
+          const url = p.url();
+          const title = await p.title().catch(() => '');
+          const snapshot = await p
+            .locator('body')
+            .evaluate((el) => {
+              function walk(node: Element, depth: number): string {
+                if (depth > 8) return '';
+                const indent = '  '.repeat(depth);
+                const tag = node.tagName?.toLowerCase() || '';
+                const role = node.getAttribute('role') || '';
+                const ariaLabel = node.getAttribute('aria-label') || '';
+                const text =
+                  node.childNodes.length === 1 && node.childNodes[0].nodeType === 3
+                    ? (node.childNodes[0] as Text).textContent?.trim().slice(0, 80) || ''
+                    : '';
+                const href = node.getAttribute('href') || '';
+                const type = node.getAttribute('type') || '';
+                const name = node.getAttribute('name') || '';
+                const id = node.getAttribute('id') || '';
+                let line = `${indent}<${tag}`;
+                if (role) line += ` role="${role}"`;
+                if (ariaLabel) line += ` aria-label="${ariaLabel}"`;
+                if (href) line += ` href="${href}"`;
+                if (type) line += ` type="${type}"`;
+                if (name) line += ` name="${name}"`;
+                if (id) line += ` id="${id}"`;
+                line += '>';
+                if (text) line += ` ${text}`;
+                line += '\n';
+                for (const child of Array.from(node.children)) line += walk(child, depth + 1);
+                return line;
+              }
+              return walk(el, 0);
+            })
+            .catch(() => '(snapshot unavailable)');
+          const bodyText = await p.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+          const dom = snapshot.length > 6000 ? `${snapshot.slice(0, 6000)}\n...` : snapshot;
+          const visibleText =
+            bodyText.length > 6000 ? `${bodyText.slice(0, 6000)}\n... [${bodyText.length - 6000} more chars]` : bodyText;
+          return `Browser state\nURL: ${url}\nTitle: ${title}\nScreenshot saved to: ${screenshotPath}\n\nDOM snapshot:\n${dom || '(empty page)'}\n\nVisible text:\n${visibleText || '(empty)'}`;
         }
 
         case 'screenshot': {

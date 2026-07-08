@@ -9,6 +9,7 @@ import { ToolRegistry } from '../tools/Registry.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { asciiLogo } from '../utils/ascii-logo.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import { formatStructuredOutput } from '../utils/StructuredOutputFormat.js';
 
 const TerminalRenderer = markedTerminal as any;
 marked.setOptions({
@@ -80,7 +81,7 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
           break;
         } else if (event.type === 'done') {
           spinner.stop();
-          const finalText = event.data || assistantText;
+          const finalText = formatStructuredOutput(event.data || assistantText, 'terminal');
           if (finalText.trim()) console.log('\n' + marked.parse(safeDisplayText(finalText)));
           console.log();
         }
