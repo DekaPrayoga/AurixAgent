@@ -2,7 +2,8 @@ import { TempMail } from './tempmail/TempMail.js';
 import { type BrowserContext, type Page } from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   readdirSync,
   readFileSync,
@@ -56,6 +57,13 @@ function warn(msg: string, details?: Record<string, string>): string {
   if (details) for (const [k, v] of Object.entries(details)) lines.push(`  ${k}: ${v}`);
   return lines.join('\n');
 }
+
+const RESEARCH_SKILL_DIR = join(
+  dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  'skills',
+  'research',
+  'social-researching'
+);
 
 let _lastActionScreenshot = '';
 async function autoScreenshot(p: Page, label: string): Promise<string> {
@@ -949,17 +957,17 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
         case 'extract-cookies': {
           try {
-            const { exec } = await import('child_process');
+            const { execFile } = await import('child_process');
             const { promisify } = await import('util');
-            const execAsync = promisify(exec);
+            const execFileAsync = promisify(execFile);
 
             // We use Python to run the extraction logic. We assume the system has python3 installed.
-            // Using a simple inline script that calls the existing cookie_extract.py logic
+            // Use execFile so inline Python is passed as argv, not shell-interpolated text.
             const pythonScript = `
 import sys
 import json
 import os
-sys.path.insert(0, os.path.abspath('skills/research/social-researching/scripts'))
+sys.path.insert(0, ${JSON.stringify(join(RESEARCH_SKILL_DIR, 'scripts'))})
 try:
     from lib.cookie_extract import extract_cookies
     # Try all browsers in auto mode
@@ -972,8 +980,12 @@ except Exception as e:
     print(json.dumps({"error": str(e)}))
 `;
 
-            const { stdout } = await execAsync(`python3 -c "${pythonScript.replace(/\n/g, '\n')}"`);
-            const parsed = JSON.parse(stdout.trim());
+            const { stdout } = await execFileAsync('python3', ['-c', pythonScript], {
+              encoding: 'utf8',
+              timeout: 30000,
+              maxBuffer: 1024 * 1024,
+            });
+            const parsed = JSON.parse(String(stdout).trim());
 
             if (parsed.error) {
               return err(`Cookie extraction failed: ${parsed.error}`);
@@ -982,8 +994,9 @@ except Exception as e:
             if (parsed.auth_token && parsed.ct0) {
               const envContent = `AUTH_TOKEN="${parsed.auth_token}"\nCT0="${parsed.ct0}"\n`;
               const fsNode = await import('fs');
-              const envPath = 'skills/research/social-researching/.env';
-              fsNode.writeFileSync(envPath, envContent);
+              fsNode.mkdirSync(RESEARCH_SKILL_DIR, { recursive: true });
+              const envPath = join(RESEARCH_SKILL_DIR, '.env');
+              fsNode.writeFileSync(envPath, envContent, { mode: 0o600 });
               return ok(
                 'Successfully extracted Twitter cookies from local browser and saved to .env',
                 {
@@ -1342,7 +1355,9 @@ except Exception as e:
         case 'state': {
           const p = await ensureBrowser();
           const screenshotPath = options.path || join(homedir(), '.aurix', 'browser-state.png');
-          await p.screenshot({ path: screenshotPath, fullPage: !!options.fullPage }).catch(() => {});
+          await p
+            .screenshot({ path: screenshotPath, fullPage: !!options.fullPage })
+            .catch(() => {});
           const url = p.url();
           const title = await p.title().catch(() => '');
           const snapshot = await p
@@ -1378,10 +1393,15 @@ except Exception as e:
               return walk(el, 0);
             })
             .catch(() => '(snapshot unavailable)');
-          const bodyText = await p.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+          const bodyText = await p
+            .locator('body')
+            .innerText({ timeout: 3000 })
+            .catch(() => '');
           const dom = snapshot.length > 6000 ? `${snapshot.slice(0, 6000)}\n...` : snapshot;
           const visibleText =
-            bodyText.length > 6000 ? `${bodyText.slice(0, 6000)}\n... [${bodyText.length - 6000} more chars]` : bodyText;
+            bodyText.length > 6000
+              ? `${bodyText.slice(0, 6000)}\n... [${bodyText.length - 6000} more chars]`
+              : bodyText;
           return `Browser state\nURL: ${url}\nTitle: ${title}\nScreenshot saved to: ${screenshotPath}\n\nDOM snapshot:\n${dom || '(empty page)'}\n\nVisible text:\n${visibleText || '(empty)'}`;
         }
 

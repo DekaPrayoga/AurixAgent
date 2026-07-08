@@ -1,12 +1,16 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { promisify } from 'util';
 import type { Tool } from './Registry.js';
+
+const execFileAsync = promisify(execFile);
 
 export const pdfTool: Tool = {
   name: 'pdf',
-  description: 'Generate PDF documents from markdown, HTML, or text content. Supports reports, presentations, invoices, and any document type.',
+  description:
+    'Generate PDF documents from markdown, HTML, or text content. Supports reports, presentations, invoices, and any document type.',
   parameters: {
     type: 'object',
     properties: {
@@ -37,7 +41,8 @@ export const pdfTool: Tool = {
     const content = args.content as string;
     const title = (args.title as string) || 'AURIX Document';
     const template = (args.template as string) || 'report';
-    const output = (args.output as string) || path.join(os.homedir(), 'Documents', `aurix-${Date.now()}.pdf`);
+    const output =
+      (args.output as string) || path.join(os.homedir(), 'Documents', `aurix-${Date.now()}.pdf`);
     const images = (args.images as string) || '';
 
     const dir = path.dirname(output);
@@ -46,47 +51,67 @@ export const pdfTool: Tool = {
     // Embed images: convert file paths to base64 data URIs, keep URLs as-is
     let enrichedContent = content;
     if (images) {
-      const imgTags = images.split(',').map(src => {
-        src = src.trim();
-        if (!src) return '';
-        if (src.startsWith('http://') || src.startsWith('https://')) {
-          return `\n![image](${src})\n`;
-        }
-        // Local file — convert to base64 data URI
-        const imgPath = path.resolve(src);
-        if (fs.existsSync(imgPath)) {
-          const ext = path.extname(imgPath).slice(1).toLowerCase();
-          const mime = ext === 'jpg' ? 'jpeg' : ext;
-          const b64 = fs.readFileSync(imgPath).toString('base64');
-          return `\n![${path.basename(imgPath)}](data:image/${mime};base64,${b64})\n`;
-        }
-        return '';
-      }).join('\n');
+      const imgTags = images
+        .split(',')
+        .map((src) => {
+          src = src.trim();
+          if (!src) return '';
+          if (src.startsWith('http://') || src.startsWith('https://')) {
+            return `\n![image](${src})\n`;
+          }
+          // Local file — convert to base64 data URI
+          const imgPath = path.resolve(src);
+          if (fs.existsSync(imgPath)) {
+            const ext = path.extname(imgPath).slice(1).toLowerCase();
+            const mime = ext === 'jpg' ? 'jpeg' : ext;
+            const b64 = fs.readFileSync(imgPath).toString('base64');
+            return `\n![${path.basename(imgPath)}](data:image/${mime};base64,${b64})\n`;
+          }
+          return '';
+        })
+        .join('\n');
       enrichedContent += '\n\n' + imgTags;
     }
 
     const html = templateToHtml(enrichedContent, title, template);
-    const tmpHtml = path.join(os.tmpdir(), `aurix-doc-${Date.now()}.html`);
+    const tmpHtml = path.join(os.tmpdir(), `aurix-doc-${process.pid}-${Date.now()}.html`);
     fs.writeFileSync(tmpHtml, html);
 
-    return new Promise<string>((resolve) => {
-      const cmd = `which wkhtmltopdf 2>/dev/null && wkhtmltopdf --quiet "${tmpHtml}" "${output}" 2>&1 || npx --yes puppeteer-html-pdf --input "${tmpHtml}" --output "${output}" 2>&1`;
+    try {
+      if (await commandExists('wkhtmltopdf')) {
+        await execFileAsync('wkhtmltopdf', ['--quiet', tmpHtml, output], {
+          timeout: 60000,
+          maxBuffer: 5 * 1024 * 1024,
+        });
+        return `Document saved: ${output}`;
+      }
 
-      exec(cmd, { timeout: 60000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
-        try { fs.unlinkSync(tmpHtml); } catch {}
-
-        if (err && !fs.existsSync(output)) {
-          const fallbackOutput = output.replace('.pdf', '.html');
-          fs.writeFileSync(fallbackOutput, html);
-          resolve(`PDF tool not available. HTML saved to: ${fallbackOutput}\nInstall wkhtmltopdf for PDF generation.`);
-          return;
-        }
-
-        resolve(`Document saved: ${output}`);
-      });
-    });
+      const fallbackOutput = output.replace(/\.pdf$/i, '.html');
+      fs.writeFileSync(fallbackOutput, html);
+      return `PDF tool not available. HTML saved to: ${fallbackOutput}\nInstall wkhtmltopdf for PDF generation.`;
+    } catch (e: any) {
+      if (!fs.existsSync(output)) {
+        const fallbackOutput = output.replace(/\.pdf$/i, '.html');
+        fs.writeFileSync(fallbackOutput, html);
+        return `PDF generation failed: ${e.message}\nHTML saved to: ${fallbackOutput}`;
+      }
+      return `Document saved: ${output}`;
+    } finally {
+      try {
+        fs.unlinkSync(tmpHtml);
+      } catch {}
+    }
   },
 };
+
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await execFileAsync(command, ['--version'], { timeout: 5000, encoding: 'utf8' });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function templateToHtml(content: string, title: string, template: string): string {
   const baseStyles = `
@@ -135,10 +160,15 @@ function templateToHtml(content: string, title: string, template: string): strin
       .replace(/`(.+?)`/g, '<code>$1</code>')
       .replace(/^---$/gm, '<hr />')
       .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
-      .replace(/(<blockquote>.*<\/blockquote>\n?)+/g, (m) => m.replace(/<\/blockquote>\n<blockquote>/g, '<br/>'))
+      .replace(/(<blockquote>.*<\/blockquote>\n?)+/g, (m) =>
+        m.replace(/<\/blockquote>\n<blockquote>/g, '<br/>')
+      )
       .replace(/^(\d+)\. (.+)$/gm, '<oli>$2</oli>')
       .replace(/^- (.+)$/gm, '<li>$1</li>')
-      .replace(/(<oli>.*<\/oli>\n?)+/g, (m) => `<ol>${m.replace(/<\/?oli>/g, (t) => t.replace('oli', 'li'))}</ol>`)
+      .replace(
+        /(<oli>.*<\/oli>\n?)+/g,
+        (m) => `<ol>${m.replace(/<\/?oli>/g, (t) => t.replace('oli', 'li'))}</ol>`
+      )
       .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
       .replace(/\n\n/g, '</p><p>')
       .replace(/^(?!<[huloipbr])/gm, '');

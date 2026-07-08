@@ -74,6 +74,7 @@ import { diagramTool } from './tools/Diagram.js';
 import { archiveReaderTool } from './tools/ArchiveReader.js';
 import { brainTool } from './tools/Brain.js';
 import { audioCaptchaTool, audioCaptchaLocalTool } from './tools/AudioCaptcha.js';
+import { tempMailingTool } from './tools/TempMail.js';
 
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
@@ -102,6 +103,7 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(brainTool);
   registry.register(audioCaptchaTool);
   registry.register(audioCaptchaLocalTool);
+  registry.register(tempMailingTool);
 
   const f = features || [];
   const all = f.length === 0;

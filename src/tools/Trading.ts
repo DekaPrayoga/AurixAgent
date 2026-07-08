@@ -1,15 +1,37 @@
-import { exec } from 'child_process';
 import type { Tool } from './Registry.js';
+
+type Quote = {
+  symbol?: string;
+  shortName?: string;
+  longName?: string;
+  regularMarketPrice?: number;
+  regularMarketPreviousClose?: number;
+  regularMarketChangePercent?: number;
+  regularMarketVolume?: number;
+  averageDailyVolume3Month?: number;
+  marketCap?: number;
+  trailingPE?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  dividendYield?: number;
+  beta?: number;
+  epsTrailingTwelveMonths?: number;
+  currency?: string;
+};
+
+type ChartPoint = { close: number; volume: number; timestamp: number };
 
 export const tradingTool: Tool = {
   name: 'trading',
-  description: 'Trading analysis and research: stock analysis, technical indicators, sentiment analysis, market data, portfolio tracking, risk assessment. Multi-agent trading system with bull/bear researchers, analysts, and risk management.',
+  description:
+    'Trading analysis and research using public Yahoo Finance market data: stock analysis, technical indicators, news, comparison, and risk assessment. No Python/yfinance dependency required.',
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: 'Action: analyze, sentiment, technical, news, portfolio, compare, risk, report',
+        description:
+          'Action: analyze, sentiment, technical, news, portfolio, compare, risk, report',
       },
       symbol: {
         type: 'string',
@@ -27,9 +49,11 @@ export const tradingTool: Tool = {
     required: ['action'],
   },
   async execute(args) {
-    const action = args.action as string;
-    const symbol = (args.symbol as string) || '';
-    const period = (args.period as string) || '1mo';
+    const action = String(args.action || '');
+    const symbol = String(args.symbol || '')
+      .trim()
+      .toUpperCase();
+    const period = String(args.period || '1mo');
 
     switch (action) {
       case 'analyze':
@@ -43,7 +67,13 @@ export const tradingTool: Tool = {
       case 'portfolio':
         return portfolioView();
       case 'compare':
-        return compareStocks(symbol, args.comparison as string, period);
+        return compareStocks(
+          symbol,
+          String(args.comparison || '')
+            .trim()
+            .toUpperCase(),
+          period
+        );
       case 'risk':
         return riskAssessment(symbol);
       case 'report':
@@ -54,156 +84,242 @@ export const tradingTool: Tool = {
   },
 };
 
-function runCmd(cmd: string, timeout = 30000): Promise<string> {
-  return new Promise(resolve => {
-    exec(cmd, { timeout, maxBuffer: 5 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) resolve(stderr?.trim() || `Error: ${err.message}`);
-      else resolve(stdout.trim());
-    });
-  });
+function intervalForPeriod(period: string): string {
+  if (period === '1d') return '5m';
+  if (period === '5d') return '15m';
+  if (period === '5y') return '1wk';
+  return '1d';
 }
 
-function pyScript(code: string): string {
-  return `python3 -c "${code.replace(/"/g, '\\"').replace(/\n/g, '\\n')}" 2>&1`;
+function fmt(value: unknown): string {
+  if (value === undefined || value === null || value === '') return 'N/A';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 'N/A';
+    if (Math.abs(value) >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}T`;
+    if (Math.abs(value) >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+    if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+  return String(value);
+}
+
+function pct(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : 'N/A';
+}
+
+async function yahooJson<T>(url: string): Promise<T> {
+  const resp = await fetch(url, {
+    headers: {
+      accept: 'application/json,text/plain,*/*',
+      'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36 AurixAgent/Trading',
+    },
+  });
+  const body = await resp.text();
+  if (!resp.ok) throw new Error(`Yahoo Finance HTTP ${resp.status}: ${body.slice(0, 200)}`);
+  return JSON.parse(body) as T;
+}
+
+async function getQuote(symbol: string): Promise<Quote> {
+  const encoded = encodeURIComponent(symbol);
+  const [search, chart] = await Promise.all([
+    yahooJson<any>(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encoded}&newsCount=0&quotesCount=1`
+    ).catch(() => ({})),
+    yahooJson<any>(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?range=1d&interval=5m`
+    ).catch(() => ({})),
+  ]);
+  const searchQuote =
+    search.quotes?.find((q: any) => String(q.symbol || '').toUpperCase() === symbol) ||
+    search.quotes?.[0] ||
+    {};
+  const chartResult = chart.chart?.result?.[0] || {};
+  const meta = chartResult.meta || {};
+  if (!searchQuote.symbol && !meta.symbol) throw new Error(`No quote data returned for ${symbol}`);
+  return {
+    symbol: meta.symbol || searchQuote.symbol || symbol,
+    shortName: searchQuote.shortname || searchQuote.shortName,
+    longName: searchQuote.longname || searchQuote.longName || meta.longName,
+    regularMarketPrice: meta.regularMarketPrice,
+    regularMarketPreviousClose: meta.previousClose,
+    regularMarketChangePercent:
+      typeof meta.regularMarketPrice === 'number' &&
+      typeof meta.previousClose === 'number' &&
+      meta.previousClose !== 0
+        ? (meta.regularMarketPrice / meta.previousClose - 1) * 100
+        : undefined,
+    regularMarketVolume: meta.regularMarketVolume,
+    averageDailyVolume3Month: meta.averageDailyVolume3Month,
+    marketCap: searchQuote.marketCap,
+    trailingPE: searchQuote.trailingPE,
+    fiftyTwoWeekHigh: meta.fiftyTwoWeekHigh,
+    fiftyTwoWeekLow: meta.fiftyTwoWeekLow,
+    dividendYield: searchQuote.dividendYield,
+    beta: searchQuote.beta,
+    epsTrailingTwelveMonths: searchQuote.epsTrailingTwelveMonths,
+    currency: meta.currency || searchQuote.currency,
+  };
+}
+
+async function getChart(symbol: string, period: string): Promise<ChartPoint[]> {
+  const encoded = encodeURIComponent(symbol);
+  const data = await yahooJson<any>(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encoded}?range=${encodeURIComponent(period)}&interval=${intervalForPeriod(period)}`
+  );
+  const result = data.chart?.result?.[0];
+  if (!result) return [];
+  const timestamps: number[] = result.timestamp || [];
+  const quote = result.indicators?.quote?.[0] || {};
+  const closes: Array<number | null> = quote.close || [];
+  const volumes: Array<number | null> = quote.volume || [];
+  return timestamps
+    .map((timestamp, i) => ({
+      timestamp,
+      close: Number(closes[i]),
+      volume: Number(volumes[i] || 0),
+    }))
+    .filter((point) => Number.isFinite(point.close) && point.close > 0);
+}
+
+async function getNews(symbol: string): Promise<any[]> {
+  const encoded = encodeURIComponent(symbol);
+  const data = await yahooJson<any>(
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${encoded}&newsCount=12&quotesCount=0`
+  );
+  return Array.isArray(data.news) ? data.news : [];
+}
+
+function sma(values: number[], window: number): number | undefined {
+  if (values.length < window) return undefined;
+  const slice = values.slice(-window);
+  return slice.reduce((sum, value) => sum + value, 0) / slice.length;
+}
+
+function rsi(values: number[], window = 14): number | undefined {
+  if (values.length <= window) return undefined;
+  let gains = 0;
+  let losses = 0;
+  const slice = values.slice(-window - 1);
+  for (let i = 1; i < slice.length; i++) {
+    const delta = slice[i] - slice[i - 1];
+    if (delta >= 0) gains += delta;
+    else losses += Math.abs(delta);
+  }
+  const avgGain = gains / window;
+  const avgLoss = losses / window;
+  if (avgLoss === 0) return 100;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+function returns(points: ChartPoint[]): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    out.push(points[i].close / points[i - 1].close - 1);
+  }
+  return out.filter((value) => Number.isFinite(value));
+}
+
+function stdev(values: number[]): number | undefined {
+  if (values.length < 2) return undefined;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
+  return Math.sqrt(variance);
+}
+
+function maxDrawdown(points: ChartPoint[]): number | undefined {
+  if (points.length < 2) return undefined;
+  let peak = points[0].close;
+  let worst = 0;
+  for (const point of points) {
+    peak = Math.max(peak, point.close);
+    worst = Math.min(worst, point.close / peak - 1);
+  }
+  return worst * 100;
 }
 
 async function fullAnalysis(symbol: string, period: string): Promise<string> {
   if (!symbol) return 'Error: provide a ticker symbol';
 
-  const script = `
-import json, sys
-try:
-    import yfinance as yf
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', '-q'])
-    import yfinance as yf
-
-t = yf.Ticker("${symbol}")
-info = t.info or {}
-hist = t.history(period="${period}")
-
-result = {
-    "symbol": "${symbol}".upper(),
-    "name": info.get("shortName", "N/A"),
-    "price": info.get("currentPrice") or info.get("regularMarketPrice", "N/A"),
-    "change": info.get("regularMarketChangePercent", "N/A"),
-    "market_cap": info.get("marketCap", "N/A"),
-    "pe_ratio": info.get("trailingPE", "N/A"),
-    "52w_high": info.get("fiftyTwoWeekHigh", "N/A"),
-    "52w_low": info.get("fiftyTwoWeekLow", "N/A"),
-    "volume": info.get("volume", "N/A"),
-    "avg_volume": info.get("averageVolume", "N/A"),
-    "dividend_yield": info.get("dividendYield", "N/A"),
-    "sector": info.get("sector", "N/A"),
-    "industry": info.get("industry", "N/A"),
-    "history_rows": len(hist) if hist is not None else 0,
-}
-print(json.dumps(result, indent=2, default=str))
-`;
-
-  return `Full Analysis: ${symbol.toUpperCase()}\n${await runCmd(pyScript(script), 60000)}`;
+  try {
+    const [quote, chart] = await Promise.all([getQuote(symbol), getChart(symbol, period)]);
+    const name = quote.longName || quote.shortName || symbol;
+    return [
+      `Full Analysis: ${symbol}`,
+      `Name: ${name}`,
+      `Price: ${fmt(quote.regularMarketPrice)} ${quote.currency || ''}`.trim(),
+      `Change: ${pct(quote.regularMarketChangePercent)}`,
+      `Market cap: ${fmt(quote.marketCap)}`,
+      `P/E ratio: ${fmt(quote.trailingPE)}`,
+      `52w high / low: ${fmt(quote.fiftyTwoWeekHigh)} / ${fmt(quote.fiftyTwoWeekLow)}`,
+      `Volume / avg volume: ${fmt(quote.regularMarketVolume)} / ${fmt(quote.averageDailyVolume3Month)}`,
+      `Dividend yield: ${pct(typeof quote.dividendYield === 'number' ? quote.dividendYield * 100 : undefined)}`,
+      `Beta: ${fmt(quote.beta)}`,
+      `History rows (${period}): ${chart.length}`,
+      '',
+      'Not financial advice. Use this as market data context only.',
+    ].join('\n');
+  } catch (e: any) {
+    return `Trading analysis failed for ${symbol}: ${e.message}`;
+  }
 }
 
 async function sentimentAnalysis(symbol: string): Promise<string> {
   if (!symbol) return 'Error: provide a ticker symbol';
-
-  const newsScript = `
-import json, sys
-try:
-    import yfinance as yf
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', '-q'])
-    import yfinance as yf
-
-t = yf.Ticker("${symbol}")
-news = t.news or []
-
-results = []
-for n in news[:10]:
-    results.append({
-        "title": n.get("title", ""),
-        "publisher": n.get("publisher", ""),
-        "link": n.get("link", ""),
-    })
-
-print(json.dumps(results, indent=2, default=str))
-print(f"\\nTotal news items: {len(news)}")
-`;
-
-  return `Sentiment Analysis: ${symbol.toUpperCase()}\n${await runCmd(pyScript(newsScript), 30000)}`;
+  return newsAnalysis(symbol);
 }
 
 async function technicalAnalysis(symbol: string, period: string): Promise<string> {
   if (!symbol) return 'Error: provide a ticker symbol';
 
-  const script = `
-import json, sys
-try:
-    import yfinance as yf
-    import pandas as pd
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', 'pandas', '-q'])
-    import yfinance as yf
-    import pandas as pd
+  try {
+    const points = await getChart(symbol, period);
+    if (points.length === 0) return `Technical Analysis: ${symbol}\nNo chart data available.`;
+    const closes = points.map((point) => point.close);
+    const current = closes[closes.length - 1];
+    const sma20 = sma(closes, 20);
+    const sma50 = sma(closes, 50);
+    const rsi14 = rsi(closes, 14);
+    const avgVolume = points.reduce((sum, point) => sum + point.volume, 0) / points.length;
+    const trend = sma20 && current > sma20 ? 'BULLISH' : 'BEARISH';
+    const signal =
+      rsi14 && rsi14 > 70 ? 'OVERBOUGHT' : rsi14 && rsi14 < 30 ? 'OVERSOLD' : 'NEUTRAL';
 
-t = yf.Ticker("${symbol}")
-hist = t.history(period="${period}")
-
-if hist.empty:
-    print("No data available")
-    sys.exit(0)
-
-close = hist['Close']
-sma20 = close.rolling(20).mean().iloc[-1] if len(close) >= 20 else None
-sma50 = close.rolling(50).mean().iloc[-1] if len(close) >= 50 else None
-rsi_delta = close.diff()
-gain = rsi_delta.where(rsi_delta > 0, 0).rolling(14).mean().iloc[-1]
-loss = (-rsi_delta.where(rsi_delta < 0, 0)).rolling(14).mean().iloc[-1]
-rsi = 100 - (100 / (1 + gain / loss)) if loss > 0 else 100
-
-result = {
-    "current_price": round(float(close.iloc[-1]), 2),
-    "sma_20": round(float(sma20), 2) if sma20 else None,
-    "sma_50": round(float(sma50), 2) if sma50 else None,
-    "rsi_14": round(float(rsi), 2),
-    "high_period": round(float(close.max()), 2),
-    "low_period": round(float(close.min()), 2),
-    "avg_volume": int(hist['Volume'].mean()) if 'Volume' in hist else None,
-    "trend": "BULLISH" if sma20 and close.iloc[-1] > sma20 else "BEARISH",
-    "signal": "OVERBOUGHT" if rsi > 70 else "OVERSOLD" if rsi < 30 else "NEUTRAL",
-}
-print(json.dumps(result, indent=2, default=str))
-`;
-
-  return `Technical Analysis: ${symbol.toUpperCase()}\n${await runCmd(pyScript(script), 60000)}`;
+    return [
+      `Technical Analysis: ${symbol}`,
+      `Current price: ${fmt(current)}`,
+      `SMA 20: ${fmt(sma20)}`,
+      `SMA 50: ${fmt(sma50)}`,
+      `RSI 14: ${fmt(rsi14)}`,
+      `Period high / low: ${fmt(Math.max(...closes))} / ${fmt(Math.min(...closes))}`,
+      `Average volume: ${fmt(avgVolume)}`,
+      `Trend: ${trend}`,
+      `Signal: ${signal}`,
+      '',
+      'Not financial advice. Technical indicators can lag and fail.',
+    ].join('\n');
+  } catch (e: any) {
+    return `Technical analysis failed for ${symbol}: ${e.message}`;
+  }
 }
 
 async function newsAnalysis(symbol: string): Promise<string> {
   if (!symbol) return 'Error: provide a ticker symbol';
 
-  const script = `
-import json, sys
-try:
-    import yfinance as yf
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', '-q'])
-    import yfinance as yf
-
-t = yf.Ticker("${symbol}")
-news = t.news or []
-
-for i, n in enumerate(news[:15], 1):
-    print(f"{i}. {n.get('title', 'No title')}")
-    print(f"   Publisher: {n.get('publisher', 'Unknown')}")
-    print(f"   Link: {n.get('link', '')}")
-    print()
-`;
-
-  return `News: ${symbol.toUpperCase()}\n${await runCmd(pyScript(script), 30000)}`;
+  try {
+    const news = await getNews(symbol);
+    if (news.length === 0) return `News: ${symbol}\nNo recent Yahoo Finance news found.`;
+    const lines = news.slice(0, 10).map((item, i) => {
+      const title = item.title || 'No title';
+      const publisher = item.publisher || item.source || 'Unknown';
+      const link = item.link || '';
+      return `${i + 1}. ${title}\n   Publisher: ${publisher}${link ? `\n   Link: ${link}` : ''}`;
+    });
+    return `News: ${symbol}\n${lines.join('\n\n')}`;
+  } catch (e: any) {
+    return `News lookup failed for ${symbol}: ${e.message}`;
+  }
 }
 
 async function portfolioView(): Promise<string> {
@@ -213,72 +329,68 @@ async function portfolioView(): Promise<string> {
 async function compareStocks(symbol: string, comparison: string, period: string): Promise<string> {
   if (!symbol || !comparison) return 'Error: provide two symbols to compare';
 
-  const script = `
-import json, sys
-try:
-    import yfinance as yf
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', '-q'])
-    import yfinance as yf
+  try {
+    const [aQuote, bQuote, aChart, bChart] = await Promise.all([
+      getQuote(symbol),
+      getQuote(comparison),
+      getChart(symbol, period),
+      getChart(comparison, period),
+    ]);
+    const periodReturn = (points: ChartPoint[]) =>
+      points.length > 1 ? (points[points.length - 1].close / points[0].close - 1) * 100 : undefined;
 
-results = {}
-for sym in ["${symbol}", "${comparison}"]:
-    t = yf.Ticker(sym)
-    info = t.info or {}
-    hist = t.history(period="${period}")
-    results[sym] = {
-        "price": info.get("currentPrice") or info.get("regularMarketPrice"),
-        "change_pct": info.get("regularMarketChangePercent"),
-        "market_cap": info.get("marketCap"),
-        "pe_ratio": info.get("trailingPE"),
-        "period_return": round((float(hist['Close'].iloc[-1]) / float(hist['Close'].iloc[0]) - 1) * 100, 2) if not hist.empty and len(hist) > 1 else None,
-    }
-print(json.dumps(results, indent=2, default=str))
-`;
-
-  return `Comparison: ${symbol.toUpperCase()} vs ${comparison.toUpperCase()}\n${await runCmd(pyScript(script), 60000)}`;
+    return [
+      `Comparison: ${symbol} vs ${comparison}`,
+      '',
+      `| Metric | ${symbol} | ${comparison} |`,
+      '|---|---:|---:|',
+      `| Price | ${fmt(aQuote.regularMarketPrice)} | ${fmt(bQuote.regularMarketPrice)} |`,
+      `| Change | ${pct(aQuote.regularMarketChangePercent)} | ${pct(bQuote.regularMarketChangePercent)} |`,
+      `| Market cap | ${fmt(aQuote.marketCap)} | ${fmt(bQuote.marketCap)} |`,
+      `| P/E | ${fmt(aQuote.trailingPE)} | ${fmt(bQuote.trailingPE)} |`,
+      `| ${period} return | ${pct(periodReturn(aChart))} | ${pct(periodReturn(bChart))} |`,
+      '',
+      'Not financial advice.',
+    ].join('\n');
+  } catch (e: any) {
+    return `Comparison failed: ${e.message}`;
+  }
 }
 
 async function riskAssessment(symbol: string): Promise<string> {
   if (!symbol) return 'Error: provide a ticker symbol';
 
-  const script = `
-import json, sys
-try:
-    import yfinance as yf
-    import pandas as pd
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yfinance', 'pandas', '-q'])
-    import yfinance as yf
-    import pandas as pd
+  try {
+    const [quote, chart] = await Promise.all([getQuote(symbol), getChart(symbol, '1y')]);
+    const ret = returns(chart);
+    const dailyVol = stdev(ret);
+    const annualizedVol = dailyVol ? dailyVol * Math.sqrt(252) * 100 : undefined;
+    const drawdown = maxDrawdown(chart);
+    const avgReturn = ret.length
+      ? ret.reduce((sum, value) => sum + value, 0) / ret.length
+      : undefined;
+    const sharpe =
+      dailyVol && avgReturn !== undefined ? (avgReturn / dailyVol) * Math.sqrt(252) : undefined;
+    const riskLevel =
+      annualizedVol && annualizedVol > 40
+        ? 'HIGH'
+        : annualizedVol && annualizedVol > 20
+          ? 'MEDIUM'
+          : 'LOW';
 
-t = yf.Ticker("${symbol}")
-info = t.info or {}
-hist = t.history(period="1y")
-
-if not hist.empty and len(hist) > 1:
-    returns = hist['Close'].pct_change().dropna()
-    volatility = float(returns.std() * (252 ** 0.5) * 100)
-    max_drawdown = float((hist['Close'] / hist['Close'].cummax() - 1).min() * 100)
-    sharpe = float(returns.mean() / returns.std() * (252 ** 0.5)) if returns.std() > 0 else 0
-else:
-    volatility = max_drawdown = sharpe = None
-
-result = {
-    "beta": info.get("beta", "N/A"),
-    "annualized_volatility": f"{volatility:.2f}%" if volatility else "N/A",
-    "max_drawdown": f"{max_drawdown:.2f}%" if max_drawdown else "N/A",
-    "sharpe_ratio": f"{sharpe:.2f}" if sharpe else "N/A",
-    "debt_to_equity": info.get("debtToEquity", "N/A"),
-    "current_ratio": info.get("currentRatio", "N/A"),
-    "risk_level": "HIGH" if volatility and volatility > 40 else "MEDIUM" if volatility and volatility > 20 else "LOW",
-}
-print(json.dumps(result, indent=2, default=str))
-`;
-
-  return `Risk Assessment: ${symbol.toUpperCase()}\n${await runCmd(pyScript(script), 60000)}`;
+    return [
+      `Risk Assessment: ${symbol}`,
+      `Beta: ${fmt(quote.beta)}`,
+      `Annualized volatility: ${pct(annualizedVol)}`,
+      `Max drawdown: ${pct(drawdown)}`,
+      `Sharpe ratio: ${fmt(sharpe)}`,
+      `Risk level: ${riskLevel}`,
+      '',
+      'Not financial advice. Risk metrics are historical and may not predict future losses.',
+    ].join('\n');
+  } catch (e: any) {
+    return `Risk assessment failed for ${symbol}: ${e.message}`;
+  }
 }
 
 async function tradingReport(symbol: string, period: string): Promise<string> {
@@ -290,5 +402,5 @@ async function tradingReport(symbol: string, period: string): Promise<string> {
     riskAssessment(symbol),
   ]);
 
-  return `=== TRADING REPORT: ${symbol.toUpperCase()} ===\n\n${results.join('\n\n---\n\n')}`;
+  return `=== TRADING REPORT: ${symbol} ===\n\n${results.join('\n\n---\n\n')}`;
 }

@@ -1,9 +1,11 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { promisify } from 'util';
 import type { Tool } from './Registry.js';
 
+const execFileAsync = promisify(execFile);
 const SKILL_DIR = path.resolve(import.meta.dirname, '../../skills/research/social-researching');
 const ENGINE = path.join(SKILL_DIR, 'scripts', 'social-researching.py');
 
@@ -35,75 +37,70 @@ export const researchForumsTool: Tool = {
     required: ['query'],
   },
   async execute(args) {
-    const query = args.query as string;
-    const sources = args.sources as string | undefined;
-    const format = (args.format as string) || 'compact';
-    const limit = (args.limit as number) || 10;
+    const query = String(args.query || '').trim();
+    const sources = typeof args.sources === 'string' ? args.sources.trim() : '';
+    const format = String(args.format || 'compact');
+    const limit = Number(args.limit || 10);
 
+    if (!query) return 'Error: query is required.';
     if (!fs.existsSync(ENGINE)) {
       return `Error: research-forums engine not found at ${ENGINE}. Skill not installed correctly.`;
     }
 
-    const cmdParts = ['python3', ENGINE, `"${query.replace(/"/g, '\\"')}"`];
+    const outputDir = path.join(os.homedir(), '.aurix', 'research', 'forums');
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    cmdParts.push(`--emit=${format}`);
-    cmdParts.push(`--limit=${limit}`);
+    const argv = [
+      ENGINE,
+      query,
+      `--emit=${format}`,
+      `--limit=${Math.max(1, Math.min(100, limit))}`,
+    ];
+    if (sources) argv.push(`--search=${sources}`);
 
-    if (sources) {
-      cmdParts.push(`--search=${sources}`);
-    }
-
-    const cmd = cmdParts.join(' ');
-
-    return new Promise<string>((resolve) => {
-      const outputDir = path.join(os.homedir(), '.aurix', 'research', 'forums');
-      if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-
-      exec(
-        cmd,
-        {
-          timeout: 120000,
-          maxBuffer: 10 * 1024 * 1024,
-          cwd: SKILL_DIR,
-          env: {
-            ...process.env,
-            SKILL_DIR,
-            PYTHONPATH: path.join(SKILL_DIR, 'scripts'),
-          },
+    try {
+      const { stdout, stderr } = await execFileAsync('python3', argv, {
+        timeout: 120000,
+        maxBuffer: 10 * 1024 * 1024,
+        cwd: SKILL_DIR,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          SKILL_DIR,
+          PYTHONPATH: path.join(SKILL_DIR, 'scripts'),
         },
-        (err, stdout, stderr) => {
-          if (err && !stdout) {
-            const errMsg = stderr || err.message;
-            if (errMsg.includes('Python 3.12')) {
-              resolve(
-                'Error: research-forums requires Python 3.12+. Install with: apt install python3.12'
-              );
-              return;
-            }
-            if (errMsg.includes('API key') || errMsg.includes('API_KEY')) {
-              resolve(
-                `Note: Some sources need API keys for full results.\nSet in environment: SCRAPECREATORS_API_KEY, XAI_API_KEY, BRAVE_API_KEY, APIFY_API_TOKEN\n\nPartial results:\n${stdout || 'No results available without API keys.'}`
-              );
-              return;
-            }
-            resolve(`Error running research-forums: ${errMsg.slice(0, 500)}`);
-            return;
-          }
+      });
 
-          const result = stdout.trim();
-          const filename = query.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
-          const outputFile = path.join(
-            outputDir,
-            `${filename}-${Date.now()}.${format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'}`
-          );
-          fs.writeFileSync(outputFile, result);
-
-          const activeSources = sources || 'reddit,x,youtube,hackernews,github,web';
-          resolve(
-            `${result}\n\n---\n📊 Sources searched: ${activeSources}\n💾 Saved: ${outputFile}`
-          );
-        }
+      const result = String(stdout || '').trim();
+      const filename = query.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
+      const outputFile = path.join(
+        outputDir,
+        `${filename}-${Date.now()}.${format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'}`
       );
-    });
+      fs.writeFileSync(outputFile, result || String(stderr || '').trim());
+
+      const activeSources = sources || 'reddit,x,youtube,hackernews,github,web';
+      return `${result || String(stderr || '').trim()}\n\n---\n📊 Sources searched: ${activeSources}\n💾 Saved: ${outputFile}`;
+    } catch (e: any) {
+      const errMsg = String(e.stderr || e.stdout || e.message || e);
+      if (errMsg.includes('Python 3.12')) {
+        return 'Error: research-forums requires Python 3.12+. Install with: apt install python3.12';
+      }
+      const partial = String(e.stdout || '').trim();
+      if (errMsg.includes('API key') || errMsg.includes('API_KEY')) {
+        return `Note: Some sources need API keys for full results.\nSet in environment: SCRAPECREATORS_API_KEY, XAI_API_KEY, BRAVE_API_KEY, APIFY_API_TOKEN\n\nPartial results:\n${partial || 'No results available without API keys.'}`;
+      }
+      if (partial) {
+        const filename = query.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50);
+        const outputFile = path.join(
+          outputDir,
+          `${filename}-${Date.now()}.${format === 'json' ? 'json' : format === 'html' ? 'html' : 'md'}`
+        );
+        fs.writeFileSync(outputFile, partial);
+        const activeSources = sources || 'reddit,x,youtube,hackernews,github,web';
+        return `${partial}\n\n---\n⚠️ research-forums exited with warnings: ${errMsg.slice(0, 300)}\n📊 Sources searched: ${activeSources}\n💾 Saved: ${outputFile}`;
+      }
+      return `Error running research-forums: ${errMsg.slice(0, 500)}`;
+    }
   },
 };

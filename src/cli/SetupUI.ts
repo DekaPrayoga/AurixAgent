@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import readline from 'readline';
+import { readClipboard, writeClipboard } from './InputBox.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 const teal = chalk.hex('#fab283');
@@ -56,13 +57,6 @@ export function drawInputScreen(opts: {
 
     // Enable bracketed paste so terminals that support it wrap paste
     if (process.stdout.isTTY) process.stdout.write('\x1b[?2004h');
-
-    // Pre-import readClipboard synchronously to avoid async race conditions
-    let readClipboardFn: (() => Promise<string | undefined>) | null = null;
-    try {
-      const mod = require('./InputBox.js');
-      readClipboardFn = mod.readClipboard || null;
-    } catch {}
 
     let escBuf = '';
     let escTimer: NodeJS.Timeout | null = null;
@@ -252,16 +246,15 @@ export function drawInputScreen(opts: {
 
       if (c === 22) {
         // Ctrl+V — paste from clipboard (raw mode sends 0x16 instead of clipboard content)
-        if (readClipboardFn) {
-          readClipboardFn()
-            .then((clip) => {
-              if (clip) {
-                buf += safeDisplayText(clip);
-                renderLine();
-              }
-            })
-            .catch(() => {});
-        }
+        readClipboard()
+          .then((clip) => {
+            if (clip) {
+              buf += safeDisplayText(clip);
+              cursor = buf.length;
+              renderLine();
+            }
+          })
+          .catch(() => {});
         return;
       }
 
@@ -291,9 +284,12 @@ export function drawInputScreen(opts: {
         return;
       }
 
-      // Ctrl+C — copy if there is text, otherwise exit.
-      // But standard CLI UX expects Ctrl+C to exit.
+      // Ctrl+C — copy the current input when available, otherwise exit.
       if (c === 3) {
+        if (buf) {
+          writeClipboard(buf);
+          return;
+        }
         stdin.removeListener('data', onData);
         if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
         if (process.stdout.isTTY) process.stdout.write('\x1b[?2004l');

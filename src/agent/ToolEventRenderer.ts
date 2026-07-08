@@ -176,6 +176,7 @@ export function renderToolStart(
     generate_pptx: 'Generating Slides',
     generate_excel: 'Generating Spreadsheet',
     email: 'Composing Email',
+    temp_mailing: 'Temp-Mailing',
   };
   if (documentLabels[lower])
     return `📄 ${bold(documentLabels[lower], markdown)}\n${shortPath(file) || detail || name}`;

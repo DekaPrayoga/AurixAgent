@@ -1,4 +1,10 @@
+import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
+import { promisify } from 'util';
 import type { Tool } from './Registry.js';
+
+const execFileAsync = promisify(execFile);
 
 export const deployTools: Tool[] = [
   {
@@ -12,14 +18,20 @@ export const deployTools: Tool[] = [
       },
     },
     async execute(args) {
-      const { execSync } = await import('child_process');
-      const dir = (args.directory as string) || '.';
-      const prod = args.prod ? '--prod' : '';
+      const dir = resolve(String(args.directory || '.'));
+      if (!existsSync(dir)) return `Deployment failed: directory does not exist: ${dir}`;
+      if (!(await commandExists('vercel'))) {
+        return 'Deployment failed: vercel CLI is not installed or not on PATH. Install and authenticate it first, then retry.';
+      }
+
+      const argv = ['deploy', '--yes'];
+      if (args.prod) argv.push('--prod');
+
       try {
-        const output = execSync(`cd ${dir} && npx vercel deploy ${prod} --yes 2>&1`, { encoding: 'utf8', timeout: 120000 });
+        const output = await runVercel(argv, dir, 120000);
         return `Deployment complete:\n${output}`;
       } catch (e: any) {
-        return `Deployment failed:\n${(e.stderr || e.stdout || e.message).slice(0, 2000)}`;
+        return `Deployment failed:\n${e.message.slice(0, 2000)}`;
       }
     },
   },
@@ -33,7 +45,7 @@ export const deployTools: Tool[] = [
       },
     },
     async execute(args) {
-      const dir = (args.directory as string) || 'dist';
+      const dir = String(args.directory || 'dist');
       return `To deploy to GitHub Pages:\n\n\`\`\`bash\n# 1. Build your project\nnpm run build\n\n# 2. Deploy (using gh-pages)\nnpx gh-pages -d ${dir}\n\n# Or use GitHub Actions:\n# Create .github/workflows/deploy.yml\n\`\`\``;
     },
   },
@@ -73,12 +85,13 @@ export const deployTools: Tool[] = [
       },
     },
     async execute(args) {
-      const { execSync } = await import('child_process');
       const platform = (args.platform as string) || 'vercel';
       if (platform === 'vercel') {
+        if (!(await commandExists('vercel'))) {
+          return 'Could not check Vercel status: vercel CLI is not installed or not on PATH.';
+        }
         try {
-          const out = execSync('npx vercel ls 2>&1', { encoding: 'utf8', timeout: 30000 });
-          return out;
+          return await runVercel(['ls'], process.cwd(), 30000);
         } catch (e: any) {
           return `Could not check Vercel status: ${e.message}\nMake sure vercel CLI is installed and authenticated.`;
         }
@@ -87,3 +100,27 @@ export const deployTools: Tool[] = [
     },
   },
 ];
+
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await execFileAsync(command, ['--version'], { encoding: 'utf8', timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runVercel(args: string[], cwd: string, timeout: number): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync('vercel', args, {
+      cwd,
+      encoding: 'utf8',
+      timeout,
+      maxBuffer: 5 * 1024 * 1024,
+      env: { ...process.env, CI: '1' },
+    });
+    return [stdout, stderr].filter(Boolean).join('\n').trim() || '(no output)';
+  } catch (e: any) {
+    throw new Error(String(e.stderr || e.stdout || e.message || e));
+  }
+}

@@ -2330,8 +2330,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           return;
         } else if (commandName.startsWith('tool:')) {
           const toolName = commandName.slice(5);
-          const tool = registry.get(toolName);
-          addAssistant(tool ? `${tool.name}\n${tool.description}` : `Tool not found: ${toolName}`);
+          const tool =
+            registry.get(toolName) ||
+            registry.list().find((t) => t.displayName?.toLowerCase() === toolName.toLowerCase());
+          addAssistant(
+            tool
+              ? `${tool.displayName || tool.name}\nFunction name: ${tool.name}\n${tool.description}`
+              : `Tool not found: ${toolName}`
+          );
           return;
         }
 

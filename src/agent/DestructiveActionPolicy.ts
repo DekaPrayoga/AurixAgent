@@ -10,6 +10,11 @@ export interface DependencyInstallCommandMatch {
   reason: string;
 }
 
+export interface SensitiveToolActionMatch {
+  command: string;
+  reason: string;
+}
+
 const DELETE_COMMAND_PATTERNS: Array<{
   pattern: RegExp;
   tool: 'delete_file' | 'delete_folder';
@@ -153,6 +158,30 @@ export function formatBlockedDeleteCommand(match: DestructiveCommandMatch): stri
 
 export function requiresManualDeleteApproval(toolName: string): boolean {
   return toolName === 'delete_file' || toolName === 'delete_folder';
+}
+
+export function requiresManualSensitiveToolApproval(
+  toolName: string,
+  args: Record<string, unknown>
+): SensitiveToolActionMatch | null {
+  const action = typeof args.action === 'string' ? args.action : '';
+  if (toolName === 'browser' && action === 'extract-cookies') {
+    return { command: 'browser extract-cookies', reason: 'local browser credential export' };
+  }
+  if (
+    toolName === 'docker_manage' &&
+    ['build', 'run', 'stop', 'rm', 'compose-up', 'compose-down'].includes(action)
+  ) {
+    return { command: `docker_manage ${action}`, reason: 'Docker mutation' };
+  }
+  if (toolName === 'vps') {
+    const target = typeof args.target === 'string' ? args.target : '';
+    return {
+      command: `vps ${action || '(unknown)'}${target ? ` ${target}` : ''}`,
+      reason: 'VPS tool runs privileged shell commands',
+    };
+  }
+  return null;
 }
 
 export function requiresManualDependencyInstallApproval(

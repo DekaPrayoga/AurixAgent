@@ -1,9 +1,13 @@
-import { exec } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
 import type { Tool } from './Registry.js';
+
+const execFileAsync = promisify(execFile);
 
 export const emailTool: Tool = {
   name: 'email',
-  description: 'Compose and send emails via SMTP or CLI tools (himalaya, msmtp, sendmail, mutt). Supports HTML body, attachments, CC/BCC.',
+  description:
+    'Compose and send emails via SMTP or CLI tools (himalaya, msmtp, sendmail, mutt). Supports HTML body, attachments, CC/BCC.',
   parameters: {
     type: 'object',
     properties: {
@@ -35,6 +39,14 @@ export const emailTool: Tool = {
         type: 'string',
         description: 'File path to attach',
       },
+      id: {
+        type: 'string',
+        description: 'Message id for read action',
+      },
+      query: {
+        type: 'string',
+        description: 'Search query for search action',
+      },
     },
     required: ['action'],
   },
@@ -59,16 +71,18 @@ export const emailTool: Tool = {
 };
 
 async function sendEmail(args: Record<string, unknown>): Promise<string> {
-  const to = args.to as string;
-  const subject = args.subject as string;
-  const body = args.body as string;
-  const cc = args.cc as string;
-  const bcc = args.bcc as string;
-  const attachment = args.attachment as string;
+  const to = asString(args.to);
+  const subject = asString(args.subject);
+  const body = asString(args.body);
+  const cc = asString(args.cc);
+  const bcc = asString(args.bcc);
+  const attachment = asString(args.attachment);
 
   if (!to || !subject || !body) {
     return 'Error: to, subject, and body are required for sending email';
   }
+  const badHeader = [to, subject, cc, bcc].find((value) => /[\r\n]/.test(value));
+  if (badHeader) return 'Error: email headers must not contain newlines.';
 
   const himalaya = await tryHimalaya(to, subject, body, cc, bcc, attachment);
   if (himalaya) return himalaya;
@@ -79,50 +93,67 @@ async function sendEmail(args: Record<string, unknown>): Promise<string> {
   return composeMailto(to, subject, body, cc, bcc);
 }
 
-async function tryHimalaya(to: string, subject: string, body: string, cc?: string, bcc?: string, attachment?: string): Promise<string | null> {
-  return new Promise(resolve => {
-    exec('which himalaya 2>/dev/null', (err) => {
-      if (err) { resolve(null); return; }
+async function tryHimalaya(
+  to: string,
+  subject: string,
+  body: string,
+  cc?: string,
+  bcc?: string,
+  attachment?: string
+): Promise<string | null> {
+  if (!(await commandExists('himalaya'))) return null;
 
-      let cmd = `echo "${body.replace(/"/g, '\\"')}" | himalaya write --to "${to}" --subject "${subject.replace(/"/g, '\\"')}"`;
-      if (cc) cmd += ` --cc "${cc}"`;
-      if (bcc) cmd += ` --bcc "${bcc}"`;
-      if (attachment) cmd += ` --attachment "${attachment}"`;
-      cmd += ' --send';
+  const argv = ['write', '--to', to, '--subject', subject];
+  if (cc) argv.push('--cc', cc);
+  if (bcc) argv.push('--bcc', bcc);
+  if (attachment) argv.push('--attachment', attachment);
+  argv.push('--send');
 
-      exec(cmd, { timeout: 30000 }, (err2, stdout, stderr) => {
-        if (err2) resolve(`Himalaya error: ${stderr || err2.message}`);
-        else resolve(`Email sent to ${to}: ${subject}`);
-      });
-    });
-  });
+  try {
+    await runWithStdin('himalaya', argv, body, 30000);
+    return `Email sent to ${to}: ${subject}`;
+  } catch (e: any) {
+    return `Himalaya error: ${e.message}`;
+  }
 }
 
-async function tryMsmtp(to: string, subject: string, body: string, cc?: string, bcc?: string): Promise<string | null> {
-  return new Promise(resolve => {
-    exec('which msmtp 2>/dev/null', (err) => {
-      if (err) { resolve(null); return; }
+async function tryMsmtp(
+  to: string,
+  subject: string,
+  body: string,
+  cc?: string,
+  bcc?: string
+): Promise<string | null> {
+  if (!(await commandExists('msmtp'))) return null;
 
-      const headers = [
-        `To: ${to}`,
-        `Subject: ${subject}`,
-        `From: ${process.env.AURIX_EMAIL || 'aurix@agent'}`,
-        cc ? `Cc: ${cc}` : '',
-        bcc ? `Bcc: ${bcc}` : '',
-        'Content-Type: text/plain; charset=UTF-8',
-        '',
-        body,
-      ].filter(Boolean).join('\n');
+  const headers = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `From: ${process.env.AURIX_EMAIL || 'aurix@agent'}`,
+    cc ? `Cc: ${cc}` : '',
+    'Content-Type: text/plain; charset=UTF-8',
+    '',
+    body,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const recipients = splitRecipients(to).concat(splitRecipients(cc), splitRecipients(bcc));
 
-      exec(`echo "${headers.replace(/"/g, '\\"')}" | msmtp "${to}"`, { timeout: 30000 }, (err2, stdout, stderr) => {
-        if (err2) resolve(`msmtp error: ${stderr || err2.message}`);
-        else resolve(`Email sent to ${to}: ${subject}`);
-      });
-    });
-  });
+  try {
+    await runWithStdin('msmtp', recipients, headers, 30000);
+    return `Email sent to ${to}: ${subject}`;
+  } catch (e: any) {
+    return `msmtp error: ${e.message}`;
+  }
 }
 
-function composeMailto(to: string, subject: string, body: string, cc?: string, bcc?: string): string {
+function composeMailto(
+  to: string,
+  subject: string,
+  body: string,
+  cc?: string,
+  bcc?: string
+): string {
   let mailto = `mailto:${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   if (cc) mailto += `&cc=${encodeURIComponent(cc)}`;
   if (bcc) mailto += `&bcc=${encodeURIComponent(bcc)}`;
@@ -140,30 +171,98 @@ async function draftEmail(args: Record<string, unknown>): Promise<string> {
 }
 
 async function listEmails(): Promise<string> {
-  return new Promise(resolve => {
-    exec('himalaya list --page-size 10 2>/dev/null', { timeout: 15000 }, (err, stdout) => {
-      if (err) resolve('himalaya not installed. Install with: cargo install himalaya');
-      else resolve(stdout.trim() || 'No emails found');
+  if (!(await commandExists('himalaya')))
+    return 'himalaya not installed. Install with: cargo install himalaya';
+  try {
+    const { stdout } = await execFileAsync('himalaya', ['list', '--page-size', '10'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
     });
-  });
+    return String(stdout).trim() || 'No emails found';
+  } catch {
+    return 'himalaya not installed or email list unavailable';
+  }
 }
 
 async function readEmail(args: Record<string, unknown>): Promise<string> {
-  return new Promise(resolve => {
-    const id = args.id || '1';
-    exec(`himalaya read ${id} 2>/dev/null`, { timeout: 15000 }, (err, stdout) => {
-      if (err) resolve('himalaya not installed or email not found');
-      else resolve(stdout.trim());
+  if (!(await commandExists('himalaya')))
+    return 'himalaya not installed. Install with: cargo install himalaya';
+  const id = asString(args.id) || '1';
+  if (!/^[A-Za-z0-9_.:@-]+$/.test(id)) return `Error: unsafe email id: ${id}`;
+  try {
+    const { stdout } = await execFileAsync('himalaya', ['read', id], {
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
     });
-  });
+    return String(stdout).trim();
+  } catch {
+    return 'himalaya email not found or read failed';
+  }
 }
 
 async function searchEmails(args: Record<string, unknown>): Promise<string> {
-  const query = args.query as string || '';
-  return new Promise(resolve => {
-    exec(`himalaya list --query "${query}" 2>/dev/null`, { timeout: 15000 }, (err, stdout) => {
-      if (err) resolve('himalaya not installed');
-      else resolve(stdout.trim() || 'No results');
+  if (!(await commandExists('himalaya'))) return 'himalaya not installed';
+  const query = asString(args.query);
+  try {
+    const { stdout } = await execFileAsync('himalaya', ['list', '--query', query], {
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
     });
+    return String(stdout).trim() || 'No results';
+  } catch {
+    return 'himalaya search failed';
+  }
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function splitRecipients(value?: string): string[] {
+  return (value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  try {
+    await execFileAsync(command, ['--version'], { timeout: 5000, encoding: 'utf8' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runWithStdin(
+  command: string,
+  args: string[],
+  input: string,
+  timeout: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error(`timeout after ${timeout}ms`));
+    }, timeout);
+
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `${command} exited with ${code}`));
+    });
+    child.stdin?.end(input);
   });
 }

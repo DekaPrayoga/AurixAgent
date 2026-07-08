@@ -300,20 +300,23 @@ async function stepBaseUrl(provider: string): Promise<string | undefined> {
         ? 'anthropic'
         : 'auto';
 
+  const items = [
+    { id: 'custom', label: 'Custom URL', desc: 'Enter your own endpoint' },
+    { id: 'http://localhost:11434/v1', label: 'Ollama', desc: 'localhost:11434' },
+    { id: 'http://localhost:1234/v1', label: 'LM Studio', desc: 'localhost:1234' },
+    { id: 'http://localhost:8080/v1', label: 'vLLM', desc: 'localhost:8080' },
+    {
+      id: 'https://api.openai.com/v1',
+      label: 'OpenAI /v1',
+      desc: 'Official OpenAI-compatible endpoint',
+    },
+  ];
+
   const choice = await drawSelector({
     title: 'Base URL',
-    items: [
-      {
-        id: 'https://api.openai.com/v1',
-        label: 'OpenAI /v1',
-        desc: 'Official OpenAI-compatible endpoint',
-      },
-      { id: 'http://localhost:11434/v1', label: 'Ollama', desc: 'localhost:11434' },
-      { id: 'http://localhost:1234/v1', label: 'LM Studio', desc: 'localhost:1234' },
-      { id: 'http://localhost:8080/v1', label: 'vLLM', desc: 'localhost:8080' },
-      { id: 'custom', label: 'Custom URL', desc: 'Enter your own endpoint' },
-    ],
+    items,
     allowSkip: true,
+    extra: ['Custom URL is selected first so your custom gateway endpoint is not skipped.'],
   });
 
   if (choice === '__skip__' || choice === '__back__') return '__skip__';
@@ -674,7 +677,7 @@ async function stepCaptcha(
       {
         id: 'hybrid',
         label: 'Hybrid (Recommended)',
-        desc: 'Image first, audio fallback (best success rate)',
+        desc: 'Audio first for reCAPTCHA, image fallback for grids/sliders',
       },
       { id: 'image', label: 'Image Clicking', desc: 'AI vision analyzes grid tiles' },
       { id: 'audio', label: 'Audio Captcha', desc: 'Whisper STT transcribes audio challenge' },

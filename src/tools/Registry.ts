@@ -12,6 +12,7 @@ export interface ToolExecutionContext {
 
 export interface Tool {
   name: string;
+  displayName?: string;
   description: string;
   parameters: Record<string, unknown>;
   execute(args: Record<string, unknown>): Promise<string>;
@@ -35,6 +36,7 @@ import { askUserTool } from './AskUser.js';
 import {
   requiresManualDeleteApproval,
   requiresManualDependencyInstallApproval,
+  requiresManualSensitiveToolApproval,
 } from '../agent/DestructiveActionPolicy.js';
 
 export class ToolRegistry {
@@ -143,7 +145,9 @@ export class ToolRegistry {
     const permission = this.getPermissionRequest(tool, args);
     const manualDeleteApproval = requiresManualDeleteApproval(name);
     const dependencyInstallApproval = requiresManualDependencyInstallApproval(name, args);
-    const manualApproval = manualDeleteApproval || Boolean(dependencyInstallApproval);
+    const sensitiveToolApproval = requiresManualSensitiveToolApproval(name, args);
+    const manualApproval =
+      manualDeleteApproval || Boolean(dependencyInstallApproval) || Boolean(sensitiveToolApproval);
     if (manualDeleteApproval) {
       delete args.confirmed;
       delete args._approvedByUser;
@@ -171,7 +175,17 @@ export class ToolRegistry {
                 dependencyInstall: dependencyInstallApproval,
               },
             }
-          : permission;
+          : sensitiveToolApproval
+            ? {
+                ...permission,
+                risk: 'execute' as const,
+                summary: `${sensitiveToolApproval.reason}: ${sensitiveToolApproval.command}`,
+                arguments: {
+                  ...permission.arguments,
+                  sensitiveAction: sensitiveToolApproval,
+                },
+              }
+            : permission;
         const reply = await this.permissionHandler(manualPermission);
         if (reply === 'deny') return `Permission denied for ${name}.`;
         if (manualDeleteApproval) args._approvedByUser = true;
@@ -211,12 +225,14 @@ function classifyRisk(
 ): ToolPermissionRequest['risk'] | null {
   if (name === 'read_file' || name === 'search_files') return 'read';
   if (name === 'write_file' || name === 'delete_file' || name === 'delete_folder') return 'write';
-  if (name === 'terminal' || name === 'code_exec') return 'execute';
+  if (name === 'terminal' || name === 'code_exec' || name === 'docker_manage' || name === 'vps')
+    return 'execute';
   if (name === 'git_advanced') return 'external';
   if (name.startsWith('gh_') || name.startsWith('github_')) return 'external';
   if (name === 'email') {
     return args.action === 'send' ? 'external' : 'network';
   }
+  if (name === 'temp_mailing') return 'network';
   if (
     name.includes('deploy') ||
     name.includes('cloud') ||

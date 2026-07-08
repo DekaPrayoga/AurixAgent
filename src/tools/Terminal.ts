@@ -41,12 +41,13 @@ async function runCommand(
   timeout: number,
   context?: ToolExecutionContext
 ): Promise<string> {
+  const timeoutOption = timeout > 0 ? timeout : undefined;
   if (!context?.onEvent) {
     return new Promise((resolve) => {
       const shell = process.platform === 'win32' ? true : '/bin/bash';
       exec(
         command,
-        { timeout, maxBuffer: 1024 * 1024 * 5, shell: shell as any },
+        { timeout: timeoutOption, maxBuffer: 1024 * 1024 * 5, shell: shell as any },
         (err: any, stdout: any, stderr: any) => {
           const output = [];
           if (stdout) output.push(stdout.trim());
@@ -68,13 +69,15 @@ async function runCommand(
     const stderrLine = { value: '' };
     let timedOut = false;
 
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      }, 1000).unref?.();
-    }, timeout);
+    const timer = timeout > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill('SIGTERM');
+          setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+          }, 1000).unref?.();
+        }, timeout)
+      : undefined;
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
@@ -86,13 +89,13 @@ async function runCommand(
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       context.onEvent?.({ type: 'chunk', stream: 'stderr', data: `spawn error: ${err.message}` });
       resolve(`Error executing command: ${err.message}`);
     });
 
     child.on('close', (code) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       flushLine(context, 'stdout', stdoutLine);
       flushLine(context, 'stderr', stderrLine);
       const stdout = Buffer.concat(stdoutChunks).toString().trim();
@@ -114,7 +117,7 @@ export const terminalTool: Tool = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
-      timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+      timeout: { type: 'number', description: 'Timeout in milliseconds. 0 or omitted means no timeout; set this for fragile or long-lived commands.' },
     },
     required: ['command'],
   },
@@ -122,14 +125,14 @@ export const terminalTool: Tool = {
     const command = args.command as string;
     const blocked = detectBlockedDeleteCommand(command);
     if (blocked) return formatBlockedDeleteCommand(blocked);
-    const timeout = (args.timeout as number) || 30000;
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 0;
     return runCommand(command, timeout);
   },
   async executeWithEvents(args, context) {
     const command = args.command as string;
     const blocked = detectBlockedDeleteCommand(command);
     if (blocked) return formatBlockedDeleteCommand(blocked);
-    const timeout = (args.timeout as number) || 30000;
+    const timeout = typeof args.timeout === 'number' ? args.timeout : 0;
     return runCommand(command, timeout, context);
   },
 };

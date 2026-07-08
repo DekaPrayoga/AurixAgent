@@ -1341,38 +1341,37 @@ export class AgentLoop {
           'browser',
         ]);
         const MAX_RESULT_LEN = 8000;
-        const DEFAULT_TIMEOUT = 180_000;
+        const NO_TIMEOUT = 0;
+        const QUICK_TIMEOUT = 30_000;
+        const MEDIUM_TIMEOUT = 180_000;
         const HEAVY_TIMEOUT = 600_000;
 
         const HEAVY_PATTERNS =
           /gradle|cargo\s+build|docker\s+build|npm\s+(run\s+)?build|webpack|vite\s+build|tsc\s+--|make\s+|cmake|mvn\s+|bazel|gcc\s+|g\+\+\s+|rustc|apt\s+install|brew\s+install|pip\s+install|yarn\s+build|bun\s+build|esbuild|rollup|flutter\s+build|react-native\s+run|assembleDebug|assembleRelease/i;
+        const FRAGILE_PATTERNS =
+          /\b(npm|pnpm|yarn|bun)\s+(install|add|update|upgrade)\b|\b(pip|pip3|uv|poetry|cargo|go|gem|composer)\s+(install|add|update)\b|\b(apt|apt-get|dnf|yum|pacman|apk|brew)\s+(install|update|upgrade)\b|\bdocker\s+(pull|push|compose\s+up)\b|\bvercel\s+deploy\b|\bgit\s+(push|pull|fetch|clone)\b|\bcurl\b|\bwget\b/i;
+        const HANGING_PATTERNS =
+          /\b(npm|pnpm|yarn|bun)\s+run\s+(dev|start|serve|watch)\b|\b(vite|next|nuxt|webpack-dev-server|nodemon|tsx\s+watch)\b|\btail\s+-f\b|\bdocker\s+logs\s+-f\b|\bjournalctl\s+-f\b|\bping\b(?![^\n]*\s-c\s*\d)|\byes\b|\bsleep\s+\d{3,}\b/i;
 
         const getToolTimeout = (name: string, args: Record<string, any>): number => {
-          if (
-            name === 'terminal' ||
-            name === 'backend' ||
-            name === 'vps' ||
-            name === 'deploy' ||
-            name === 'cloud'
-          ) {
-            const cmd = (args.command || args.cmd || '') as string;
+          if (typeof args.timeout === 'number' && args.timeout >= 0) return args.timeout;
+          const cmd = String(args.command || args.cmd || '');
+          if (name === 'terminal' || name === 'backend') {
+            if (HANGING_PATTERNS.test(cmd)) return QUICK_TIMEOUT;
+            if (FRAGILE_PATTERNS.test(cmd)) return MEDIUM_TIMEOUT;
             if (HEAVY_PATTERNS.test(cmd)) return HEAVY_TIMEOUT;
           }
-          if (name === 'browser') {
-            const action = (args.action || '') as string;
-            if (/^(solve-captcha|signup-assist|signin-assist)$/.test(action)) return HEAVY_TIMEOUT;
-          }
-          if (name === 'research' || name === 'research_forums') return HEAVY_TIMEOUT;
-          return DEFAULT_TIMEOUT;
+          return NO_TIMEOUT;
         };
 
         const withTimeout = <T>(promise: Promise<T>, ms: number, name: string): Promise<T> => {
+          if (!Number.isFinite(ms) || ms <= 0) return promise;
           return new Promise<T>((resolve, reject) => {
             const timer = setTimeout(
               () =>
                 reject(
                   new Error(
-                    `Tool "${name}" timed out after ${Math.round(ms / 1000)}s. If this is a heavy process, it may need more time — try running it in the background.`
+                    `Tool "${name}" timed out after ${Math.round(ms / 1000)}s. Retry with an explicit timeout only if this command is expected to finish, or run long-lived processes in the background.`
                   )
                 ),
               ms

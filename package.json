@@ -77,6 +77,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.7",
     "react-reconciler": "^0.33.0",
+    "sharp": "^0.35.3",
     "sql.js": "^1.14.1",
     "systeminformation": "^5.23.0",
     "undici": "^8.5.0"
