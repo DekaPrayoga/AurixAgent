@@ -69,15 +69,16 @@ async function runCommand(
     const stderrLine = { value: '' };
     let timedOut = false;
 
-    const timer = timeout > 0
-      ? setTimeout(() => {
-          timedOut = true;
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-          }, 1000).unref?.();
-        }, timeout)
-      : undefined;
+    const timer =
+      timeout > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            setTimeout(() => {
+              if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+            }, 1000).unref?.();
+          }, timeout)
+        : undefined;
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdoutChunks.push(chunk);
@@ -117,7 +118,11 @@ export const terminalTool: Tool = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
-      timeout: { type: 'number', description: 'Timeout in milliseconds. 0 or omitted means no timeout; set this for fragile or long-lived commands.' },
+      timeout: {
+        type: 'number',
+        description:
+          'Timeout in milliseconds. 0 or omitted means no timeout; set this for fragile or long-lived commands.',
+      },
     },
     required: ['command'],
   },
