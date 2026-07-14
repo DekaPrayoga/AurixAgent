@@ -11,11 +11,15 @@ export class WriterAgent extends BaseAgent {
     verdicts: ClaimVerdict[],
     sources: Source[],
     depth: ResearchDepth,
-    format: string
+    format: string,
+    findings: string[] = []
   ) {
-    const includeSources = depth !== 'low' && depth !== 'medium';
+    const includeSources = depth !== 'low';
+    const findingsSection = findings.length
+      ? `\n\nSEARCH FINDINGS:\n${findings.map((f, i) => `${i + 1}. ${f}`).join('\n')}`
+      : '';
     const sourceSection = includeSources
-      ? `\n\nSOURCES:\n${sources.map((s, i) => `${i + 1}. ${s.title}${s.url ? ` (${s.url})` : ''} [${s.reliability}]`).join('\n')}`
+      ? `\n\nSOURCES:\n${sources.map((s, i) => `${i + 1}. ${s.title}${s.url ? ` (${s.url})` : ''}${s.snippet ? ` — ${s.snippet}` : ''} [${s.reliability}]`).join('\n')}`
       : '';
 
     const result = await this.call(
@@ -39,7 +43,7 @@ Output format: ${format || 'DETAILED'}
 - LIST: Bullet-point summary`,
       `Original query: "${query}"\n\nVerified claims and verdicts:\n${verdicts
         .map((v) => `- "${v.claim}": ${v.verdict} (confidence: ${v.confidence}%) — ${v.reasoning}`)
-        .join('\n')}${sourceSection}`
+        .join('\n')}${findingsSection}${sourceSection}`
     );
 
     return result;

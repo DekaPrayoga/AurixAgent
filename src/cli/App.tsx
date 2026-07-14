@@ -1668,11 +1668,39 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('Paste an image with Ctrl+V or attach with /image <path>.');
           return;
         } else if (commandName === 'browser') {
-          addAssistant(
-            slash.args
-              ? `Browser: ${slash.args}`
-              : 'Browser CDP connection not configured. Use /browser connect to attach.'
-          );
+          const raw = slash.args.trim();
+          const [subcmd = 'status', ...rest] = raw.split(/\s+/).filter(Boolean);
+          const action = subcmd.toLowerCase();
+          try {
+            if (!raw || action === 'status') {
+              addAssistant(await registry.execute('browser', { action: 'status' }));
+              return;
+            }
+            if (action === 'connect') {
+              const endpoint = rest.join(' ').trim();
+              if (!endpoint) {
+                addAssistant(
+                  'Usage: /browser connect <cdp-endpoint>\nExample: /browser connect http://127.0.0.1:9222'
+                );
+                return;
+              }
+              config.browser = { ...(config.browser || {}), cdpEndpoint: endpoint };
+              saveConfig(config);
+              addAssistant(
+                await registry.execute('browser', { action: 'connect-cdp', value: endpoint })
+              );
+              return;
+            }
+            if (action === 'disconnect') {
+              config.browser = { ...(config.browser || {}), cdpEndpoint: undefined };
+              saveConfig(config);
+              addAssistant(await registry.execute('browser', { action: 'disconnect-cdp' }));
+              return;
+            }
+            addAssistant('Usage: /browser [status|connect <endpoint>|disconnect]');
+          } catch (e: any) {
+            addAssistant(`Browser command failed: ${e.message}`);
+          }
           return;
         } else if (commandName === 'toolsets') {
           addAssistant(
@@ -2487,6 +2515,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           },
         ]);
         return;
+      }
+
+      const sessionDirectives = [
+        sessionGoal ? `[Session goal: ${sessionGoal}]` : '',
+        sessionRules.length > 0 ? `[Session rules:\n${sessionRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}]` : '',
+      ].filter(Boolean);
+      if (sessionDirectives.length > 0) {
+        outboundText = `${sessionDirectives.join('\n')}\n\n${outboundText}`;
       }
 
       const checkpointId = `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;

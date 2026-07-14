@@ -48,6 +48,28 @@ export function parseMarkdownTableBlock(lines: string[], start: number): Markdow
   return { start, end: i, headers, rows };
 }
 
+function parseLoosePipeTableBlock(lines: string[], start: number): MarkdownTable | null {
+  const first = lines[start]?.trim() || '';
+  if (!first.includes('|') || first.startsWith('|') || isDivider(first)) return null;
+
+  const headers = parseRow(first);
+  if (headers.length < 3) return null;
+
+  const rows: string[][] = [];
+  let i = start + 1;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (!line || !line.includes('|') || isDivider(line)) break;
+    const row = parseRow(line);
+    if (row.length !== headers.length || !row.some(Boolean)) break;
+    rows.push(row);
+    i++;
+  }
+
+  if (rows.length === 0) return null;
+  return { start, end: i, headers, rows };
+}
+
 function normalizeMarkdown(text: string): string {
   return text
     .replace(/\*\*([^*\n]+)\*\*/g, '$1')
@@ -69,6 +91,42 @@ function normalizeTable(
       Array.from({ length: colCount }, (_, i) => normalizeMarkdown(row[i] || ''))
     ),
   };
+}
+
+function repairInlineMarkdownTables(text: string): string {
+  const rowSplit = text.replace(/\|\s+\|/g, '|\n|');
+  const lines = rowSplit.split('\n');
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    if (!trimmed.includes('|') || trimmed.startsWith('|')) {
+      out.push(line);
+      continue;
+    }
+
+    const next = lines[i + 1]?.trim() || '';
+    if (!next || !isDivider(next)) {
+      out.push(line);
+      continue;
+    }
+
+    const firstPipe = line.indexOf('|');
+    const prefix = line.slice(0, firstPipe).trim();
+    const suffix = line.slice(firstPipe).trim();
+    const dividerCells = parseRow(next).length;
+    const suffixCells = parseRow(suffix).length;
+    const fullCells = parseRow(line).length;
+
+    if (prefix && suffixCells === dividerCells && fullCells !== dividerCells) {
+      out.push(prefix, suffix);
+    } else {
+      out.push(`| ${trimmed.replace(/^\||\|$/g, '').trim()} |`);
+    }
+  }
+
+  return out.join('\n');
 }
 
 function escapeTableCell(text: string): string {
@@ -93,7 +151,7 @@ export function renderMarkdownTableAsBlocks(headers: string[], rows: string[][])
 }
 
 export function markdownTablesToBlockCards(text: string): string {
-  const lines = text.split('\n');
+  const lines = repairInlineMarkdownTables(text).split('\n');
   const out: string[] = [];
 
   for (let i = 0; i < lines.length; ) {
@@ -118,9 +176,11 @@ export function markdownTablesToBlockCards(text: string): string {
       continue;
     }
 
-    const table = parseMarkdownTableBlock(lines, i);
+    const table = parseMarkdownTableBlock(lines, i) || parseLoosePipeTableBlock(lines, i);
     if (table) {
+      if (out.length > 0 && out[out.length - 1].trim() !== '') out.push('');
       out.push(renderMarkdownTableAsBlocks(table.headers, table.rows));
+      if (table.end < lines.length && lines[table.end]?.trim()) out.push('');
       i = table.end;
       continue;
     }
@@ -199,13 +259,37 @@ function normalizeSeparators(text: string): string {
   return text.replace(/^[\s─━═—-]{10,}\s*$/gm, '---');
 }
 
+function splitInlineMarkdownTables(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const firstPipe = line.indexOf('|');
+    const next = lines[i + 1]?.trim() || '';
+    if (firstPipe > 0 && isDivider(next) && line.slice(firstPipe).split('|').length >= 4) {
+      const prefix = line.slice(0, firstPipe).trim();
+      const tableStart = line.slice(firstPipe).trim();
+      if (prefix && tableStart.startsWith('|')) {
+        out.push(prefix, tableStart);
+        continue;
+      }
+    }
+    out.push(line);
+  }
+
+  return out.join('\n');
+}
+
 export function formatStructuredOutput(
   text: string,
   surface: StructuredSurface = 'gateway'
 ): string {
   if (surface === 'docs') return text;
   return normalizeSeparators(
-    removeTrailingOffers(removeIntroSpam(markdownTablesToBlockCards(text)))
+    removeTrailingOffers(
+      removeIntroSpam(markdownTablesToBlockCards(splitInlineMarkdownTables(text)))
+    )
   );
 }
 
@@ -222,4 +306,5 @@ export const STRUCTURED_OUTPUT_PROMPT = `# Structured output formatting
   | Example A | General | 123 | 🟢 Good |
   | Example B | General | 456 | 🟡 Watch |
 - Use markdown pipe tables for structured chat answers when a compact summary is clearer; the runtime preserves pipe tables for gateway/mobile surfaces instead of converting them into box/ascii grids.
+- For sections named like source confidence, benchmark results, claim status, model comparison, release status, pricing, specs, or capabilities, ALWAYS format the dense rows as a markdown pipe table with a header and divider row. Do not write loose A | B | C rows inside a paragraph.
 - Use vertical label/value blocks only when each item has too many fields for a readable table.`;

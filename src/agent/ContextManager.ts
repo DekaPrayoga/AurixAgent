@@ -1,5 +1,6 @@
 import type { Provider, Message } from '../providers/index.js';
 import { countTokens } from './TokenCounter.js';
+import { fallbackModelContextLimit } from './ModelContext.js';
 
 export interface ContextStats {
   totalTokens: number;
@@ -8,32 +9,28 @@ export interface ContextStats {
   estimatedPct: number;
 }
 
-const CONTEXT_LIMITS: Record<string, number> = {
-  'gpt-4o': 128_000,
-  'gpt-4o-mini': 128_000,
-  'gpt-4-turbo': 128_000,
-  'gpt-4': 8_192,
-  'o1-preview': 128_000,
-  'o1': 128_000,
-  'claude-sonnet-4-20250514': 200_000,
-  'claude-opus-4-20250514': 200_000,
-  'claude-3-5-haiku-20241022': 200_000,
-  'claude-3-5-sonnet-20241022': 200_000,
-};
-
-const DEFAULT_LIMIT = 128_000;
-const COMPACT_THRESHOLD = 0.75;
+const COMPACT_THRESHOLD = 0.85;
 
 export class ContextManager {
   private compactCount = 0;
+  private contextLimit: number;
 
   constructor(
     private provider: Provider,
     private model: string,
-  ) {}
+    contextLimit?: number
+  ) {
+    this.contextLimit = contextLimit || fallbackModelContextLimit(model);
+  }
+
+  setContextLimit(limit: number): void {
+    if (Number.isFinite(limit) && limit > 0) this.contextLimit = Math.round(limit);
+  }
 
   getContextLimit(): number {
-    return CONTEXT_LIMITS[this.model] || DEFAULT_LIMIT;
+    const configured = Number(process.env.AURIX_CONTEXT_LIMIT || process.env.CONTEXT_LIMIT || '');
+    if (Number.isFinite(configured) && configured > 0) return configured;
+    return this.contextLimit;
   }
 
   estimateTokens(messages: Message[]): number {
@@ -75,8 +72,8 @@ export class ContextManager {
     while (cutoff > 1) {
       const prev = messages[cutoff - 1];
       if (prev.role === 'assistant' && prev.toolCalls?.length) {
-        const ids = prev.toolCalls.map(tc => tc.id).filter(Boolean);
-        if (ids.some(id => seenToolIds.has(id))) {
+        const ids = prev.toolCalls.map((tc) => tc.id).filter(Boolean);
+        if (ids.some((id) => seenToolIds.has(id))) {
           cutoff -= 1;
           continue;
         }
@@ -95,10 +92,10 @@ export class ContextManager {
     if (toSummarize.length < 3) return messages;
 
     const conversationText = toSummarize
-      .map(m => {
+      .map((m) => {
         if (m.role === 'tool') return `[tool: ${m.toolCallId}] ${m.content.slice(0, 200)}`;
         if (m.role === 'assistant' && m.toolCalls?.length) {
-          const toolNames = m.toolCalls.map(tc => tc.name).join(', ');
+          const toolNames = m.toolCalls.map((tc) => tc.name).join(', ');
           return `[assistant: used tools: ${toolNames}] ${m.content.slice(0, 300)}`;
         }
         return `[${m.role}]: ${m.content.slice(0, 500)}`;

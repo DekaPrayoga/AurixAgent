@@ -11,6 +11,8 @@ import {
 } from './SessionStore.js';
 import { agentObserverBus } from './AgentObserverBus.js';
 
+const CRON_MAX_ITERATIONS = 40;
+
 export interface CronTarget {
   platform?: string;
   channelId?: string;
@@ -134,7 +136,9 @@ export class CronDaemon {
       const config = loadConfig();
       const agent = new AgentLoop(config, this.registry);
       agent.setSessionKey(`cron:${id}`);
+      agent.setMaxIterations(CRON_MAX_ITERATIONS);
       let finalText = '';
+      let runError: string | undefined;
       const prompt = `[CRON TRIGGERED TASK]\n${job.prompt}\n\nRun autonomously. If this job has a gateway delivery target, produce a concise final answer suitable for sending to that chat.`;
       for await (const event of agent.run(prompt)) {
         agentObserverBus.publishAgentEvent('cron', event, {
@@ -143,11 +147,20 @@ export class CronDaemon {
           jobId: id,
         });
         if (event.type === 'text' && event.data) finalText = event.data;
-        if (event.type === 'error' && event.data) finalText = `Error: ${event.data}`;
+        if (event.type === 'error' && event.data) {
+          runError = event.data;
+          finalText = `Error: ${event.data}`;
+        }
       }
       const finishedAt = new Date().toISOString();
       const result = finalText || '(cron job completed with no final text)';
-      if (options.deliver !== false && this.deliver && job.targetPlatform && job.targetChannelId) {
+      if (
+        !runError &&
+        options.deliver !== false &&
+        this.deliver &&
+        job.targetPlatform &&
+        job.targetChannelId
+      ) {
         await this.deliver(job, result);
         agentObserverBus.publish({
           jobId: id,
@@ -167,16 +180,17 @@ export class CronDaemon {
         jobId: id,
         startedAt,
         finishedAt,
-        status: 'success',
-        result,
+        status: runError ? 'error' : 'success',
+        result: runError ? undefined : result,
+        error: runError,
       };
       store.recordScheduledJobRun(run);
       agentObserverBus.publish({
         jobId: id,
         source: 'cron',
         eventType: 'run_end',
-        status: 'success',
-        summary: result,
+        status: runError ? 'error' : 'success',
+        summary: runError || result,
         payload: { runId, finishedAt },
       });
       return run;

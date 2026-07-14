@@ -26,6 +26,7 @@ import {
   formatStructuredOutput,
   STRUCTURED_OUTPUT_PROMPT,
 } from '../utils/StructuredOutputFormat.js';
+import { webSearchTool } from '../tools/WebSearch.js';
 
 const DEPTH_AGENTS: Record<ResearchDepth, string[]> = {
   low: [],
@@ -123,8 +124,53 @@ export class ResearchPipeline {
     this.finalReviewer = new FinalReviewer(this.provider);
   }
 
+  private webQueries(query: string, mode: ResearchDepth): string[] {
+    const base = query.replace(/^\[[^\]]+\]\s*/, '').trim();
+    const queries = [base];
+    if (/benchmark|model|grok|claude|gpt|gemini|llm|ai/i.test(base)) {
+      queries.push(`${base} official announcement benchmark`);
+      queries.push(`${base} independent benchmark results`);
+    }
+    if (['xhigh', 'max', 'ultra'].includes(mode)) queries.push(`${base} latest news release`);
+    return [...new Set(queries)].slice(0, mode === 'medium' ? 2 : 4);
+  }
+
+  private sourcesFromSearch(raw: string): Source[] {
+    const sources: Source[] = [];
+    const lines = raw.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const url = lines[i].trim();
+      if (!/^https?:\/\//i.test(url)) continue;
+      const title = (lines[i - 1] || url).replace(/^\d+\.\s*/, '').trim() || url;
+      const snippet = (lines[i + 1] || '').trim();
+      sources.push({ title, url, snippet, reliability: 'medium' });
+    }
+    return sources;
+  }
+
+  private effectiveDepth(query: string, requestedMode: ResearchDepth): ResearchDepth {
+    const lower = query.toLowerCase();
+    const explicitResearch =
+      /\b(research|riset|research dulu|web search|web_search|webfetch|web fetch|search web|benchmark|benchmarks?|sources?|citation|rilis|released?|launch(?:ed)?)\b/i.test(
+        query
+      );
+    const heavyResearch =
+      /\b(scientific|jurnal|journal|paper|literature review|systematic review|meta-analysis|academic|clinical|market analysis|analisa market|financial model|forecast|forecasting|due diligence|risk analysis|competitive intelligence|thesis|whitepaper|comprehensive report|publication-grade|multi-source investigation|investigasi mendalam)\b/i.test(
+        lower
+      );
+    const lightweightLookup =
+      /\b(kapan|when|tanggal|date|rilis|released?|launch(?:ed)?|hari ini|latest|baru|web search|web_search|webfetch|cek|check|cari)\b/i.test(
+        lower
+      );
+
+    if (requestedMode === 'low' && explicitResearch) return 'medium';
+    if (!heavyResearch && lightweightLookup) return 'medium';
+    return requestedMode;
+  }
+
   async *run(query: string, depth?: ResearchDepth): AsyncGenerator<ResearchEvent> {
-    const mode = depth || (this.config.researchMode as ResearchDepth) || 'low';
+    const requestedMode = depth || (this.config.researchMode as ResearchDepth) || 'low';
+    const mode = this.effectiveDepth(query, requestedMode);
     const active = new Set(DEPTH_AGENTS[mode] || []);
 
     yield {
@@ -179,10 +225,47 @@ export class ResearchPipeline {
     let findings: string[] = [];
     let sources: Source[] = [];
     if (active.has('ResearchAgent')) {
-      yield { type: 'agent_start', agent: 'ResearchAgent', data: 'Collecting knowledge...' };
-      const research = await this.researchAgent.research(query, analysis.topics || []);
-      findings = research.findings;
-      sources = research.sources;
+      const queries = this.webQueries(query, mode);
+      for (const webQuery of queries) {
+        yield { type: 'agent_start', agent: 'web_search', data: webQuery };
+        const raw = await webSearchTool.execute({ query: webQuery, max_results: 6 });
+        const webSources = this.sourcesFromSearch(raw);
+        sources = [...sources, ...webSources];
+        if (webSources.length > 0) {
+          findings.push(
+            `Web search for "${webQuery}" returned ${webSources.length} source(s): ${webSources
+              .slice(0, 3)
+              .map((s) => s.title)
+              .join('; ')}`
+          );
+        } else {
+          findings.push(`Web search for "${webQuery}" returned no parseable sources.`);
+        }
+        yield {
+          type: 'finding',
+          agent: 'web_search',
+          data: `${webSources.length} source(s) found for: ${webQuery}`,
+        };
+        yield { type: 'agent_end', agent: 'web_search', data: 'Search complete' };
+      }
+
+      yield {
+        type: 'agent_start',
+        agent: 'ResearchAgent',
+        data: 'Synthesizing searched sources...',
+      };
+      const research = await this.researchAgent.research(
+        `${query}\n\nSearched sources:\n${sources
+          .slice(0, 12)
+          .map(
+            (s, i) =>
+              `${i + 1}. ${s.title}${s.url ? ` — ${s.url}` : ''}${s.snippet ? ` — ${s.snippet}` : ''}`
+          )
+          .join('\n')}`,
+        analysis.topics || []
+      );
+      findings = [...findings, ...research.findings];
+      sources = [...sources, ...research.sources];
       yield {
         type: 'finding',
         agent: 'ResearchAgent',
@@ -340,7 +423,8 @@ export class ResearchPipeline {
         writeVerdicts,
         sources,
         mode,
-        analysis.format || 'DETAILED'
+        analysis.format || 'DETAILED',
+        findings
       );
       yield { type: 'agent_end', agent: 'WriterAgent', data: 'Response composed' };
     } else {

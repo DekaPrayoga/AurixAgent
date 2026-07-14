@@ -49,8 +49,16 @@ export interface AurixConfig {
     telegram?: { enabled: boolean; token: string; allowedUsers?: string[] };
     whatsapp?: { enabled: boolean; allowedUsers?: string[] };
   };
+  imageGeneration?: {
+    baseUrl?: string;
+    apiKey?: string;
+    format?: 'openai' | 'anthropic';
+    model?: string;
+    size?: string;
+  };
   browser?: {
     proxies?: string[];
+    cdpEndpoint?: string;
   };
   brain?: {
     enabled?: boolean;
@@ -62,6 +70,17 @@ export interface AurixConfig {
       json: boolean;
     }>;
   };
+  hooks?: {
+    preToolUse?: string | { command: string; timeoutMs?: number };
+    postToolUse?: string | { command: string; timeoutMs?: number };
+    toolFailure?: string | { command: string; timeoutMs?: number };
+    preCompact?: string | { command: string; timeoutMs?: number };
+    postCompact?: string | { command: string; timeoutMs?: number };
+  };
+  execution?: {
+    simpleTurnsWithoutTools?: boolean;
+    lazyToolSchemas?: boolean;
+  };
   tools?: {
     enabled?: string[];
     disabled?: string[];
@@ -70,6 +89,10 @@ export interface AurixConfig {
   searchEngine?: 'ddg' | 'serper' | 'tavily' | 'searxng';
   searchApiKey?: string;
   searchBaseUrl?: string;
+  redditRelayUrl?: string;
+  redditRelayToken?: string;
+  redditBackend?: 'auto' | 'relay' | 'keyless' | 'scrapecreators' | 'off';
+  redditRelayStrict?: boolean;
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.aurix');
@@ -125,14 +148,51 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,
-    browser: file.browser,
+    imageGeneration: {
+      ...(file.imageGeneration || {}),
+      baseUrl: process.env.AURIX_IMAGE_BASE_URL || file.imageGeneration?.baseUrl,
+      apiKey: process.env.AURIX_IMAGE_API_KEY || file.imageGeneration?.apiKey,
+      format: (process.env.AURIX_IMAGE_FORMAT as any) || file.imageGeneration?.format,
+      model: process.env.AURIX_IMAGE_MODEL || file.imageGeneration?.model,
+      size: process.env.AURIX_IMAGE_SIZE || file.imageGeneration?.size,
+    },
+    browser: {
+      ...(file.browser || {}),
+      cdpEndpoint:
+        process.env.AURIX_BROWSER_CDP_ENDPOINT ||
+        process.env.BROWSER_CDP_ENDPOINT ||
+        process.env.BROWSER_CDP_URL ||
+        file.browser?.cdpEndpoint,
+    },
     brain: file.brain,
+    hooks: file.hooks,
+    execution: file.execution,
     tools: file.tools,
     features: file.features,
     searchEngine: file.searchEngine || 'ddg',
     searchApiKey: process.env.SEARCH_API_KEY || file.searchApiKey || '',
     searchBaseUrl: process.env.SEARCH_BASE_URL || process.env.SEARXNG_URL || file.searchBaseUrl,
+    redditRelayUrl:
+      process.env.AURIX_REDDIT_RELAY_URL || process.env.REDDIT_RELAY_URL || file.redditRelayUrl,
+    redditRelayToken:
+      process.env.AURIX_REDDIT_RELAY_TOKEN ||
+      process.env.REDDIT_RELAY_TOKEN ||
+      file.redditRelayToken,
+    redditBackend:
+      (process.env.AURIX_REDDIT_BACKEND as AurixConfig['redditBackend']) ||
+      file.redditBackend ||
+      'auto',
+    redditRelayStrict:
+      parseBooleanEnv(process.env.AURIX_REDDIT_RELAY_STRICT) ?? file.redditRelayStrict,
   };
+}
+
+function parseBooleanEnv(value?: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return undefined;
 }
 
 export function saveConfig(config: AurixConfig): void {

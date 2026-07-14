@@ -768,12 +768,10 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'browser',
-    argumentHint: '[connect|disconnect|status]',
+    argumentHint: '[connect <endpoint>|disconnect|status]',
     description: 'Connect browser tools to live Chromium via CDP',
     group: 'tools',
     source: 'hermes',
-    hidden: true,
-    status: 'not-implemented',
   },
   {
     name: 'plugins',

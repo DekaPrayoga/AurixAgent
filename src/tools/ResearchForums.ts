@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { promisify } from 'util';
+import { loadConfig } from '../agent/Config.js';
 import type { Tool } from './Registry.js';
 
 const execFileAsync = promisify(execFile);
@@ -58,6 +59,15 @@ export const researchForumsTool: Tool = {
     ];
     if (sources) argv.push(`--search=${sources}`);
 
+    const config = loadConfig();
+    const redditEnv: Record<string, string> = {};
+    if (config.redditRelayUrl) redditEnv.AURIX_REDDIT_RELAY_URL = config.redditRelayUrl;
+    if (config.redditRelayToken) redditEnv.AURIX_REDDIT_RELAY_TOKEN = config.redditRelayToken;
+    if (config.redditBackend) redditEnv.AURIX_REDDIT_BACKEND = config.redditBackend;
+    if (config.redditRelayStrict !== undefined) {
+      redditEnv.AURIX_REDDIT_RELAY_STRICT = config.redditRelayStrict ? '1' : '0';
+    }
+
     try {
       const { stdout, stderr } = await execFileAsync('python3', argv, {
         timeout: 120000,
@@ -66,6 +76,7 @@ export const researchForumsTool: Tool = {
         encoding: 'utf8',
         env: {
           ...process.env,
+          ...redditEnv,
           SKILL_DIR,
           PYTHONPATH: path.join(SKILL_DIR, 'scripts'),
         },

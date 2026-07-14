@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { AurixConfig } from './Config.js';
 import { buildSystemPrompt } from './Context.js';
 import type { Provider, Message } from '../providers/index.js';
@@ -23,9 +23,16 @@ import type { EvidenceItem, SessionStore } from './SessionStore.js';
 import { agentObserverBus, type AgentObserverSource } from './AgentObserverBus.js';
 import { recordTrashUserTurn } from './TrashStore.js';
 import { AurixBrain } from '../brain/AurixBrain.js';
+import {
+  getCachedModelContextLimit,
+  parseProviderContextLimitFromError,
+  resolveModelContextLimit,
+  saveCachedModelContextLimit,
+} from './ModelContext.js';
 import type { BrainToolResult } from '../brain/types.js';
 import { setBrainInstance } from '../tools/Brain.js';
 import { loadTodos, saveTodos, addTodo, completeTodo, getTodoStats } from '../utils/TodoManager.js';
+import { runToolHook } from './ToolHooks.js';
 
 const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
 
@@ -33,6 +40,32 @@ function ensureToolResultsDir(): void {
   if (!existsSync(TOOL_RESULTS_DIR)) {
     mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
   }
+}
+
+const TEXT_TOOL_CALL_PATTERN = /<function=([a-zA-Z0-9_]+)>([\s\S]*?)<\/function>/g;
+
+function parseTextToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
+  const calls: { name: string; arguments: Record<string, unknown> }[] = [];
+  const pattern = new RegExp(TEXT_TOOL_CALL_PATTERN);
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text))) {
+    const rawArgs = match[2].trim();
+    let args: Record<string, unknown> = {};
+    try {
+      args = rawArgs ? JSON.parse(rawArgs) : {};
+    } catch {
+      continue;
+    }
+    calls.push({ name: match[1], arguments: args });
+  }
+  return calls;
+}
+
+function stripTextToolCallMarkup(text: string): string {
+  return text
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+    .replace(/<function=[a-zA-Z0-9_]+>[\s\S]*?<\/function>/g, '')
+    .trim();
 }
 
 function persistToolResult(
@@ -79,6 +112,7 @@ const WRITE_TOOLS = new Set([
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
 const SESSION_KEY_TOOLS = new Set([
   'ask_user',
+  'ask_input_user',
   'terminal',
   'delete_file',
   'delete_folder',
@@ -100,6 +134,8 @@ type ErrorType =
   | 'permission_denied'
   | 'source_unavailable'
   | 'gateway_delivery_failure'
+  | 'command_failed'
+  | 'tool_error'
   | 'abort'
   | 'unknown';
 
@@ -117,6 +153,12 @@ function classifyError(e: any): ErrorType {
     msg.includes('command killed after timeout')
   ) {
     return 'tool_timeout';
+  }
+  if (/\[exit \d+\]/.test(msg) || /exit code \d+/.test(msg)) {
+    return 'command_failed';
+  }
+  if (msg.startsWith('error executing') || msg.startsWith('error:')) {
+    return 'tool_error';
   }
   if (
     msg.includes('permission denied') ||
@@ -262,7 +304,23 @@ export class AgentLoop {
     this.config = config;
     this.provider = createProvider(config);
     this.registry = registry;
-    this.contextManager = new ContextManager(this.provider, config.model);
+    this.registry.setHookHandler((request) =>
+      runToolHook(this.config, {
+        event: request.event,
+        toolName: request.toolName,
+        args: request.args,
+        result: request.result,
+        status: request.status,
+        errorType: request.errorType,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      })
+    );
+    this.contextManager = new ContextManager(
+      this.provider,
+      config.model,
+      getCachedModelContextLimit(config)
+    );
     this.memoryManager = new MemoryManager(this.provider);
     this.memoryEngine = this.memoryManager.getEngine();
     this.brain = new AurixBrain({ config, sessionId: this.sessionId, cwd: process.cwd() });
@@ -350,7 +408,7 @@ export class AgentLoop {
       lower.includes('eacces')
     )
       return 'permission_denied';
-    if (lower.startsWith('error executing') || lower.startsWith('error:')) return 'unknown';
+    if (lower.startsWith('error executing') || lower.startsWith('error:')) return 'tool_error';
     if (toolName === 'terminal') {
       if (!this.hasFailureOutput(result)) return undefined;
       if (
@@ -480,6 +538,9 @@ export class AgentLoop {
   }
 
   private autoLoadSkills(userMessage: string): string[] {
+    if (this.isGatewayMessage(userMessage) && this.isShortConversationalTurn(userMessage))
+      return [];
+
     const loaded: string[] = [];
     const msg = userMessage.toLowerCase();
     const skillKeywords: Record<string, string[]> = {
@@ -505,6 +566,8 @@ export class AgentLoop {
   }
 
   private autoCreateTodos(userMessage: string): void {
+    if (this.isGatewayMessage(userMessage) && this.isShortConversationalTurn(userMessage)) return;
+
     const msg = userMessage.toLowerCase();
     const existingTodos = loadTodos();
 
@@ -530,9 +593,6 @@ export class AgentLoop {
     ];
 
     if (!complexityIndicators.some((indicator) => msg.includes(indicator))) return;
-
-    // Ask agent to break down the task
-    const breakdownPrompt = `Based on the user's request, identify 3-7 concrete actionable tasks that need to be completed. Return ONLY a JSON array of task strings, no other text. Example: ["Task 1", "Task 2", "Task 3"]`;
 
     // Add system message to prompt todo creation
     this.messages.push({
@@ -587,23 +647,79 @@ export class AgentLoop {
   }
 
   private looksLikeResearchTask(userMessage: string): boolean {
-    return /\b(research|investigate|compare|sources?|citation|paper|study|literature|forum|reddit|youtube|twitter|x\b|news|market|trend|deep dive)\b/i.test(
+    return this.hasLightResearchSignal(userMessage);
+  }
+
+  private isGatewayMessage(userMessage: string): boolean {
+    return /^\[sent from [^\]]+\]/i.test(userMessage.trim());
+  }
+
+  private isShortConversationalTurn(userMessage: string): boolean {
+    const cleaned = userMessage
+      .replace(/^\[sent from [^\]]+\]\s*/i, '')
+      .replace(/\[[^\]]{1,160}\]/g, ' ')
+      .trim();
+    const words = cleaned.split(/\s+/).filter(Boolean).length;
+    return words > 0 && words <= 45;
+  }
+
+  private hasExplicitDeepResearchIntent(userMessage: string): boolean {
+    const lower = userMessage.toLowerCase();
+    return /\b(deep[- ]?research|deep research|riset mendalam|research mendalam|investigasi mendalam|comprehensive report|laporan lengkap|multi[- ]source|multi source|citation lengkap|sumber lengkap|with citations|with sources|pakai sumber|publication[- ]grade|literature review|systematic review|meta-analysis|whitepaper|due diligence)\b/i.test(
+      lower
+    );
+  }
+
+  private hasLightResearchSignal(userMessage: string): boolean {
+    const lower = userMessage.toLowerCase();
+    return /\b(web search|web_search|webfetch|web fetch|search web|cek web|cari sumber|source|sources|citation|benchmark|paper|journal|latest news|berita terbaru)\b/i.test(
+      lower
+    );
+  }
+
+  private shouldForceResearchRoute(userMessage: string): boolean {
+    return this.hasExplicitDeepResearchIntent(userMessage);
+  }
+
+  private explicitlyRequestsMultiAgent(userMessage: string): boolean {
+    return /\b(multi[- ]?agent|subagents?|parallel agents?|agent team|pakai agent|spawn agents?|delegate)\b/i.test(
       userMessage
     );
   }
 
   private looksLikeComplexTask(userMessage: string): boolean {
-    return /\b(audit|review|fix|debug|implement|refactor|build|migrate|analy[sz]e|security|bugs?|codebase|repo|tests?|architecture|multi[- ]?agent)\b/i.test(
+    if (this.isGatewayMessage(userMessage) && this.isShortConversationalTurn(userMessage))
+      return false;
+    return /\b(audit|review|fix|debug|implement|refactor|build|migrate|security|bugs?|codebase|repo|tests?|architecture)\b/i.test(
       userMessage
     );
   }
 
+  private shouldUseMultiAgent(userMessage: string): boolean {
+    if (this.explicitlyRequestsMultiAgent(userMessage)) return true;
+    if (!this.multiAgentMode) return false;
+    if (this.isGatewayMessage(userMessage) && this.isShortConversationalTurn(userMessage))
+      return false;
+    return this.looksLikeComplexTask(userMessage);
+  }
+
+  private looksLikeSimpleNoToolTurn(userMessage: string): boolean {
+    if (!this.config.execution?.simpleTurnsWithoutTools) return false;
+    const text = userMessage.replace(/^\[sent from [^\]]+\]\s*/i, '').trim();
+    if (!text || text.length > 260) return false;
+    if (this.looksLikeComplexTask(text) || this.looksLikeResearchTask(text)) return false;
+    if (
+      /\b(read|edit|write|fix|run|test|build|search|browse|open|create|delete|install|deploy|file|repo|folder|terminal|command|curl|api)\b/i.test(
+        text
+      )
+    )
+      return false;
+    return true;
+  }
+
   private selectExecutionMode(userMessage: string): 'single' | 'research' | 'multiagent' {
-    const mode = this.getResearchMode();
-    if (mode === 'low') return 'single';
-    if (mode === 'medium') return this.multiAgentMode ? 'multiagent' : 'single';
-    if (this.looksLikeResearchTask(userMessage)) return 'research';
-    if (this.multiAgentMode || this.looksLikeComplexTask(userMessage)) return 'multiagent';
+    if (this.shouldForceResearchRoute(userMessage)) return 'research';
+    if (this.shouldUseMultiAgent(userMessage)) return 'multiagent';
     return 'single';
   }
 
@@ -617,9 +733,7 @@ export class AgentLoop {
       (this.config.visionApiStyle && this.config.visionApiStyle !== this.config.apiStyle)
     );
     const hasExplicitFallbackModel = Boolean(
-      this.config.visionModel &&
-      this.config.visionModel !== this.config.model &&
-      this.config.visionModel !== 'gpt-4o'
+      this.config.visionModel && this.config.visionModel !== this.config.model
     );
     return hasDedicatedEndpoint || hasExplicitFallbackModel;
   }
@@ -628,12 +742,20 @@ export class AgentLoop {
     return this.brain.getCapabilities().vision;
   }
 
+  private async refreshModelContextLimit(): Promise<void> {
+    try {
+      const limit = await resolveModelContextLimit(this.config);
+      this.contextManager.setContextLimit(limit);
+    } catch {}
+  }
+
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
     this.interrupted = false;
     this.abortController = new AbortController();
     const turnId = `turn_${Date.now()}_${randomUUID().slice(0, 8)}`;
     const toolResultsThisTurn: BrainToolResult[] = [];
     this.brain.startTurn(turnId, userMessage);
+    await this.refreshModelContextLimit();
     const store = await this.ensureDurableSession();
 
     const executionMode = images?.length ? 'single' : this.selectExecutionMode(userMessage);
@@ -648,21 +770,21 @@ export class AgentLoop {
     }
 
     const mode = this.getResearchMode();
-    if (mode === 'medium' && this.looksLikeResearchTask(userMessage)) {
+    if (mode !== 'low' && this.looksLikeResearchTask(userMessage)) {
       this.messages.push({
         role: 'system',
         content:
-          '[Depth: medium] Use light research discipline: state uncertainty, prefer sources/tools when useful, but stay single-agent unless explicitly asked for deep research.',
+          '[Depth guidance] Stay single-agent and answer directly by default. If current external facts are necessary, use the smallest sufficient retrieval tool (for example one web search). Do not start deep research or multi-agent unless the user explicitly asks for it or the task is clearly large and parallelizable.',
       });
     }
 
     const msg: Message = { role: 'user', content: userMessage };
     if (images?.length) {
-      if (this.modelSupportsVision() || this.hasDistinctVisionFallback()) {
-        msg.images = images;
-      } else {
-        msg.content += `\n\n[Attached images: ${images.length}. Current model "${this.config.model}" is text-only, so images were not sent to the provider. Use the user's text and conversation context; if they refer to the image, explain that this model cannot inspect it unless a visionModel/vision endpoint is configured.]`;
-      }
+      // Custom routers often expose vision-capable models that capability heuristics
+      // cannot recognize. Trust the configured provider/model first; if a distinct
+      // vision fallback is configured, the loop below will summarize the image before
+      // sending the turn to the main text model.
+      msg.images = images;
     }
     this.messages.push(msg);
     store.appendMessage({ sessionId: this.sessionId, turnId, message: msg });
@@ -690,11 +812,91 @@ export class AgentLoop {
 
     let consecutiveEmpty = 0;
     let totalFailures = 0;
-    const MAX_EMPTY = 5;
+    let browserToolUsedThisTurn = false;
+    let toolLoopHaltReason: string | undefined;
+    const MAX_EMPTY = 3;
     const MAX_FAILURES = 5;
 
     const recentToolSignatures: string[] = [];
-    const MAX_RECENT = 6;
+    const MAX_RECENT = 18;
+    const progressCounts = new Map<string, number>();
+    const stableToolArgs = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(stableToolArgs);
+      if (value && typeof value === 'object') {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .filter(([key]) => !key.startsWith('_'))
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, nested]) => [key, stableToolArgs(nested)])
+        );
+      }
+      return value;
+    };
+    const toolSignature = (call: { name: string; arguments?: Record<string, unknown> }): string => {
+      const normalizedArgs = JSON.stringify(stableToolArgs(call.arguments || {}));
+      const argsHash = createHash('sha1').update(normalizedArgs).digest('hex').slice(0, 12);
+      return `${call.name}:${argsHash}`;
+    };
+    const rememberToolSignature = (sig: string): void => {
+      recentToolSignatures.push(sig);
+      if (recentToolSignatures.length > MAX_RECENT) recentToolSignatures.shift();
+    };
+    const duplicateToolResult = (call: { name: string }): string =>
+      `[Duplicate tool call skipped] ${call.name} was already called with the same action/command/target/value during this turn. Finalize with the evidence already available instead of trying another near-identical tool.`;
+    const normalizeProgressText = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds|kb|mb|gb|%|bytes?)\b/g, '#')
+        .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, '#')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const progressKey = (
+      call: { name: string; arguments?: Record<string, unknown> },
+      result: string
+    ): string => {
+      const args = call.arguments || {};
+      const target =
+        args.file_path ||
+        args.path ||
+        args.url ||
+        args.query ||
+        args.target ||
+        args.action ||
+        args.command ||
+        call.name;
+      const targetHash = createHash('sha1')
+        .update(String(target).toLowerCase().replace(/\s+/g, ' ').slice(0, 300))
+        .digest('hex')
+        .slice(0, 10);
+      const resultHash = createHash('sha1')
+        .update(normalizeProgressText(result).slice(0, 1200))
+        .digest('hex')
+        .slice(0, 10);
+      return `${call.name}:${targetHash}:${resultHash}`;
+    };
+    const noteToolProgress = (
+      call: { name: string; arguments?: Record<string, unknown> },
+      result: string,
+      status: 'success' | 'error'
+    ): string | undefined => {
+      const idempotent = [
+        'read_file',
+        'search_files',
+        'terminal_ls',
+        'web_search',
+        'web_fetch',
+        'research',
+        'research_forums',
+        'browser',
+      ].includes(call.name);
+      if (!idempotent && status === 'success') return undefined;
+      const key = progressKey(call, result);
+      const count = (progressCounts.get(key) || 0) + 1;
+      progressCounts.set(key, count);
+      if (count >= 3)
+        return `${call.name} repeated the same ${status === 'error' ? 'failure' : 'result'} ${count} times`;
+      return undefined;
+    };
 
     const RETRY_DELAYS: Record<string, number[]> = {
       rate_limit: [60, 120, 300, 600],
@@ -714,6 +916,8 @@ export class AgentLoop {
       permission_denied: 'permission denied',
       source_unavailable: 'source unavailable',
       gateway_delivery_failure: 'gateway delivery failure',
+      command_failed: 'command failed',
+      tool_error: 'tool error',
       unknown: 'error',
     };
     const FINAL_MESSAGES: Record<string, (msg: string) => string> = {
@@ -730,9 +934,32 @@ export class AgentLoop {
     };
     let retryCount = 0;
 
-    for (let i = 0; i < this.maxIterations; i++) {
-      const optimizedMessages = this.contextManager.pruneToolResults(this.messages);
+    const finalWithoutTools = async (reason: string): Promise<string> => {
+      const finalMessages = [
+        ...this.contextManager.pruneToolResults(this.messages),
+        {
+          role: 'system' as const,
+          content: `Tool loop stop: ${reason}. Provide the final answer now using only the evidence already in the conversation. Do not call or request more tools. If evidence is incomplete, state the blocker briefly and give the best next manual action.`,
+        },
+      ];
+      try {
+        const final = await this.provider.chat(
+          finalMessages,
+          undefined,
+          this.abortController.signal
+        );
+        const text = final.text.trim() || `Stopped tool loop: ${reason}`;
+        return this.withEvidenceSummary(text, store, turnId);
+      } catch (e: any) {
+        return this.withEvidenceSummary(
+          `Stopped tool loop: ${reason}\nFinalization failed: ${e.message}`,
+          store,
+          turnId
+        );
+      }
+    };
 
+    for (let i = 0; i < this.maxIterations; i++) {
       let response;
       try {
         // Vision-capable main models should receive image inputs directly. Only
@@ -782,9 +1009,27 @@ export class AgentLoop {
           : finalOptimizedMessages;
         response = await this.provider.chat(
           messagesForModel,
-          this.registry.getToolDefs(),
+          this.looksLikeSimpleNoToolTurn(userMessage) ? undefined : this.registry.getToolDefs(),
           this.abortController.signal
         );
+        if (
+          response.toolCalls.length === 0 &&
+          response.text &&
+          TEXT_TOOL_CALL_PATTERN.test(response.text)
+        ) {
+          const parsedCalls = parseTextToolCalls(response.text);
+          if (parsedCalls.length > 0) {
+            response = {
+              ...response,
+              text: stripTextToolCallMarkup(response.text),
+              toolCalls: parsedCalls.map((p) => ({
+                id: randomUUID(),
+                name: p.name,
+                arguments: p.arguments,
+              })),
+            };
+          }
+        }
         retryCount = 0;
         totalFailures = 0;
       } catch (e: any) {
@@ -814,6 +1059,11 @@ export class AgentLoop {
         }
 
         if (errType === 'context_length') {
+          const learnedLimit = parseProviderContextLimitFromError(e);
+          if (learnedLimit) {
+            saveCachedModelContextLimit(this.config, learnedLimit);
+            this.contextManager.setContextLimit(learnedLimit);
+          }
           yield { type: 'compact', data: 'Context too long — emergency compacting...' };
           this.messages = await this.contextManager.compact(this.messages);
           i--;
@@ -877,14 +1127,19 @@ export class AgentLoop {
         }
 
         if (consecutiveEmpty >= MAX_EMPTY) {
-          yield {
-            type: 'error',
-            data: `Provider returned ${consecutiveEmpty} consecutive empty responses (model: ${this.config.model}).\nAPI diagnostic: ${diagStr}\nStopping. Try: /login, /model <id>, or /doctor.`,
-          };
+          const finalText = await finalWithoutTools(
+            `provider returned ${consecutiveEmpty} empty responses (${diagStr})`
+          );
+          const assistantMessage: Message = { role: 'assistant', content: finalText };
+          this.messages.push(assistantMessage);
+          store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantMessage });
+          this.ledger.add('agentText', finalText);
+          yield { type: 'text', data: finalText };
+          yield { type: 'done', data: '' };
           return;
         }
 
-        if (consecutiveEmpty >= 2 && this.registry.has('browser')) {
+        if (consecutiveEmpty === 2 && browserToolUsedThisTurn && this.registry.has('browser')) {
           try {
             yield {
               type: 'text',
@@ -893,7 +1148,7 @@ export class AgentLoop {
             const ssResult = await this.registry.execute('browser', { action: 'screenshot' });
             this.messages.push({
               role: 'tool',
-              content: `[Auto-screenshot] ${ssResult}\n\nThe above screenshot was taken automatically because the agent appeared stuck. Analyze the attached screenshot to understand the current page state, then continue with the appropriate next action (click, fill, navigate, etc.). If the page shows a form, use signup-assist or signin-assist. If you see an error, try a different approach.`,
+              content: `[Auto-screenshot] ${ssResult}\n\nThe screenshot was taken because a browser-active turn returned an empty response. If it is enough to answer, finalize now. Only take another browser action if the user's requested task still requires it.`,
             });
             const ssPathMatch = ssResult.match(/(\/[^\s]+\.png)/);
             if (ssPathMatch) {
@@ -918,9 +1173,9 @@ export class AgentLoop {
         // Add a nudge message so the model has something to respond to
         // instead of seeing the same context and returning empty again.
         const nudges = [
-          'You returned an empty response. Please continue with your analysis or next action based on the results above.',
-          'Your last response was empty. Summarize what you found and state your next step.',
-          'Please provide your response. If you encountered an issue, explain it and suggest an alternative approach.',
+          'You returned an empty response. Answer directly from the evidence already available; use another tool only if it is strictly necessary.',
+          'Your last response was empty. Summarize what you found and provide a final answer if possible.',
+          'Please provide your response. If blocked, state the blocker briefly instead of starting another recovery loop.',
         ];
         const nudge = nudges[Math.min(consecutiveEmpty - 1, nudges.length - 1)];
         this.messages.push({ role: 'user', content: `[System] ${nudge}` });
@@ -1338,7 +1593,6 @@ export class AgentLoop {
           'web_search',
           'research',
           'research_forums',
-          'browser',
         ]);
         const MAX_RESULT_LEN = 8000;
         const NO_TIMEOUT = 0;
@@ -1415,10 +1669,15 @@ export class AgentLoop {
             /(package\.json|tsconfig|webpack|vite|rollup|\.env|Makefile|Dockerfile)$/.test(
               filePath
             );
-          if (isSourceFile || isConfigFile) {
+          if (isSourceFile) {
+            return (
+              result + '\n\n[Reminder: run a typecheck/lint for this file before saying "done".]'
+            );
+          }
+          if (isConfigFile) {
             return (
               result +
-              '\n\n[Reminder: After editing source/config files, verify the changes work — build the project (e.g. tsc, npm run build), restart services (pm2 restart, systemctl restart), and test the result before saying "done".]'
+              '\n\n[Reminder: this config change may need a restart to take effect — only restart if the running process actually reads this file.]'
             );
           }
           return result;
@@ -1430,177 +1689,165 @@ export class AgentLoop {
         if (readOnlyCalls.length > 0) {
           if (readOnlyCalls.length === 1) {
             const call = readOnlyCalls[0];
-            const startedAt = Date.now();
-            store.recordToolEvent({
-              sessionId: this.sessionId,
-              turnId,
-              toolCallId: call.id,
-              toolName: call.name,
-              phase: 'start',
-              args: call.arguments,
-              status: 'running',
-            });
-            yield {
-              type: 'tool_start',
-              data: '',
-              toolName: call.name,
-              toolArgs: call.arguments,
-              toolCallId: call.id,
-              turnId,
-              sessionId: this.sessionId,
-              status: 'running',
-            };
-            try {
-              if (SESSION_KEY_TOOLS.has(call.name)) {
-                call.arguments._sessionKey = this.sessionKey;
-              }
-              const result = await withTimeout(
-                this.registry.execute(call.name, call.arguments),
-                getToolTimeout(call.name, call.arguments),
-                call.name
-              );
-              const rawResult = result;
-              const errorType = this.classifyToolResultError(call.name, rawResult);
-              const toolStatus = errorType ? 'error' : 'success';
-              const processed = processResult(result, call.name);
-              const durationMs = Date.now() - startedAt;
-              this.ledger.add('toolResults', processed);
+            const sig = toolSignature(call);
+            if (recentToolSignatures.includes(sig)) {
+              const result = duplicateToolResult(call);
+              toolLoopHaltReason = `${call.name} repeated the same tool call`;
+              rememberToolSignature(sig);
+              this.ledger.add('toolResults', result);
               store.recordToolEvent({
                 sessionId: this.sessionId,
                 turnId,
                 toolCallId: call.id,
                 toolName: call.name,
                 phase: 'end',
-                result: processed,
-                status: toolStatus,
-                durationMs,
-                errorType,
+                result,
+                status: 'error',
+                errorType: 'duplicate_tool_call',
               });
               this.recordBrainToolResult(
                 {
                   toolName: call.name,
                   args: call.arguments,
+                  result,
+                  status: 'error',
+                  errorType: 'duplicate_tool_call',
+                  turnId,
+                },
+                toolResultsThisTurn
+              );
+              yield {
+                type: 'tool_end',
+                data: result,
+                toolName: call.name,
+                toolCallId: call.id,
+                turnId,
+                sessionId: this.sessionId,
+                status: 'error',
+                errorType: 'duplicate_tool_call',
+              };
+              const toolMessage: Message = { role: 'tool', content: result, toolCallId: call.id };
+              this.messages.push(toolMessage);
+              store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
+            } else {
+              rememberToolSignature(sig);
+              const startedAt = Date.now();
+              store.recordToolEvent({
+                sessionId: this.sessionId,
+                turnId,
+                toolCallId: call.id,
+                toolName: call.name,
+                phase: 'start',
+                args: call.arguments,
+                status: 'running',
+              });
+              yield {
+                type: 'tool_start',
+                data: '',
+                toolName: call.name,
+                toolArgs: call.arguments,
+                toolCallId: call.id,
+                turnId,
+                sessionId: this.sessionId,
+                status: 'running',
+              };
+              try {
+                if (SESSION_KEY_TOOLS.has(call.name)) {
+                  call.arguments._sessionKey = this.sessionKey;
+                }
+                const result = await withTimeout(
+                  this.registry.execute(call.name, call.arguments),
+                  getToolTimeout(call.name, call.arguments),
+                  call.name
+                );
+                const rawResult = result;
+                const errorType = this.classifyToolResultError(call.name, rawResult);
+                const toolStatus = errorType ? 'error' : 'success';
+                const processed = processResult(result, call.name);
+                toolLoopHaltReason ||= noteToolProgress(call, processed, toolStatus);
+                const durationMs = Date.now() - startedAt;
+                this.ledger.add('toolResults', processed);
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'end',
                   result: processed,
                   status: toolStatus,
+                  durationMs,
                   errorType,
-                  turnId,
-                },
-                toolResultsThisTurn
-              );
-              yield {
-                type: 'tool_end',
-                data: processed,
-                toolName: call.name,
-                toolCallId: call.id,
-                turnId,
-                sessionId: this.sessionId,
-                durationMs,
-                status: toolStatus,
-                errorType,
-              };
-              const toolMessage: Message = {
-                role: 'tool',
-                content: processed,
-                toolCallId: call.id,
-              };
-              this.messages.push(toolMessage);
-              store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
-
-              const errorKw = [
-                'Traceback (most recent call last):',
-                'SyntaxError:',
-                'ReferenceError:',
-                'TypeError:',
-                'npm ERR!',
-                'fatal error:',
-              ];
-              const isError =
-                errorKw.some((kw) => processed.includes(kw)) ||
-                processed.toLowerCase().startsWith('error:');
-              if (
-                isError &&
-                ['terminal', 'code_exec', 'file_edit', 'write_file'].includes(call.name)
-              ) {
-                let retryCount = 0;
-                for (
-                  let i = this.messages.length - 1;
-                  i >= Math.max(0, this.messages.length - 8);
-                  i--
-                ) {
-                  if (this.messages[i].content.includes('[Auto-Fix]')) retryCount++;
-                }
-                if (retryCount < 3) {
-                  this.messages.push({
-                    role: 'system',
-                    content: `[Auto-Fix] The tool execution returned an error. Please analyze the error message above, find the root cause, and execute a corrected command or code snippet. You have ${3 - retryCount} automatic retries left.`,
-                  });
-                  yield {
-                    type: 'text',
-                    data: `\n🔧 Auto-correcting execution error (${retryCount + 1}/3)...`,
-                  };
-                }
-              }
-            } catch (e: any) {
-              const errMsg = `Error executing ${call.name}: ${e.message}\n\nTry a different approach.`;
-              const durationMs = Date.now() - startedAt;
-              const errorType = classifyError(e);
-              this.ledger.add('toolResults', errMsg);
-              store.recordToolEvent({
-                sessionId: this.sessionId,
-                turnId,
-                toolCallId: call.id,
-                toolName: call.name,
-                phase: 'end',
-                result: errMsg,
-                status: errorType === 'abort' ? 'cancelled' : 'error',
-                durationMs,
-                errorType,
-              });
-              this.recordBrainToolResult(
-                {
+                });
+                this.recordBrainToolResult(
+                  {
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: processed,
+                    status: toolStatus,
+                    errorType,
+                    turnId,
+                  },
+                  toolResultsThisTurn
+                );
+                yield {
+                  type: 'tool_end',
+                  data: processed,
                   toolName: call.name,
-                  args: call.arguments,
+                  toolCallId: call.id,
+                  turnId,
+                  sessionId: this.sessionId,
+                  durationMs,
+                  status: toolStatus,
+                  errorType,
+                };
+                const toolMessage: Message = {
+                  role: 'tool',
+                  content: processed,
+                  toolCallId: call.id,
+                };
+                this.messages.push(toolMessage);
+                store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
+              } catch (e: any) {
+                const errMsg = `Error executing ${call.name}: ${e.message}\n\nDiagnose once, then finalize with current evidence if retrying would repeat the same failure.`;
+                const durationMs = Date.now() - startedAt;
+                const errorType = classifyError(e);
+                this.ledger.add('toolResults', errMsg);
+                store.recordToolEvent({
+                  sessionId: this.sessionId,
+                  turnId,
+                  toolCallId: call.id,
+                  toolName: call.name,
+                  phase: 'end',
                   result: errMsg,
                   status: errorType === 'abort' ? 'cancelled' : 'error',
+                  durationMs,
                   errorType,
+                });
+                this.recordBrainToolResult(
+                  {
+                    toolName: call.name,
+                    args: call.arguments,
+                    result: errMsg,
+                    status: errorType === 'abort' ? 'cancelled' : 'error',
+                    errorType,
+                    turnId,
+                  },
+                  toolResultsThisTurn
+                );
+                yield {
+                  type: 'tool_end',
+                  data: errMsg,
+                  toolName: call.name,
+                  toolCallId: call.id,
                   turnId,
-                },
-                toolResultsThisTurn
-              );
-              yield {
-                type: 'tool_end',
-                data: errMsg,
-                toolName: call.name,
-                toolCallId: call.id,
-                turnId,
-                sessionId: this.sessionId,
-                durationMs,
-                status: errorType === 'abort' ? 'cancelled' : 'error',
-                errorType,
-              };
-              const toolMessage: Message = { role: 'tool', content: errMsg, toolCallId: call.id };
-              this.messages.push(toolMessage);
-              store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
-
-              if (['terminal', 'code_exec', 'file_edit', 'write_file'].includes(call.name)) {
-                let retryCount = 0;
-                for (
-                  let i = this.messages.length - 1;
-                  i >= Math.max(0, this.messages.length - 8);
-                  i--
-                ) {
-                  if (this.messages[i].content.includes('[Auto-Fix]')) retryCount++;
-                }
-                if (retryCount < 3) {
-                  this.messages.push({
-                    role: 'system',
-                    content: `[Auto-Fix] The tool crashed. Please review the exception details above, fix your command or arguments, and try again. You have ${3 - retryCount} automatic retries left.`,
-                  });
-                  yield {
-                    type: 'text',
-                    data: `\n🔧 Auto-correcting tool crash (${retryCount + 1}/3)...`,
-                  };
-                }
+                  sessionId: this.sessionId,
+                  durationMs,
+                  status: errorType === 'abort' ? 'cancelled' : 'error',
+                  errorType,
+                };
+                const toolMessage: Message = { role: 'tool', content: errMsg, toolCallId: call.id };
+                this.messages.push(toolMessage);
+                store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
               }
             }
           } else {
@@ -1659,7 +1906,7 @@ export class AgentLoop {
               };
 
               if (error) {
-                const errMsg = `Error executing ${call.name}: ${error.message}\n\nTry a different approach.`;
+                const errMsg = `Error executing ${call.name}: ${error.message}\n\nDiagnose once, then finalize with current evidence if retrying would repeat the same failure.`;
                 const durationMs = Date.now() - startedAt;
                 const errorType = classifyError(error);
                 this.ledger.add('toolResults', errMsg);
@@ -1704,6 +1951,7 @@ export class AgentLoop {
                 const errorType = this.classifyToolResultError(call.name, rawResult);
                 const toolStatus = errorType ? 'error' : 'success';
                 const processed = processResult(result, call.name);
+                toolLoopHaltReason ||= noteToolProgress(call, processed, toolStatus);
                 const durationMs = Date.now() - startedAt;
                 this.ledger.add('toolResults', processed);
                 store.recordToolEvent({
@@ -1757,6 +2005,50 @@ export class AgentLoop {
             yield { type: 'error', data: 'Interrupted before tool execution.' };
             return;
           }
+
+          const sig = toolSignature(call);
+          if (recentToolSignatures.includes(sig)) {
+            const result = duplicateToolResult(call);
+            toolLoopHaltReason = `${call.name} repeated the same tool call`;
+            rememberToolSignature(sig);
+            this.ledger.add('toolResults', result);
+            store.recordToolEvent({
+              sessionId: this.sessionId,
+              turnId,
+              toolCallId: call.id,
+              toolName: call.name,
+              phase: 'end',
+              result,
+              status: 'error',
+              errorType: 'duplicate_tool_call',
+            });
+            this.recordBrainToolResult(
+              {
+                toolName: call.name,
+                args: call.arguments,
+                result,
+                status: 'error',
+                errorType: 'duplicate_tool_call',
+                turnId,
+              },
+              toolResultsThisTurn
+            );
+            yield {
+              type: 'tool_end',
+              data: result,
+              toolName: call.name,
+              toolCallId: call.id,
+              turnId,
+              sessionId: this.sessionId,
+              status: 'error',
+              errorType: 'duplicate_tool_call',
+            };
+            const toolMessage: Message = { role: 'tool', content: result, toolCallId: call.id };
+            this.messages.push(toolMessage);
+            store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
+            continue;
+          }
+          rememberToolSignature(sig);
 
           if (SESSION_KEY_TOOLS.has(call.name)) {
             call.arguments._sessionKey = this.sessionKey;
@@ -1839,10 +2131,19 @@ export class AgentLoop {
                 (error) => ({ error })
               );
               let settled: { value?: string; error?: any } | undefined;
+              let lastHeartbeatAt = Date.now();
               while (!settled) {
                 while (pendingChunks.length > 0) yield pendingChunks.shift()!;
-                const next = await Promise.race([execution, wakeOnChunk().then(() => null)]);
+                const next = await Promise.race([
+                  execution,
+                  wakeOnChunk().then(() => null),
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+                ]);
                 if (next) settled = next;
+                else if (Date.now() - lastHeartbeatAt >= 15_000) {
+                  lastHeartbeatAt = Date.now();
+                  pushChunk('Command still running... waiting for terminal output');
+                }
               }
               while (pendingChunks.length > 0) yield pendingChunks.shift()!;
               if (settled.error) throw settled.error;
@@ -1867,6 +2168,8 @@ export class AgentLoop {
             toolStatus = 'error';
             errorType = resultErrorType;
           }
+          browserToolUsedThisTurn ||= call.name === 'browser';
+          toolLoopHaltReason ||= noteToolProgress(call, result, toolStatus);
           if (call.name === 'skill_loader' && call.arguments?.action === 'load') {
             this.ledger.add('skills', result);
           } else {
@@ -1932,13 +2235,6 @@ export class AgentLoop {
           store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
         }
 
-        for (const call of response.toolCalls) {
-          const a = call.arguments as any;
-          const sig = `${call.name}:${a?.action || ''}:${a?.command || ''}:${a?.target || ''}:${(a?.value || '').toString().slice(0, 40)}`;
-          recentToolSignatures.push(sig);
-          if (recentToolSignatures.length > MAX_RECENT) recentToolSignatures.shift();
-        }
-
         // Auto-attach screenshot images from tool results so the model can see them
         const recentToolMsgs = this.messages
           .filter((m) => m.role === 'tool')
@@ -1957,12 +2253,29 @@ export class AgentLoop {
             }
           }
         }
-        if (detectedImages.length > 0) {
+        if (browserToolUsedThisTurn && detectedImages.length > 0) {
           this.messages.push({
             role: 'user',
-            content: `[System] The tool returned ${detectedImages.length} screenshot(s). They are attached below — analyze them visually to understand the current page state and decide your next action.`,
+            content: `[System] The browser returned ${detectedImages.length} screenshot(s). They are attached below. If this is enough to answer, finalize now; only take another browser action when the requested task still requires it.`,
             images: detectedImages,
           });
+        }
+
+        if (toolLoopHaltReason) {
+          const finalText = await finalWithoutTools(toolLoopHaltReason);
+          this.brain.recordAssistantText(finalText);
+          const assistantMessage: Message = { role: 'assistant', content: finalText };
+          this.messages.push(assistantMessage);
+          store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantMessage });
+          this.ledger.add('agentText', finalText);
+          this.observe('agent_loop', 'turn_end', turnId, {
+            status: 'success',
+            summary: finalText,
+            payload: { executionMode: 'single', toolLoopHaltReason },
+          });
+          yield { type: 'text', data: finalText };
+          yield { type: 'done', data: '' };
+          return;
         }
 
         continue;
@@ -1974,16 +2287,12 @@ export class AgentLoop {
         evidence: store.listEvidenceItems(this.sessionId, 8, turnId),
         toolResultsThisTurn,
       });
-      if (
-        this.config.brain?.evidenceGate !== false &&
-        gate.action === 'block' &&
-        gate.systemMessage
-      ) {
-        this.messages.push({ role: 'system', content: gate.systemMessage });
-        continue;
-      }
+      // Evidence Gate never hard-blocks the final answer — a missed/failed
+      // verification becomes a caveat on the response instead of an extra
+      // forced loop iteration. Gateway/normal-coding turns should never stall
+      // waiting on a re-verification the user didn't ask for.
       const gatedText =
-        gate.action === 'allow_with_caveat'
+        gate.action !== 'allow'
           ? `${response.text}\n\nVerification note: ${gate.reason}`
           : response.text;
       const finalText = this.withEvidenceSummary(gatedText, store, turnId);
@@ -2002,16 +2311,19 @@ export class AgentLoop {
       return;
     }
 
-    const maxIterationError = `Max iterations (${this.maxIterations}) reached. Agent stopped.\nThe task was too complex for the current iteration limit. Try breaking it into smaller steps, or increase with: agent.setMaxIterations(5000)`;
+    const maxIterationReason = `max iterations (${this.maxIterations}) reached`;
+    const finalText = await finalWithoutTools(maxIterationReason);
+    const assistantMessage: Message = { role: 'assistant', content: finalText };
+    this.messages.push(assistantMessage);
+    store.appendMessage({ sessionId: this.sessionId, turnId, message: assistantMessage });
+    this.ledger.add('agentText', finalText);
     this.observe('agent_loop', 'turn_end', turnId, {
-      status: 'error',
-      summary: maxIterationError,
-      payload: { maxIterations: this.maxIterations },
+      status: 'success',
+      summary: finalText,
+      payload: { maxIterations: this.maxIterations, maxIterationReason },
     });
-    yield {
-      type: 'error',
-      data: maxIterationError,
-    };
+    yield { type: 'text', data: finalText };
+    yield { type: 'done', data: '' };
   }
 
   private async *runMultiAgent(userMessage: string): AsyncGenerator<AgentEvent> {
@@ -2241,9 +2553,26 @@ export class AgentLoop {
   setProvider(config: Partial<AurixConfig>): void {
     this.config = { ...this.config, ...config };
     this.provider = createProvider(this.config);
-    this.contextManager = new ContextManager(this.provider, config.model || this.config.model);
+    this.contextManager = new ContextManager(
+      this.provider,
+      config.model || this.config.model,
+      getCachedModelContextLimit(this.config)
+    );
     this.memoryManager.setProvider(this.provider);
+    this.refreshModelContextLimit().catch(() => {});
     this.resetBrain();
+    this.registry.setHookHandler((request) =>
+      runToolHook(this.config, {
+        event: request.event,
+        toolName: request.toolName,
+        args: request.args,
+        result: request.result,
+        status: request.status,
+        errorType: request.errorType,
+        sessionId: request.sessionId,
+        turnId: request.turnId,
+      })
+    );
     if (this.multiAgent) {
       this.multiAgent = new MultiAgentSystem(this.config, this.registry);
     }

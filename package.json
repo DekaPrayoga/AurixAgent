@@ -1,6 +1,6 @@
 {
   "name": "aurix-ai",
-  "version": "3.0.6",
+  "version": "3.0.7",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
@@ -55,8 +55,8 @@
     "start": "node dist/index.js",
     "prepare": "node scripts/build.cjs",
     "postinstall": "node scripts/postinstall.mjs",
-    "lint": "eslint src/**/*.ts",
-    "format": "prettier --write src/**/*.ts"
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.35.0",
@@ -103,6 +103,7 @@
   },
   "optionalDependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "discord.js": "^14.18.0",
     "pino": "^10.3.1"
   }
 }

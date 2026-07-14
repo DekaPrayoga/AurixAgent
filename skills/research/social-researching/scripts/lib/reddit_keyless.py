@@ -58,11 +58,15 @@ def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
 
 
 def _discover(topic: str, depth: str, subreddits: Optional[List[str]]) -> List[Dict[str, Any]]:
-    # Tier 0: demoted one-shot .json (dead for normal users too, but free to try).
-    posts = _tier0_json(topic, depth)
-    if posts:
-        _log(f"Tier 0 (.json) returned {len(posts)} posts")
-        return posts
+    # Tier 0: legacy .json is opt-in only. It is known to 403 from many hosts,
+    # so the load-bearing keyless path starts at RSS/listings by default.
+    import os
+    posts = []
+    if str(os.environ.get("AURIX_REDDIT_ENABLE_LEGACY_JSON") or "").lower() in {"1", "true", "yes", "on"}:
+        posts = _tier0_json(topic, depth)
+        if posts:
+            _log(f"Tier 0 (.json) returned {len(posts)} posts")
+            return posts
 
     # Tier 1: keyless discovery. RSS gives breadth (incl. global keyword search);
     # the listing partials give real upvote scores.

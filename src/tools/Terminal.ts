@@ -10,6 +10,38 @@ function shellCommand(command: string): { cmd: string; args: string[]; shell?: t
   return { cmd: '/bin/bash', args: ['-lc', command] };
 }
 
+const SSH_INVOCATION_RE = /(^\s*|[;&|(]\s*)ssh(?=\s)/g;
+const APT_INSTALL_RE = /(^\s*|[;&|(]\s*)(sudo\s+)?(apt|apt-get)\s+install\b/g;
+
+// stdin is always closed for spawned commands (stdio: ['ignore', ...]), so
+// interactive prompts can never be answered. Make common install/remote commands
+// non-interactive or fail-fast instead of silently hanging in gateways.
+function hardenNonInteractiveCommand(command: string): string {
+  let prepared = command;
+
+  if (!/sshpass/i.test(prepared) && /(^\s*|[;&|(]\s*)ssh(?=\s)/.test(prepared)) {
+    const lower = prepared.toLowerCase();
+    const opts: string[] = [];
+    if (!lower.includes('batchmode')) opts.push('-o BatchMode=yes', '-o ConnectTimeout=15');
+    if (!lower.includes('stricthostkeychecking')) opts.push('-o StrictHostKeyChecking=accept-new');
+    if (opts.length > 0) {
+      prepared = prepared.replace(SSH_INVOCATION_RE, (match) => `${match} ${opts.join(' ')} `);
+    }
+  }
+
+  if (/(^\s*|[;&|(]\s*)(sudo\s+)?(apt|apt-get)\s+install\b/.test(prepared)) {
+    prepared = prepared.replace(APT_INSTALL_RE, (match, prefix, sudoPart = '', aptCmd) => {
+      if (/DEBIAN_FRONTEND=noninteractive\s+/.test(match)) return match;
+      const sudo = sudoPart ? 'sudo -n ' : '';
+      return `${prefix}DEBIAN_FRONTEND=noninteractive ${sudo}${aptCmd} install -y `;
+    });
+  }
+
+  prepared = prepared.replace(/(^\s*|[;&|(]\s*)sudo\s+(?!-n\b)/g, '$1sudo -n ');
+
+  return prepared;
+}
+
 function emitLines(
   context: ToolExecutionContext | undefined,
   stream: 'stdout' | 'stderr',
@@ -18,7 +50,7 @@ function emitLines(
 ) {
   if (!context?.onEvent) return;
   buffer.value += chunk.toString();
-  const lines = buffer.value.split(/\r?\n/);
+  const lines = buffer.value.split(/\r\n|\n|\r/);
   buffer.value = lines.pop() || '';
   for (const line of lines) {
     if (line.trim()) context.onEvent({ type: 'chunk', stream, data: line });
@@ -41,12 +73,13 @@ async function runCommand(
   timeout: number,
   context?: ToolExecutionContext
 ): Promise<string> {
+  const preparedCommand = hardenNonInteractiveCommand(command);
   const timeoutOption = timeout > 0 ? timeout : undefined;
   if (!context?.onEvent) {
     return new Promise((resolve) => {
       const shell = process.platform === 'win32' ? true : '/bin/bash';
       exec(
-        command,
+        preparedCommand,
         { timeout: timeoutOption, maxBuffer: 1024 * 1024 * 5, shell: shell as any },
         (err: any, stdout: any, stderr: any) => {
           const output = [];
@@ -61,7 +94,7 @@ async function runCommand(
   }
 
   return new Promise((resolve) => {
-    const { cmd, args, shell } = shellCommand(command);
+    const { cmd, args, shell } = shellCommand(preparedCommand);
     const child = spawn(cmd, args, { shell, stdio: ['ignore', 'pipe', 'pipe'] });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];

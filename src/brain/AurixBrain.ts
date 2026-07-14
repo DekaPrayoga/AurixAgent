@@ -7,6 +7,13 @@ import { BrowserStateFusion } from './BrowserStateFusion.js';
 import { EvidenceGate } from './EvidenceGate.js';
 import type { BrainToolResult, ModelCapabilities, RepoBrainEntry } from './types.js';
 
+const MAX_TRANSIENT_CONTEXT_CHARS = 4000;
+
+function capTransientContext(text: string, maxChars = MAX_TRANSIENT_CONTEXT_CHARS): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n...\n[brain transient context capped]`;
+}
+
 export class AurixBrain {
   private capabilities: ModelCapabilities;
   private repo?: RepoBrain;
@@ -74,13 +81,13 @@ export class AurixBrain {
     parts.push(
       `[BRAIN CAPABILITIES]\nvision=${caps.vision} tools=${caps.tools} json=${caps.json} source=${caps.source}${caps.notes?.length ? ` notes=${caps.notes.join('; ')}` : ''}\n[/BRAIN CAPABILITIES]`
     );
-    const repoSummary = this.getRepoSummary();
-    if (repoSummary) parts.push(`[REPO BRAIN]\n${repoSummary}\n[/REPO BRAIN]`);
-    const scratch = this.scratchpad.renderForPrompt();
-    if (scratch) parts.push(scratch);
     const browser = this.browserFusion.renderForPrompt();
     if (browser) parts.push(browser);
-    return parts.join('\n\n');
+    const scratch = this.scratchpad.renderForPrompt();
+    if (scratch) parts.push(scratch);
+    const repoSummary = this.getRepoSummary();
+    if (repoSummary) parts.push(`[REPO BRAIN]\n${repoSummary}\n[/REPO BRAIN]`);
+    return capTransientContext(parts.join('\n\n'));
   }
 
   evaluateFinalAnswer(input: {

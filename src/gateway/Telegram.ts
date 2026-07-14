@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Platform, IncomingMessage } from './Gateway.js';
+import { parseMarkdownTableBlock } from '../utils/StructuredOutputFormat.js';
 
 const IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const AUDIO_EXTS = new Set(['mp3', 'm4a', 'ogg', 'wav', 'flac', 'aac']);
@@ -21,6 +22,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     string,
     {
       msg: any;
+      forwardedFrom?: string;
       attachments: { type: string; url?: string; filename?: string }[];
       timer: ReturnType<typeof setTimeout>;
     }
@@ -72,18 +74,17 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     replyTo?: string,
     options?: any
   ): Promise<{ messageId?: string } | void> {
-    if (looksLikeMarkdownTable(content) && !options?.reply_markup) {
+    const wantsRichMarkdown = Boolean(options?.rich_markdown) || looksLikeMarkdownTable(content);
+    if (wantsRichMarkdown && !options?.reply_markup) {
       try {
         const result = await this.sendRichMarkdown(content, channelId, replyTo, options);
         if (result) return result;
       } catch (e: any) {
         const msg = String(e.message || '');
-        if (
-          !/method not found|not found|endpoint|can't parse rich message|bad request/i.test(msg)
-        ) {
-          console.error(`  Telegram rich table send error: ${msg}`);
+        console.error(`  Telegram rich table send error: ${msg}`);
+        if (options?.rich_markdown) throw e;
+        if (!/method not found|not found|endpoint|can't parse rich message|bad request/i.test(msg))
           return;
-        }
       }
     }
 
@@ -177,6 +178,25 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     } catch {}
   }
 
+  private async clearInlineKeyboard(
+    chatId?: string | number,
+    messageId?: string | number
+  ): Promise<void> {
+    if (chatId === undefined || messageId === undefined) return;
+    try {
+      await this.api('editMessageReplyMarkup', {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      });
+    } catch (e: any) {
+      const msg = String(e.message || '').toLowerCase();
+      if (!msg.includes('not modified') && !msg.includes('message to edit not found')) {
+        console.error(`  Telegram clear inline keyboard error: ${e.message}`);
+      }
+    }
+  }
+
   async sendFile(
     filePath: string,
     channelId: string,
@@ -229,21 +249,60 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     options?: any
   ): Promise<{ messageId?: string } | null> {
     const markdown = stripTelegramHtml(content);
-    const params: Record<string, any> = {
-      chat_id: channelId,
-      rich_message: { markdown },
-    };
+    const parts = markdownToRichParts(markdown);
+    if (parts.length === 0) return null;
 
-    if (replyTo) {
-      const id = Number(replyTo);
-      params.reply_parameters = Number.isFinite(id) ? { message_id: id } : { message_id: replyTo };
-    }
-    if (options?.disable_web_page_preview !== undefined) {
-      params.link_preview_options = { is_disabled: Boolean(options.disable_web_page_preview) };
+    let firstId: string | undefined;
+    let currentReplyTo = replyTo;
+
+    for (const part of parts) {
+      const params: Record<string, any> = {
+        chat_id: channelId,
+      };
+      if (currentReplyTo) {
+        const id = Number(currentReplyTo);
+        params.reply_parameters = Number.isFinite(id)
+          ? { message_id: id }
+          : { message_id: currentReplyTo };
+      }
+      if (options?.disable_web_page_preview !== undefined) {
+        params.link_preview_options = { is_disabled: Boolean(options.disable_web_page_preview) };
+      }
+
+      let result: any;
+      if (part.type === 'text') {
+        result = await this.api('sendMessage', {
+          chat_id: channelId,
+          text: part.text,
+          ...(currentReplyTo ? { reply_to_message_id: currentReplyTo } : {}),
+          ...(options?.disable_web_page_preview !== undefined
+            ? { disable_web_page_preview: options.disable_web_page_preview }
+            : {}),
+        });
+      } else {
+        params.rich_message = {
+          blocks: [
+            {
+              type: 'table',
+              is_bordered: true,
+              is_striped: true,
+              ...(part.caption ? { caption: part.caption } : {}),
+              cells: [
+                part.headers.map((text) => ({ text, is_header: true })),
+                ...part.rows.map((row) => row.map((text) => ({ text }))),
+              ],
+            },
+          ],
+        };
+        result = await this.api('sendRichMessage', params);
+      }
+
+      const messageId = result?.message_id ? String(result.message_id) : undefined;
+      if (!firstId) firstId = messageId;
+      if (messageId) currentReplyTo = messageId;
     }
 
-    const result = await this.api('sendRichMessage', params);
-    return { messageId: result?.message_id ? String(result.message_id) : undefined };
+    return { messageId: firstId };
   }
 
   private async registerCommands(): Promise<void> {
@@ -263,6 +322,8 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'apikey', description: '🔑 Set API key' },
           { command: 'depth', description: '📊 Research depth (low/medium/high/xhigh/max/ultra)' },
           { command: 'fast', description: '⚡ Toggle fast mode' },
+          { command: 'goal', description: '🎯 Set session goal' },
+          { command: 'rules', description: '📜 Manage session rules' },
           { command: 'review', description: '🔍 AI code review' },
           { command: 'code_review', description: '🔍 Review current git diff' },
           { command: 'security_review', description: '🛡️ Security review' },
@@ -272,6 +333,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'research', description: '🔬 Deep research with sources' },
           { command: 'research_forums', description: '🌐 Research forums/social sources' },
           { command: 'summarize', description: '📝 Summarize text' },
+          { command: 'image_gen', description: '🎨 Generate image' },
           { command: 'deep', description: '🧠 Enable ultra depth' },
           { command: 'deep_research', description: '🧠 Ultra-depth research' },
           { command: 'pdf', description: '📄 Generate PDF' },
@@ -280,6 +342,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'tools', description: '🔧 List available tools' },
           { command: 'skills', description: '📚 List available skills' },
           { command: 'status', description: '⏳ Show current status' },
+          { command: 'check', description: '🟢 Check if agent is running' },
           { command: 'history', description: '📝 Message count' },
           { command: 'history_search', description: '🔎 Search durable sessions' },
           { command: 'sessions', description: '💾 List saved sessions' },
@@ -326,7 +389,16 @@ export class TelegramPlatform extends EventEmitter implements Platform {
             try {
               await this.api('answerCallbackQuery', { callback_query_id: cb.id });
             } catch (e) {}
+            await this.clearInlineKeyboard(cb.message?.chat?.id, cb.message?.message_id);
 
+            const chatType =
+              cb.message?.chat?.type === 'private'
+                ? 'dm'
+                : cb.message?.chat?.type === 'group' || cb.message?.chat?.type === 'supergroup'
+                  ? 'group'
+                  : cb.message?.chat?.type === 'channel'
+                    ? 'channel'
+                    : 'unknown';
             this.emit('message', {
               platform: 'telegram',
               authorId: String(cb.from?.id),
@@ -334,6 +406,11 @@ export class TelegramPlatform extends EventEmitter implements Platform {
               channelId: String(cb.message?.chat.id || cb.from?.id),
               content: cb.data || '',
               replyTo: cb.message ? String(cb.message.message_id) : undefined,
+              threadId: cb.message?.message_thread_id
+                ? String(cb.message.message_thread_id)
+                : undefined,
+              chatType,
+              isCallback: true,
             } as IncomingMessage);
             continue;
           }
@@ -343,9 +420,10 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
           const text = msg.text || msg.caption || '';
           const hasPhoto = msg.photo?.length > 0;
+          const hasDocument = Boolean(msg.document?.file_id);
           const hasImageDoc = msg.document?.mime_type?.startsWith('image/');
 
-          if (!text && !hasPhoto && !hasImageDoc) continue;
+          if (!text && !hasPhoto && !hasDocument) continue;
 
           let forwardedFrom: string | undefined;
           if (msg.forward_from) {
@@ -370,11 +448,14 @@ export class TelegramPlatform extends EventEmitter implements Platform {
             if (filePath) {
               attachments.push({ type: 'image', url: filePath, filename: path.basename(filePath) });
             }
-          } else if (hasImageDoc) {
-            const filePath = await this.downloadTelegramFile(msg.document.file_id);
+          } else if (hasDocument) {
+            const filePath = await this.downloadTelegramFile(
+              msg.document.file_id,
+              msg.document.file_name
+            );
             if (filePath) {
               attachments.push({
-                type: 'image',
+                type: hasImageDoc ? 'image' : 'file',
                 url: filePath,
                 filename: msg.document.file_name || path.basename(filePath),
               });
@@ -403,13 +484,25 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     forwardedFrom?: string,
     attachments?: { type: string; url?: string; filename?: string }[]
   ): void {
+    const replyText = msg.reply_to_message?.text || msg.reply_to_message?.caption || undefined;
+    const chatType =
+      msg.chat?.type === 'private'
+        ? 'dm'
+        : msg.chat?.type === 'group' || msg.chat?.type === 'supergroup'
+          ? 'group'
+          : msg.chat?.type === 'channel'
+            ? 'channel'
+            : 'unknown';
     this.emit('message', {
       platform: 'telegram',
       authorId: String(msg.from?.id || msg.chat.id),
       authorName: msg.from?.first_name || msg.from?.username || 'Unknown',
       channelId: String(msg.chat.id),
-      content: text || (attachments?.length ? 'Check this image' : ''),
+      content: text || (attachments?.length ? 'Check this file' : ''),
       replyTo: String(msg.message_id),
+      replyToText: replyText,
+      threadId: msg.message_thread_id ? String(msg.message_thread_id) : undefined,
+      chatType,
       forwardedFrom,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     } as IncomingMessage);
@@ -433,6 +526,7 @@ export class TelegramPlatform extends EventEmitter implements Platform {
       }
       this.pendingPhoto.set(key, {
         msg,
+        forwardedFrom,
         attachments: [...attachments],
         timer: setTimeout(() => this.flushPhotoBatch(key), 800),
       });
@@ -468,17 +562,21 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     this.pendingPhoto.delete(key);
     this.emitIncoming(
       pending.msg,
-      pending.msg.caption || 'Check these images',
-      undefined,
+      pending.msg.caption || 'Check these files',
+      pending.forwardedFrom,
       pending.attachments
     );
   }
 
-  private async downloadTelegramFile(fileId: string): Promise<string | null> {
+  private async downloadTelegramFile(
+    fileId: string,
+    preferredFilename?: string
+  ): Promise<string | null> {
     try {
       const file = await this.api('getFile', { file_id: fileId });
       const url = `https://api.telegram.org/file/bot${this.token}/${file.file_path}`;
-      const ext = path.extname(file.file_path || '.jpg') || '.jpg';
+      const ext =
+        path.extname(preferredFilename || '') || path.extname(file.file_path || '') || '.jpg';
       const localPath = `/tmp/aurix-telegram-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
 
       const res = await fetch(url);
@@ -508,6 +606,52 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     return data.result;
   }
+}
+
+type RichPart =
+  | { type: 'text'; text: string }
+  | { type: 'table'; caption?: string; headers: string[]; rows: string[][] };
+
+function markdownToRichParts(text: string): RichPart[] {
+  const lines = text.split('\n');
+  const parts: RichPart[] = [];
+  let textBuffer: string[] = [];
+
+  const flushText = () => {
+    const value = textBuffer.join('\n').trim();
+    if (value) parts.push({ type: 'text', text: value });
+    textBuffer = [];
+  };
+
+  for (let i = 0; i < lines.length; ) {
+    const table = parseMarkdownTableBlock(lines, i);
+    if (!table) {
+      textBuffer.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    flushText();
+    const previous = parts[parts.length - 1];
+    let caption: string | undefined;
+    if (previous?.type === 'text') {
+      const previousLines = previous.text.split('\n');
+      const last = previousLines[previousLines.length - 1]?.trim();
+      if (last && last.length <= 120 && !last.includes('|')) {
+        caption = last.replace(/:$/, '');
+        previousLines.pop();
+        const remaining = previousLines.join('\n').trim();
+        if (remaining) previous.text = remaining;
+        else parts.pop();
+      }
+    }
+
+    parts.push({ type: 'table', caption, headers: table.headers, rows: table.rows });
+    i = table.end;
+  }
+
+  flushText();
+  return parts;
 }
 
 function splitTelegramMessage(text: string, maxLen: number): string[] {

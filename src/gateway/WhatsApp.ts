@@ -11,11 +11,27 @@ const AUDIO_EXTS = new Set(['mp3', 'm4a', 'ogg', 'wav', 'opus']);
 const VIDEO_EXTS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm']);
 
 const MIME_TYPES: Record<string, string> = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp',
-  mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav', opus: 'audio/opus',
-  mp4: 'video/mp4', mkv: 'video/x-matroska', avi: 'video/x-msvideo', mov: 'video/quicktime', webm: 'video/webm',
-  pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  zip: 'application/zip', txt: 'text/plain', json: 'application/json',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+  opus: 'audio/opus',
+  mp4: 'video/mp4',
+  mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  zip: 'application/zip',
+  txt: 'text/plain',
+  json: 'application/json',
 };
 
 export class WhatsAppPlatform extends EventEmitter implements Platform {
@@ -29,7 +45,11 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
   private reconnecting = false;
   private closed = false;
 
-  constructor(options?: { dbPath?: string; onQR?: (qr: string) => void; onConnected?: () => void }) {
+  constructor(options?: {
+    dbPath?: string;
+    onQR?: (qr: string) => void;
+    onConnected?: () => void;
+  }) {
     super();
     this.dbPath = options?.dbPath || path.join(os.homedir(), '.aurix', 'wa-session.db');
     this.onQR = options?.onQR;
@@ -43,8 +63,12 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
       this.reconnectTimer = undefined;
     }
     if (this.socket) {
-      try { this.socket.ev?.removeAllListeners?.(); } catch {}
-      try { this.socket.end?.(undefined); } catch {}
+      try {
+        this.socket.ev?.removeAllListeners?.();
+      } catch {}
+      try {
+        this.socket.end?.(undefined);
+      } catch {}
       this.socket = undefined;
     }
     try {
@@ -91,32 +115,57 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
 
           const textMsg = msg.message?.extendedTextMessage?.text || msg.message?.conversation;
           const imageMsg = msg.message?.imageMessage;
-          const text = textMsg || imageMsg?.caption || '';
+          const documentMsg = msg.message?.documentMessage;
+          const text = textMsg || imageMsg?.caption || documentMsg?.caption || '';
 
-          if (!text.trim() && !imageMsg) continue;
-          if (text.trim() && !text.trim().toLowerCase().startsWith('!ai') && !imageMsg) continue;
-          if (imageMsg && imageMsg.caption && !imageMsg.caption.toLowerCase().startsWith('!ai')) continue;
+          if (!text.trim() && !imageMsg && !documentMsg) continue;
+          if (
+            text.trim() &&
+            !text.trim().toLowerCase().startsWith('!ai') &&
+            !imageMsg &&
+            !documentMsg
+          )
+            continue;
+          if (imageMsg && imageMsg.caption && !imageMsg.caption.toLowerCase().startsWith('!ai'))
+            continue;
+          if (
+            documentMsg &&
+            documentMsg.caption &&
+            !documentMsg.caption.toLowerCase().startsWith('!ai')
+          )
+            continue;
 
           const chatId = msg.key.remoteJid;
           const senderId = msg.key.participant || chatId;
-          const contextInfo = msg.message?.extendedTextMessage?.contextInfo || imageMsg?.contextInfo;
-          const forwardedFrom = contextInfo?.forwardingScore > 0
-            ? (contextInfo.forwardedNewsletterMessageInfo?.newsletterName || 'forwarded')
-            : undefined;
+          const contextInfo =
+            msg.message?.extendedTextMessage?.contextInfo ||
+            imageMsg?.contextInfo ||
+            documentMsg?.contextInfo;
+          const forwardedFrom =
+            contextInfo?.forwardingScore > 0
+              ? contextInfo.forwardedNewsletterMessageInfo?.newsletterName || 'forwarded'
+              : undefined;
 
           const attachments: { type: string; url?: string; filename?: string }[] = [];
 
-          if (imageMsg) {
+          if (imageMsg || documentMsg) {
             try {
               const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
               const buffer = await downloadMediaMessage(msg, 'buffer', {});
-              const mime = imageMsg.mimetype || 'image/jpeg';
-              const ext = mime.split('/')[1]?.split(';')[0] || 'jpg';
+              const mime =
+                imageMsg?.mimetype || documentMsg?.mimetype || 'application/octet-stream';
+              const filename = documentMsg?.fileName || '';
+              const ext =
+                path.extname(filename).slice(1) || mime.split('/')[1]?.split(';')[0] || 'bin';
               const localPath = `/tmp/aurix-whatsapp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
               fs.writeFileSync(localPath, buffer);
-              attachments.push({ type: 'image', url: localPath, filename: path.basename(localPath) });
+              attachments.push({
+                type: imageMsg ? 'image' : 'file',
+                url: localPath,
+                filename: filename || path.basename(localPath),
+              });
             } catch (e: any) {
-              console.error(`  WhatsApp image download error: ${e.message}`);
+              console.error(`  WhatsApp attachment download error: ${e.message}`);
             }
           }
 
@@ -133,7 +182,9 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
         }
       });
     } catch (e: any) {
-      console.error(`  WhatsApp: Baileys not installed. Run: npm install @whiskeysockets/baileys pino`);
+      console.error(
+        `  WhatsApp: Baileys not installed. Run: npm install @whiskeysockets/baileys pino`
+      );
       throw e;
     }
   }
@@ -162,7 +213,9 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
       this.reconnectTimer = undefined;
     }
     if (this.socket) {
-      try { this.socket.ev?.removeAllListeners?.(); } catch {}
+      try {
+        this.socket.ev?.removeAllListeners?.();
+      } catch {}
       this.socket.end(undefined);
       this.socket = undefined;
     }
@@ -182,7 +235,12 @@ export class WhatsAppPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async sendFile(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void> {
+  async sendFile(
+    filePath: string,
+    channelId: string,
+    caption?: string,
+    replyTo?: string
+  ): Promise<void> {
     if (!this.socket) throw new Error('WhatsApp not connected');
     if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
 

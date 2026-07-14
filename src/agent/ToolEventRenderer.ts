@@ -77,6 +77,44 @@ function statusSuffix(input: ToolEventRenderInput): string {
   return bits.length ? ` — ${bits.join(' · ')}` : '';
 }
 
+function oneLineDetail(input: ToolEventRenderInput): string {
+  const args = input.args || {};
+  const name = (input.toolName || 'tool').toLowerCase();
+  const query = args.query ? String(args.query) : '';
+  const url = args.url ? String(args.url) : '';
+  const action = args.action ? String(args.action) : '';
+  const command = args.command ? String(args.command) : '';
+  const path = args.file_path || args.path ? shortPath(args.file_path || args.path) : '';
+  if (name === 'web_search') return query;
+  if (name === 'web_fetch' || name === 'web_scrape') return url || query;
+  if (name === 'browser')
+    return [action, args.target || args.url || args.value].filter(Boolean).join(' ');
+  if (name === 'terminal' || name === 'bash') return command;
+  return query || url || path || action || String(args.target || args.name || '').trim();
+}
+
+export function renderToolActivityLine(input: ToolEventRenderInput): string {
+  const name = input.toolName || 'tool';
+  const lower = name.toLowerCase();
+  const labels: Record<string, string> = {
+    web_search: 'Web Search',
+    web_fetch: 'Web Fetch',
+    web_scrape: 'Web Fetch',
+    browser: 'Browser',
+    terminal: 'Terminal',
+    bash: 'Terminal',
+  };
+  const label = labels[lower] || name;
+  const detail = oneLineDetail(input).replace(/\s+/g, ' ').slice(0, 120);
+  const duration = formatDuration(input.durationMs);
+  const status =
+    input.status && input.status !== 'success' && input.status !== 'running'
+      ? ` ${input.status}`
+      : '';
+  const error = input.errorType && input.status !== 'success' ? ` ${input.errorType}` : '';
+  return [label, detail, duration, status.trim(), error.trim()].filter(Boolean).join(' ');
+}
+
 export function renderToolStart(
   input: ToolEventRenderInput,
   options: ToolEventRenderOptions = {}

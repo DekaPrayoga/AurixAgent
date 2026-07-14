@@ -21,6 +21,29 @@ export interface Tool {
 
 export type PermissionMode = 'ask' | 'bypass' | 'deny';
 export type PermissionReply = 'once' | 'always' | 'deny';
+export type ToolHookEvent = 'preToolUse' | 'postToolUse' | 'toolFailure';
+export type ToolHookDecision = 'allow' | 'deny' | 'ask' | 'defer';
+
+export interface ToolHookRequest {
+  event: ToolHookEvent;
+  toolName: string;
+  args: Record<string, unknown>;
+  result?: string;
+  status?: 'success' | 'error';
+  errorType?: string;
+  sessionId?: string;
+  turnId?: string;
+}
+
+export interface ToolHookResult {
+  decision?: ToolHookDecision;
+  reason?: string;
+  message?: string;
+}
+
+export type ToolHookHandler = (
+  request: ToolHookRequest
+) => Promise<ToolHookResult> | ToolHookResult;
 
 export interface ToolPermissionRequest {
   toolName: string;
@@ -32,7 +55,7 @@ export interface ToolPermissionRequest {
 
 export type PermissionHandler = (request: ToolPermissionRequest) => Promise<PermissionReply>;
 
-import { askUserTool } from './AskUser.js';
+import { askInputUserTool, askUserTool } from './AskUser.js';
 import {
   requiresManualDeleteApproval,
   requiresManualDependencyInstallApproval,
@@ -44,10 +67,12 @@ export class ToolRegistry {
 
   constructor() {
     this.register(askUserTool);
+    this.register(askInputUserTool);
   }
   private allowedTools = new Set<string>();
   private permissionMode: PermissionMode = 'bypass';
   private permissionHandler?: PermissionHandler;
+  private hookHandler?: ToolHookHandler;
   private readFiles = new Set<string>();
 
   register(tool: Tool): void {
@@ -78,6 +103,14 @@ export class ToolRegistry {
     return this.permissionHandler;
   }
 
+  setHookHandler(handler: ToolHookHandler): void {
+    this.hookHandler = handler;
+  }
+
+  getHookHandler(): ToolHookHandler | undefined {
+    return this.hookHandler;
+  }
+
   setPermissionMode(mode: PermissionMode): void {
     this.permissionMode = mode;
   }
@@ -98,15 +131,18 @@ export class ToolRegistry {
     return Array.from(this.allowedTools.values()).sort();
   }
 
-  getToolDefs(): ToolDef[] {
-    return this.list().map((t) => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      },
-    }));
+  getToolDefs(toolNames?: Iterable<string>): ToolDef[] {
+    const allowed = toolNames ? new Set(toolNames) : null;
+    return this.list()
+      .filter((t) => !allowed || allowed.has(t.name))
+      .map((t) => ({
+        type: 'function' as const,
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters,
+        },
+      }));
   }
 
   async execute(name: string, args: Record<string, unknown>): Promise<string> {
@@ -121,6 +157,15 @@ export class ToolRegistry {
     return this.runTool(name, args, context);
   }
 
+  private async runHook(request: ToolHookRequest): Promise<ToolHookResult> {
+    if (!this.hookHandler) return {};
+    try {
+      return (await this.hookHandler(request)) || {};
+    } catch (e: any) {
+      return { decision: 'deny', reason: e?.message || String(e) };
+    }
+  }
+
   private async runTool(
     name: string,
     args: Record<string, unknown>,
@@ -128,6 +173,21 @@ export class ToolRegistry {
   ): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) return `Error: Unknown tool "${name}"`;
+
+    const hookBase = {
+      toolName: name,
+      args: redactArgs(args),
+      sessionId: typeof args._sessionId === 'string' ? args._sessionId : undefined,
+      turnId: typeof args._turnId === 'string' ? args._turnId : undefined,
+    };
+    const preHook = await this.runHook({ event: 'preToolUse', ...hookBase });
+    if (preHook.decision === 'deny') {
+      return `Permission denied for ${name} by hook${preHook.reason ? `: ${preHook.reason}` : '.'}`;
+    }
+    if (preHook.decision === 'defer') {
+      return `Tool ${name} deferred by hook${preHook.reason ? `: ${preHook.reason}` : '.'}`;
+    }
+    const hookForcesAsk = preHook.decision === 'ask';
 
     const filePath = (args.file_path || args.path) as string | undefined;
 
@@ -155,12 +215,12 @@ export class ToolRegistry {
     if (dependencyInstallApproval) {
       delete args._approvedDependencyInstall;
     }
-    if (permission && (manualApproval || !this.allowedTools.has(name))) {
-      if (this.permissionMode === 'deny' && !manualApproval) {
+    if (permission && (manualApproval || hookForcesAsk || !this.allowedTools.has(name))) {
+      if (this.permissionMode === 'deny' && !manualApproval && !hookForcesAsk) {
         return `Permission denied for ${name}. Use /permissions mode ask to allow prompts.`;
       }
 
-      if (manualApproval || this.permissionMode !== 'bypass') {
+      if (manualApproval || hookForcesAsk || this.permissionMode !== 'bypass') {
         if (!this.permissionHandler) {
           return `Permission required for ${name}, but no interactive permission handler is available.`;
         }
@@ -195,10 +255,30 @@ export class ToolRegistry {
     }
 
     try {
-      if (context && tool.executeWithEvents) return await tool.executeWithEvents(args, context);
-      return await tool.execute(args);
+      const result =
+        context && tool.executeWithEvents
+          ? await tool.executeWithEvents(args, context)
+          : await tool.execute(args);
+      const postHook = await this.runHook({
+        event: 'postToolUse',
+        ...hookBase,
+        result: result.slice(0, 4000),
+        status: 'success',
+      });
+      if (postHook.decision === 'deny') {
+        return `Error: ${name} result rejected by hook${postHook.reason ? `: ${postHook.reason}` : '.'}`;
+      }
+      return postHook.message ? `${result}\n\n[Hook] ${postHook.message}` : result;
     } catch (e: any) {
-      return `Error executing ${name}: ${e.message}`;
+      const result = `Error executing ${name}: ${e.message}`;
+      const failureHook = await this.runHook({
+        event: 'toolFailure',
+        ...hookBase,
+        result,
+        status: 'error',
+        errorType: e?.name || 'tool_error',
+      });
+      return failureHook.message ? `${result}\n\n[Hook] ${failureHook.message}` : result;
     }
   }
 

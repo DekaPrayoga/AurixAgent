@@ -1,5 +1,11 @@
 import { TempMail } from './tempmail/TempMail.js';
-import { type BrowserContext, type Page } from 'playwright-core';
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type CDPSession,
+  type Page,
+} from 'playwright-core';
 import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
@@ -145,6 +151,10 @@ interface BrowserSession {
   context: BrowserContext;
   page: Page;
   profileDir: string;
+  mode: 'managed' | 'cdp';
+  cdpEndpoint?: string;
+  cdpBrowser?: Browser;
+  cdpSession?: CDPSession;
   crashed?: boolean;
 }
 
@@ -156,6 +166,12 @@ let consecutiveEvalFailures = 0;
 let lastEvalCode = '';
 let browserHeadless = process.env.BROWSER_HEADLESS !== 'false';
 let browserProxy = process.env.BROWSER_PROXY || '';
+let browserCdpEndpoint =
+  process.env.AURIX_BROWSER_CDP_ENDPOINT ||
+  process.env.BROWSER_CDP_ENDPOINT ||
+  process.env.BROWSER_CDP_URL ||
+  '';
+let browserCdpDisabled = false;
 
 export function setBrowserSession(key: string): void {
   currentSessionKey = key;
@@ -171,7 +187,12 @@ function getSession(): BrowserSession | undefined {
 
 async function closeAllSessions(): Promise<void> {
   for (const [key, session] of sessions) {
-    await session.context.close().catch(() => {});
+    session.cdpSession = undefined;
+    if (session.mode === 'cdp') {
+      await session.cdpBrowser?.close({ reason: 'Aurix browser CDP disconnect' }).catch(() => {});
+    } else {
+      await session.context.close().catch(() => {});
+    }
   }
   sessions.clear();
 }
@@ -183,6 +204,38 @@ function getProxyPool(): string[] {
   } catch {
     return [];
   }
+}
+
+function getConfiguredCdpEndpoint(): string {
+  if (browserCdpDisabled) return '';
+  if (browserCdpEndpoint) return browserCdpEndpoint;
+  try {
+    const config = loadConfig();
+    return config.browser?.cdpEndpoint || '';
+  } catch {
+    return '';
+  }
+}
+
+async function normalizeCdpEndpoint(endpoint: string): Promise<string> {
+  const raw = endpoint.trim();
+  if (!raw) return '';
+  if (raw.startsWith('ws://') || raw.startsWith('wss://')) return raw;
+
+  const base = raw.startsWith('http://') || raw.startsWith('https://') ? raw : `http://${raw}`;
+  try {
+    const versionUrl = new URL('/json/version', base).toString();
+    const res = await fetch(versionUrl);
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      if (typeof data.webSocketDebuggerUrl === 'string' && data.webSocketDebuggerUrl) {
+        return data.webSocketDebuggerUrl;
+      }
+    }
+  } catch {
+    // Playwright can also accept the base HTTP endpoint directly.
+  }
+  return base;
 }
 
 function pickRandomProxy(): string {
@@ -241,10 +294,20 @@ async function resolveGeoForProxy(proxyStr: string): Promise<GeoInfo> {
 
 const BASE_PROFILE_DIR = join(homedir(), '.aurix-browser-profile');
 
-function getProfileDir(): string {
-  if (process.env.BROWSER_PERSISTENT_PROFILE === 'true') return BASE_PROFILE_DIR;
-  const suffix = Math.random().toString(36).slice(2, 8);
-  return `${BASE_PROFILE_DIR}-${suffix}`;
+function getProfileDir(sessionKey = currentSessionKey): string {
+  if (
+    process.env.BROWSER_FRESH_PROFILE === 'true' ||
+    process.env.BROWSER_EPHEMERAL_PROFILE === 'true'
+  ) {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    return `${BASE_PROFILE_DIR}-${suffix}`;
+  }
+
+  const key = sessionKey.trim();
+  if (!key || key === 'default') return BASE_PROFILE_DIR;
+
+  const safeKey = key.replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 48) || 'session';
+  return `${BASE_PROFILE_DIR}-${safeKey}`;
 }
 
 const VIEWPORTS = [
@@ -302,6 +365,69 @@ function randomPick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+function selectBestPage(context: BrowserContext): Page | undefined {
+  return (
+    context.pages().find((p) => !p.isClosed() && !p.url().startsWith('devtools://')) ||
+    context.pages().find((p) => !p.isClosed())
+  );
+}
+
+async function connectCdpBrowser(endpoint: string): Promise<Page> {
+  const normalized = await normalizeCdpEndpoint(endpoint);
+  if (!normalized) throw new Error('CDP endpoint is empty');
+
+  const existing = getSession();
+  if (existing && existing.mode !== 'cdp') await closeBrowser();
+  if (
+    existing?.mode === 'cdp' &&
+    existing.cdpEndpoint === normalized &&
+    !existing.page.isClosed()
+  ) {
+    return existing.page;
+  }
+  if (existing?.mode === 'cdp') await closeBrowser();
+
+  const browser = await chromium.connectOverCDP(normalized, { timeout: 15000 });
+  let context = browser.contexts()[0];
+  if (!context) context = await browser.newContext({ ignoreHTTPSErrors: true });
+  let page = selectBestPage(context);
+  if (!page) page = await context.newPage();
+  await page.bringToFront().catch(() => {});
+
+  const profileDir = `cdp:${normalized}`;
+  const session: BrowserSession = {
+    context,
+    page,
+    profileDir,
+    mode: 'cdp',
+    cdpEndpoint: normalized,
+    cdpBrowser: browser,
+    crashed: false,
+  };
+
+  const markCrashed = () => {
+    const s = sessions.get(currentSessionKey);
+    if (s) s.crashed = true;
+  };
+  page.on('crash', markCrashed);
+  context.on('close', markCrashed);
+  browser.on('disconnected', markCrashed);
+
+  sessions.set(currentSessionKey, session);
+  browserCdpEndpoint = normalized;
+  browserCdpDisabled = false;
+  return page;
+}
+
+async function getPageCdpSession(): Promise<CDPSession> {
+  const p = await ensureBrowser();
+  const session = getSession();
+  if (!session) throw new Error('No active browser session');
+  if (session.cdpSession) return session.cdpSession;
+  session.cdpSession = await session.context.newCDPSession(p);
+  return session.cdpSession;
+}
+
 async function ensureBrowser(): Promise<Page> {
   const existing = getSession();
   if (existing && !existing.page.isClosed() && !(existing as any).crashed) return existing.page;
@@ -309,6 +435,9 @@ async function ensureBrowser(): Promise<Page> {
   if (existing && ((existing as any).crashed || existing.page.isClosed())) {
     await closeBrowser();
   }
+
+  const cdpEndpoint = getConfiguredCdpEndpoint();
+  if (cdpEndpoint) return connectCdpBrowser(cdpEndpoint);
 
   await ensureBinary();
 
@@ -560,14 +689,19 @@ async function ensureBrowser(): Promise<Page> {
   page.on('crash', _updateCrashed);
   context.on('close', _updateCrashed);
 
-  sessions.set(currentSessionKey, { context, page, profileDir, crashed: false });
+  sessions.set(currentSessionKey, { context, page, profileDir, mode: 'managed', crashed: false });
   return page;
 }
 
 async function closeBrowser(): Promise<void> {
   const session = getSession();
   if (session) {
-    await session.context.close().catch(() => {});
+    session.cdpSession = undefined;
+    if (session.mode === 'cdp') {
+      await session.cdpBrowser?.close({ reason: 'Aurix browser CDP disconnect' }).catch(() => {});
+    } else {
+      await session.context.close().catch(() => {});
+    }
     sessions.delete(currentSessionKey);
   }
 }
@@ -729,9 +863,9 @@ Step 4: If ALL 3 fail → take a snapshot to find a better selector, then retry
 Forms: signup-assist, signin-assist, fill, type, click, select, press-key, upload
 Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, open-tabs
 Read: state, screenshot, snapshot, text, html, url, title, cookies
-Advanced: evaluate (READ ONLY), drag-to, hold-click, wait
+Advanced: evaluate (READ ONLY), drag-to, hold-click, wait, cdp-command
 Captcha: detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
-Config: set-proxy, set-ui, status, close
+Config: connect-cdp, disconnect-cdp, cdp-status, set-proxy, set-ui, status, close
 
 Target: CSS (#id, .class, [attr]), text="...", role=button, placeholder="...", label="...", or plain text.
 Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass" per session.`,
@@ -751,7 +885,7 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
       value: {
         type: 'string',
         description:
-          'Value for fill/type actions, URL for navigate, key for press-key, expression for evaluate, or tab index for switch-tab',
+          'Value for fill/type actions, URL for navigate, key for press-key, expression for evaluate, tab index for switch-tab, or CDP endpoint for connect-cdp',
       },
       options: {
         type: 'string',
@@ -800,6 +934,72 @@ Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass"
 
     try {
       switch (action) {
+        case 'connect-cdp': {
+          const endpoint = value || target || options.endpoint || getConfiguredCdpEndpoint();
+          if (!endpoint) {
+            return err(
+              'connect-cdp requires a Chrome DevTools endpoint',
+              'Usage: /browser connect http://127.0.0.1:9222 or browser action="connect-cdp" value="http://127.0.0.1:9222"'
+            );
+          }
+          const page = await connectCdpBrowser(String(endpoint));
+          const session = getSession()!;
+          return ok('Connected to live Chromium via CDP', {
+            endpoint: session.cdpEndpoint || String(endpoint),
+            url: page.url(),
+            title: await page.title().catch(() => ''),
+            tabs: String(session.context.pages().length),
+          });
+        }
+
+        case 'disconnect-cdp': {
+          const session = getSession();
+          if (!session || session.mode !== 'cdp') {
+            browserCdpEndpoint = '';
+            browserCdpDisabled = true;
+            return ok(
+              'CDP endpoint disabled. Managed CloakBrowser will be used on next browser action.'
+            );
+          }
+          const endpoint = session.cdpEndpoint || 'unknown';
+          await closeBrowser();
+          browserCdpEndpoint = '';
+          browserCdpDisabled = true;
+          return ok(
+            'Disconnected from CDP browser. Managed CloakBrowser will be used on next browser action.',
+            {
+              endpoint,
+            }
+          );
+        }
+
+        case 'cdp-status': {
+          const session = getSession();
+          const configured = getConfiguredCdpEndpoint();
+          if (!session) {
+            return `CDP: ${configured ? 'configured' : 'not configured'}\nEndpoint: ${configured || 'none'}\nBrowser: not running`;
+          }
+          return `CDP: ${session.mode === 'cdp' ? 'connected' : 'managed browser mode'}\nEndpoint: ${session.cdpEndpoint || configured || 'none'}\nURL: ${session.page.url()}\nTitle: ${await session.page.title().catch(() => '')}\nOpen tabs: ${session.context.pages().length}`;
+        }
+
+        case 'cdp':
+        case 'cdp-command': {
+          const method = target || value || options.method;
+          if (!method) {
+            return err(
+              'cdp-command requires a CDP method',
+              'Example: action="cdp-command" target="Network.getAllCookies" or options={"method":"Runtime.evaluate","params":{"expression":"location.href"}}'
+            );
+          }
+          const params = options.params && typeof options.params === 'object' ? options.params : {};
+          const client = await getPageCdpSession();
+          const result = await client.send(String(method) as any, params as any);
+          const out = JSON.stringify(result, null, 2);
+          return out.length > 12000
+            ? `${out.slice(0, 12000)}\n... [${out.length - 12000} more chars]`
+            : out;
+        }
+
         case 'set-proxy': {
           if (!value && !target)
             return err(
@@ -1014,11 +1214,12 @@ except Exception as e:
 
         case 'status': {
           const session = getSession();
+          const configuredCdp = getConfiguredCdpEndpoint();
           if (!session || session.page.isClosed()) {
-            return `Browser: not running. Use action "navigate" to start it.\nProfile: ${BASE_PROFILE_DIR}\nEngine: Chromium\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}`;
+            return `Browser: not running. Use action "navigate" to start it.\nEngine: Chromium\nProfile: ${BASE_PROFILE_DIR}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nCDP: ${configuredCdp ? `configured (${configuredCdp})` : 'not configured'}`;
           }
           const title = await session.page.title();
-          return `Browser: running\nEngine: Chromium\nProfile: ${session.profileDir}\nMode: ${browserHeadless ? 'headless' : 'headed'}\nProxy: ${browserProxy || 'none'}\nURL: ${session.page.url()}\nTitle: ${title}\nOpen tabs: ${session.context.pages().length}\nAurix Uptime: ${Metrics.getUptimeFormatted()}`;
+          return `Browser: running\nEngine: Chromium\nProfile: ${session.profileDir}\nMode: ${session.mode === 'cdp' ? 'cdp-attached' : browserHeadless ? 'headless' : 'headed'}\nProxy: ${session.mode === 'cdp' ? 'external browser controls proxy' : browserProxy || 'none'}\nCDP: ${session.cdpEndpoint || configuredCdp || 'none'}\nURL: ${session.page.url()}\nTitle: ${title}\nOpen tabs: ${session.context.pages().length}\nAurix Uptime: ${Metrics.getUptimeFormatted()}`;
         }
 
         case 'close': {
@@ -4117,7 +4318,7 @@ except Exception as e:
         default:
           return err(
             `Unknown action: "${action}"`,
-            `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`
+            `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, connect-cdp, disconnect-cdp, cdp-status, cdp-command, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`
           );
       }
     } catch (e: any) {

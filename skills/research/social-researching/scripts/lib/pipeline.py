@@ -32,6 +32,7 @@ from . import (
     query,
     reddit,
     reddit_public,
+    reddit_relay,
     relevance,
     rerank,
     schema,
@@ -880,24 +881,50 @@ def _retrieve_stream(
         # Use raw_topic so expand_reddit_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         reddit_query = raw_topic or subquery.search_query
-        # Public Reddit first (free, gets comments); SC as backup
-        try:
-            public_results = reddit_public.search_reddit_public(
-                reddit_query, from_date, to_date, depth=depth,
-                subreddits=subreddits,
-            )
-            if public_results:
-                return public_results, {}
-        except Exception as exc:
-            sys.stderr.write(
-                f"[Reddit] Public search failed ({type(exc).__name__}: {exc})"
-            )
-            if not config.get("SCRAPECREATORS_API_KEY"):
-                sys.stderr.write("\n")
-                return [], {}
-            sys.stderr.write(", using ScrapeCreators backup\n")
-        # Fallback to ScrapeCreators if public returned empty or raised
-        if config.get("SCRAPECREATORS_API_KEY"):
+        backend = (config.get("AURIX_REDDIT_BACKEND") or "auto").lower()
+        strict_relay = str(config.get("AURIX_REDDIT_RELAY_STRICT") or "").lower() in {
+            "1", "true", "yes", "on",
+        }
+
+        if backend == "off":
+            return [], {}
+
+        if config.get("AURIX_REDDIT_RELAY_URL") and backend in {"auto", "relay"}:
+            try:
+                relay_result = reddit_relay.search_and_enrich(
+                    reddit_query,
+                    from_date,
+                    to_date,
+                    depth=depth,
+                    config=config,
+                    subreddits=subreddits,
+                )
+                relay_items = reddit_relay.parse_reddit_response(relay_result)
+                if relay_items or strict_relay or backend == "relay":
+                    return relay_items, {}
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[Reddit] Relay search failed ({type(exc).__name__}: {exc})\n"
+                )
+                if strict_relay or backend == "relay":
+                    return [], {}
+
+        if backend in {"auto", "keyless"}:
+            try:
+                public_results = reddit_public.search_reddit_public(
+                    reddit_query, from_date, to_date, depth=depth,
+                    subreddits=subreddits,
+                )
+                if public_results or backend == "keyless":
+                    return public_results, {}
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[Reddit] Public search failed ({type(exc).__name__}: {exc})\n"
+                )
+                if backend == "keyless":
+                    return [], {}
+
+        if backend in {"auto", "scrapecreators"} and config.get("SCRAPECREATORS_API_KEY"):
             try:
                 result = reddit.search_and_enrich(
                     reddit_query,
@@ -910,7 +937,7 @@ def _retrieve_stream(
                 return reddit.parse_reddit_response(result), {}
             except Exception as exc:
                 sys.stderr.write(
-                    f"[Reddit] ScrapeCreators backup also failed "
+                    f"[Reddit] ScrapeCreators backup failed "
                     f"({type(exc).__name__}: {exc})\n"
                 )
         return [], {}
