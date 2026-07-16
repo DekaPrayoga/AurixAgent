@@ -1,252 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { TextAttributes, decodePasteBytes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
-import { execFile, execFileSync, spawn as nodeSpawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { theme } from './theme.js';
+import { isPasteKey, readClipboard, readClipboardImage, writeClipboard } from './Clipboard.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 import { filterFiles } from './fileList.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
-
-function runCmd(
-  cmd: string,
-  args: string[],
-  input?: string,
-  env?: Record<string, string>
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      cmd,
-      args,
-      { timeout: 2000, env: env ? { ...process.env, ...env } : undefined },
-      (err, stdout) => {
-        if (err) reject(err);
-        else resolve(stdout);
-      }
-    );
-    if (input && child.stdin) {
-      child.stdin.write(input);
-      child.stdin.end();
-    }
-  });
-}
-
-const isWindows = process.platform === 'win32';
-const isMac = process.platform === 'darwin';
-
-let cachedDisplay: { display: string; xauth: string } | null | undefined;
-
-function findDisplay(): { display: string; xauth: string } | null {
-  if (cachedDisplay !== undefined) return cachedDisplay;
-
-  const home = process.env.HOME || process.env.USERPROFILE || '';
-
-  const xauthCandidates = [process.env.XAUTHORITY, home && `${home}/.Xauthority`].filter(
-    Boolean
-  ) as string[];
-
-  let xauth = '';
-  for (const p of xauthCandidates) {
-    try {
-      fs.accessSync(p);
-      xauth = p;
-      break;
-    } catch {}
-  }
-
-  if (process.env.DISPLAY) {
-    cachedDisplay = { display: process.env.DISPLAY, xauth };
-    return cachedDisplay;
-  }
-
-  try {
-    const sockets = fs.readdirSync('/tmp/.X11-unix/');
-    for (const s of sockets) {
-      if (s.startsWith('X')) {
-        cachedDisplay = { display: `:${s.slice(1)}`, xauth };
-        return cachedDisplay;
-      }
-    }
-  } catch {}
-
-  try {
-    const out = execFileSync('nxserver', ['--list'], { timeout: 2000, encoding: 'utf8' });
-    const match = out.match(/(\d{3,4})\s+\w+\s+[\d.]+/);
-    if (match) {
-      cachedDisplay = { display: `:${match[1]}`, xauth };
-      return cachedDisplay;
-    }
-  } catch {}
-
-  cachedDisplay = null;
-  return null;
-}
-
-function xclipEnv(): Record<string, string> | undefined {
-  const d = findDisplay();
-  if (!d?.display) return undefined;
-  const env: Record<string, string> = { DISPLAY: d.display };
-  if (d.xauth) env.XAUTHORITY = d.xauth;
-  return env;
-}
-
-export function readClipboard(): Promise<string | undefined> {
-  return (async () => {
-    if (isMac) {
-      try {
-        const t = await runCmd('pbpaste', []);
-        if (t) return t;
-      } catch {}
-      return undefined;
-    }
-    if (isWindows) {
-      try {
-        const t = await runCmd('powershell.exe', [
-          '-NoProfile',
-          '-Sta',
-          '-command',
-          '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $clip = Get-Clipboard -Raw; if ($clip -ne $null) { Write-Output $clip }',
-        ]);
-        if (t) return t.replace(/\r\n/g, '\n');
-      } catch {}
-      return undefined;
-    }
-    if (process.env.WAYLAND_DISPLAY) {
-      try {
-        const t = await runCmd('wl-paste', ['--no-newline']);
-        if (t) return t;
-      } catch {}
-    }
-    const env = xclipEnv();
-    if (env || process.env.DISPLAY) {
-      try {
-        const t = await runCmd('xclip', ['-selection', 'clipboard', '-o'], undefined, env);
-        if (t) return t;
-      } catch {}
-      try {
-        const t = await runCmd('xsel', ['--clipboard', '--output'], undefined, env);
-        if (t) return t;
-      } catch {}
-    }
-    return undefined;
-  })();
-}
-
-export function writeClipboard(text: string): void {
-  const b64 = Buffer.from(text).toString('base64');
-  const osc52 = `\x1b]52;c;${b64}\x07`;
-  process.stdout.write(process.env.TMUX ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52);
-
-  import('node:child_process')
-    .then(({ spawn }) => {
-      const clipEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
-      if (process.env.DISPLAY) clipEnv.DISPLAY = process.env.DISPLAY;
-      if (process.env.XAUTHORITY) clipEnv.XAUTHORITY = process.env.XAUTHORITY;
-      const tools: [string, string[]][] = [
-        ['wl-copy', []],
-        ['xclip', ['-selection', 'clipboard']],
-        ['xsel', ['--clipboard', '--input']],
-        ['pbcopy', []],
-        ['clip', []],
-        ['clip.exe', []],
-      ];
-      for (const [cmd, args] of tools) {
-        try {
-          const child = spawn(cmd, args, { stdio: ['pipe', 'ignore', 'ignore'], env: clipEnv });
-          child.stdin?.end(text);
-          child.on('error', () => {});
-        } catch {}
-      }
-    })
-    .catch(() => {});
-}
-
-function readClipboardImage(): Promise<string | undefined> {
-  return (async () => {
-    const sp = nodeSpawn;
-    const tmpFile = `/tmp/aurix-paste-${Date.now()}.png`;
-    const env = xclipEnv();
-    const fullEnv = env ? { ...process.env, ...env } : undefined;
-
-    if (isMac) {
-      return new Promise<string | undefined>((resolve) => {
-        const script = `set theFile to (POSIX file "${tmpFile}")
-try
-  set theClip to the clipboard as «class PNGf»
-  set fRef to open for access theFile with write permission
-  write theClip to fRef
-  close access fRef
-on error
-  try
-    close access theFile
-  end try
-  return ""
-end try
-return "ok"`;
-        const child = sp('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
-        let out = '';
-        child.stdout?.on('data', (d: Buffer) => {
-          out += d;
-        });
-        child.on('close', () => resolve(out.includes('ok') ? tmpFile : undefined));
-        child.on('error', () => resolve(undefined));
-      });
-    }
-
-    if (isWindows) {
-      const tmpFileWin = path.join(os.tmpdir(), `aurix-paste-${Date.now()}.png`);
-      return new Promise<string | undefined>((resolve) => {
-        const psScript = `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img -ne $null) { $img.Save('${tmpFileWin.replace(/\\/g, '\\\\')}', [System.Drawing.Imaging.ImageFormat]::Png); Write-Output 'ok' } else { Write-Output '' }`;
-        const child = sp('powershell', ['-NoProfile', '-Command', psScript], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          windowsHide: true,
-        });
-        let out = '';
-        child.stdout?.on('data', (d: Buffer) => {
-          out += d;
-        });
-        child.on('close', () => resolve(out.includes('ok') ? tmpFileWin : undefined));
-        child.on('error', () => resolve(undefined));
-      });
-    }
-
-    if (process.env.WAYLAND_DISPLAY) {
-      return new Promise<string | undefined>((resolve) => {
-        const child = sp('wl-paste', ['--type', 'image/png'], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-        });
-        const chunks: Buffer[] = [];
-        child.stdout?.on('data', (d: Buffer) => chunks.push(d));
-        child.on('close', (code: number) => {
-          if (code === 0 && chunks.length > 0) {
-            fs.writeFileSync(tmpFile, Buffer.concat(chunks));
-            resolve(tmpFile);
-          } else resolve(undefined);
-        });
-        child.on('error', () => resolve(undefined));
-      });
-    }
-
-    return new Promise<string | undefined>((resolve) => {
-      const child = sp('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        env: fullEnv,
-      });
-      const chunks: Buffer[] = [];
-      child.stdout?.on('data', (d: Buffer) => chunks.push(d));
-      child.on('close', (code: number) => {
-        if (code === 0 && chunks.length > 0) {
-          fs.writeFileSync(tmpFile, Buffer.concat(chunks));
-          resolve(tmpFile);
-        } else resolve(undefined);
-      });
-      child.on('error', () => resolve(undefined));
-    });
-  })();
-}
 
 interface InputBoxProps {
   onSubmit: (value: string) => void;
@@ -307,6 +67,91 @@ export function InputBox({
   }, [cursor, value]);
   const [selStart, setSelStart] = useState(-1);
   const [selEnd, setSelEnd] = useState(-1);
+  const selStartRef = React.useRef(-1);
+  const selEndRef = React.useRef(-1);
+
+  const setInputState = React.useCallback((nextValue: string, nextCursor: number) => {
+    const clamped = Math.max(0, Math.min(nextCursor, nextValue.length));
+    valueRef.current = nextValue;
+    cursorRef.current = clamped;
+    setValue(nextValue);
+    setCursor(clamped);
+  }, []);
+
+  const clearSelection = React.useCallback(() => {
+    selStartRef.current = -1;
+    selEndRef.current = -1;
+    setSelStart(-1);
+    setSelEnd(-1);
+  }, []);
+
+  const setSelectionState = React.useCallback((start: number, end: number) => {
+    selStartRef.current = start;
+    selEndRef.current = end;
+    setSelStart(start);
+    setSelEnd(end);
+  }, []);
+  const hasActiveSelection = React.useCallback(() => {
+    return (
+      selStartRef.current >= 0 &&
+      selEndRef.current >= 0 &&
+      selStartRef.current !== selEndRef.current
+    );
+  }, []);
+
+  const replaceSelectionOrInsert = React.useCallback(
+    (text: string) => {
+      const currentValue = valueRef.current;
+      const currentCursor = cursorRef.current;
+      if (hasActiveSelection()) {
+        const start = Math.min(selStartRef.current, selEndRef.current);
+        const end = Math.max(selStartRef.current, selEndRef.current);
+        setInputState(
+          currentValue.slice(0, start) + text + currentValue.slice(end),
+          start + text.length
+        );
+        clearSelection();
+        return;
+      }
+      setInputState(
+        currentValue.slice(0, currentCursor) + text + currentValue.slice(currentCursor),
+        currentCursor + text.length
+      );
+      clearSelection();
+    },
+    [clearSelection, hasActiveSelection, setInputState]
+  );
+
+  const insertPastedText = React.useCallback(
+    (rawText?: string) => {
+      const clean = safeDisplayText(rawText || '')
+        .replace(/\r\n/g, '\n')
+        .trimEnd();
+      if (!clean) return;
+      const lines = clean.split('\n');
+      if (lines.length >= 2 || clean.length > 200) {
+        const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
+        pastedBlocks.set(placeholder, clean);
+        replaceSelectionOrInsert(placeholder);
+        return;
+      }
+      replaceSelectionOrInsert(clean);
+    },
+    [replaceSelectionOrInsert]
+  );
+
+  const insertClipboardImage = React.useCallback(
+    (imgPath: string) => {
+      const summary = `[image: ${imgPath}]`;
+      lastPasteStart = hasActiveSelection()
+        ? Math.min(selStartRef.current, selEndRef.current)
+        : cursorRef.current;
+      lastPasteLen = summary.length;
+      replaceSelectionOrInsert(summary);
+    },
+    [hasActiveSelection, replaceSelectionOrInsert]
+  );
+
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
@@ -340,34 +185,7 @@ export function InputBox({
     pasteInProgress = true;
     const text = safeDisplayText(decodePasteBytes(event.bytes)).replace(/\r\n/g, '\n').trimEnd();
     pasteInProgress = false;
-
-    if (text) {
-      const lines = text.split('\n');
-      // If there's a selection, replace it with pasted text
-      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
-        const start = Math.min(selStart, selEnd);
-        const end = Math.max(selStart, selEnd);
-        if (lines.length >= 2 || text.length > 200) {
-          const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
-          pastedBlocks.set(placeholder, text);
-          setValue((prev) => prev.slice(0, start) + placeholder + prev.slice(end));
-          setCursor(start + placeholder.length);
-        } else {
-          setValue((prev) => prev.slice(0, start) + text + prev.slice(end));
-          setCursor(start + text.length);
-        }
-        setSelStart(-1);
-        setSelEnd(-1);
-      } else if (lines.length >= 2 || text.length > 200) {
-        const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
-        pastedBlocks.set(placeholder, text);
-        setValue((prev) => prev + placeholder);
-        setCursor((prev) => prev + placeholder.length);
-      } else {
-        setValue((prev) => prev + text);
-        setCursor((prev) => prev + text.length);
-      }
-    }
+    insertPastedText(text);
   });
 
   const frame = () => {
@@ -405,16 +223,14 @@ export function InputBox({
     const file = fileSuggestions[index];
     if (!file) return;
     const next = value.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `);
-    setValue(next);
-    setCursor(next.length);
+    setInputState(next, next.length);
   }
 
   function applyCommandCompletion(index = selectedCommand) {
     const command = suggestions[index];
     if (!command) return;
     const next = completeCommand(command);
-    setValue(next);
-    setCursor(next.length);
+    setInputState(next, next.length);
   }
 
   useKeyboard((evt) => {
@@ -440,7 +256,8 @@ export function InputBox({
         applyFileCompletion();
         return;
       }
-      const trimmed = value.trim();
+      const currentValue = valueRef.current;
+      const trimmed = currentValue.trim();
       if (trimmed) {
         let expanded = trimmed;
         for (const [placeholder, fullText] of pastedBlocks) {
@@ -449,8 +266,7 @@ export function InputBox({
         pastedBlocks.clear();
         onSubmit(expanded);
         setHistory((prev) => [...prev, trimmed]);
-        setValue('');
-        setCursor(0);
+        setInputState('', 0);
         setHistoryIdx(-1);
       }
       return;
@@ -474,24 +290,24 @@ export function InputBox({
     }
     if (evt.ctrl && name === 'p') {
       evt.preventDefault();
-      const next = value.startsWith('/') ? '' : '/';
-      setValue(next);
-      setCursor(next.length);
+      const next = valueRef.current.startsWith('/') ? '' : '/';
+      setInputState(next, next.length);
       return;
     }
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
       // Copy selected text or all text
-      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
-        const start = Math.min(selStart, selEnd);
-        const end = Math.max(selStart, selEnd);
-        writeClipboard(value.slice(start, end));
-      } else if (value && value !== 'press Ctrl+C again to exit') {
-        writeClipboard(value);
+      const currentValue = valueRef.current;
+      if (hasActiveSelection()) {
+        const start = Math.min(selStartRef.current, selEndRef.current);
+        const end = Math.max(selStartRef.current, selEndRef.current);
+        writeClipboard(currentValue.slice(start, end));
+      } else if (currentValue && currentValue !== 'press Ctrl+C again to exit') {
+        writeClipboard(currentValue);
       }
-      const isHintText = value === 'press Ctrl+C again to exit';
-      if (!value || isHintText) {
+      const isHintText = currentValue === 'press Ctrl+C again to exit';
+      if (!currentValue || isHintText) {
         const now = Date.now();
         if (now - lastCtrlCEmpty < 1000) {
           if (onExit) {
@@ -501,12 +317,10 @@ export function InputBox({
           }
         } else {
           lastCtrlCEmpty = now;
-          setValue('press Ctrl+C again to exit');
-          setCursor(0);
-          setSelStart(-1);
-          setSelEnd(-1);
+          setInputState('press Ctrl+C again to exit', 0);
+          clearSelection();
           setTimeout(() => {
-            setValue((prev) => (prev === 'press Ctrl+C again to exit' ? '' : prev));
+            if (valueRef.current === 'press Ctrl+C again to exit') setInputState('', 0);
           }, 1500);
         }
       }
@@ -514,9 +328,8 @@ export function InputBox({
     }
     if (evt.ctrl && name === 'a') {
       evt.preventDefault();
-      setSelStart(0);
-      setSelEnd(value.length);
-      setCursor(value.length);
+      setSelectionState(0, valueRef.current.length);
+      setInputState(valueRef.current, valueRef.current.length);
       return;
     }
     if (evt.ctrl && name === 'z') {
@@ -525,117 +338,112 @@ export function InputBox({
       process.kill(process.pid, 'SIGTSTP');
       return;
     }
-    if (evt.ctrl && name === 'v') {
+    if (isPasteKey(evt)) {
       evt.preventDefault();
-      const insertAt = cursor;
-      readClipboardImage()
-        .then((imgPath) => {
+      Promise.allSettled([readClipboardImage(), readClipboard()])
+        .then(([imageResult, textResult]) => {
+          const imgPath = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
           if (imgPath) {
-            const summary = `[image: ${imgPath}]`;
-            setValue((prev) => {
-              lastPasteStart = insertAt;
-              lastPasteLen = summary.length;
-              return prev.slice(0, insertAt) + summary + prev.slice(insertAt);
-            });
-            setCursor(insertAt + summary.length);
+            insertClipboardImage(imgPath);
             return;
           }
-          return readClipboard().then((text) => {
-            if (!text) return;
-            const clean = safeDisplayText(text).replace(/\r\n/g, '\n').trimEnd();
-            const lines = clean.split('\n');
-            if (lines.length >= 2 || clean.length > 200) {
-              const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
-              pastedBlocks.set(placeholder, clean);
-              setValue((prev) => prev.slice(0, insertAt) + placeholder + prev.slice(insertAt));
-              setCursor(insertAt + placeholder.length);
-            } else {
-              setValue((prev) => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-              setCursor(insertAt + clean.length);
-            }
-          });
+          const text = textResult.status === 'fulfilled' ? textResult.value : undefined;
+          insertPastedText(text);
         })
         .catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {
       evt.preventDefault();
-      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
+      const currentValue = valueRef.current;
+      const currentCursor = cursorRef.current;
+      if (hasActiveSelection()) {
         // Delete selected text
-        const start = Math.min(selStart, selEnd);
-        const end = Math.max(selStart, selEnd);
-        setValue(value.slice(0, start) + value.slice(end));
-        setCursor(start);
-        setSelStart(-1);
-        setSelEnd(-1);
+        const start = Math.min(selStartRef.current, selEndRef.current);
+        const end = Math.max(selStartRef.current, selEndRef.current);
+        setInputState(currentValue.slice(0, start) + currentValue.slice(end), start);
+        clearSelection();
         lastPasteStart = -1;
         lastPasteLen = 0;
-      } else if (cursor > 0 && lastPasteStart >= 0 && cursor === lastPasteStart + lastPasteLen) {
-        setValue(value.slice(0, lastPasteStart) + value.slice(cursor));
-        setCursor(lastPasteStart);
+      } else if (
+        currentCursor > 0 &&
+        lastPasteStart >= 0 &&
+        currentCursor === lastPasteStart + lastPasteLen
+      ) {
+        setInputState(
+          currentValue.slice(0, lastPasteStart) + currentValue.slice(currentCursor),
+          lastPasteStart
+        );
         lastPasteStart = -1;
         lastPasteLen = 0;
-      } else if (cursor > 0) {
+      } else if (currentCursor > 0) {
         lastPasteStart = -1;
         lastPasteLen = 0;
-        setValue(value.slice(0, cursor - 1) + value.slice(cursor));
-        setCursor(cursor - 1);
+        setInputState(
+          currentValue.slice(0, currentCursor - 1) + currentValue.slice(currentCursor),
+          currentCursor - 1
+        );
       }
       return;
     }
     if (name === 'left') {
       evt.preventDefault();
+      const currentCursor = cursorRef.current;
       if (evt.shift) {
         // Shift+Left: extend selection left
-        if (selStart < 0) setSelStart(cursor);
-        const newCursor = Math.max(0, cursor - 1);
-        setCursor(newCursor);
-        setSelEnd(newCursor);
+        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
+        const newCursor = Math.max(0, currentCursor - 1);
+        setInputState(valueRef.current, newCursor);
+        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, newCursor);
       } else {
-        setCursor(Math.max(0, cursor - 1));
-        setSelStart(-1);
-        setSelEnd(-1);
+        setInputState(valueRef.current, Math.max(0, currentCursor - 1));
+        clearSelection();
       }
       return;
     }
     if (name === 'right') {
       evt.preventDefault();
+      const currentValue = valueRef.current;
+      const currentCursor = cursorRef.current;
       if (evt.shift) {
         // Shift+Right: extend selection right
-        if (selStart < 0) setSelStart(cursor);
-        const newCursor = Math.min(value.length, cursor + 1);
-        setCursor(newCursor);
-        setSelEnd(newCursor);
+        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
+        const newCursor = Math.min(currentValue.length, currentCursor + 1);
+        setInputState(currentValue, newCursor);
+        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, newCursor);
       } else {
-        setCursor(Math.min(value.length, cursor + 1));
-        setSelStart(-1);
-        setSelEnd(-1);
+        setInputState(currentValue, Math.min(currentValue.length, currentCursor + 1));
+        clearSelection();
       }
       return;
     }
     if (name === 'home') {
       evt.preventDefault();
+      const currentCursor = cursorRef.current;
       if (evt.shift) {
-        if (selStart < 0) setSelStart(cursor);
-        setCursor(0);
-        setSelEnd(0);
+        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
+        setInputState(valueRef.current, 0);
+        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, 0);
       } else {
-        setCursor(0);
-        setSelStart(-1);
-        setSelEnd(-1);
+        setInputState(valueRef.current, 0);
+        clearSelection();
       }
       return;
     }
     if (name === 'end') {
       evt.preventDefault();
+      const currentValue = valueRef.current;
+      const currentCursor = cursorRef.current;
       if (evt.shift) {
-        if (selStart < 0) setSelStart(cursor);
-        setCursor(value.length);
-        setSelEnd(value.length);
+        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
+        setInputState(currentValue, currentValue.length);
+        setSelectionState(
+          selStartRef.current < 0 ? currentCursor : selStartRef.current,
+          currentValue.length
+        );
       } else {
-        setCursor(value.length);
-        setSelStart(-1);
-        setSelEnd(-1);
+        setInputState(currentValue, currentValue.length);
+        clearSelection();
       }
       return;
     }
@@ -664,13 +472,13 @@ export function InputBox({
       return;
     }
     if (!suggestionsVisible && name === 'up') {
-      if (history.length === 0 || (historyIdx < 0 && value === '')) return;
+      if (history.length === 0 || (historyIdx < 0 && valueRef.current === '')) return;
       evt.preventDefault();
       evt.stopPropagation();
       const nextIdx = historyIdx < 0 ? history.length - 1 : Math.max(0, historyIdx - 1);
+      const next = history[nextIdx] || '';
       setHistoryIdx(nextIdx);
-      setValue(history[nextIdx] || '');
-      setCursor((history[nextIdx] || '').length);
+      setInputState(next, next.length);
       return;
     }
     if (!suggestionsVisible && name === 'down') {
@@ -680,49 +488,29 @@ export function InputBox({
       const nextIdx = historyIdx + 1;
       if (nextIdx >= history.length) {
         setHistoryIdx(-1);
-        setValue('');
-        setCursor(0);
+        setInputState('', 0);
         return;
       }
+      const next = history[nextIdx] || '';
       setHistoryIdx(nextIdx);
-      setValue(history[nextIdx] || '');
-      setCursor((history[nextIdx] || '').length);
+      setInputState(next, next.length);
       return;
     }
     if (evt.ctrl || evt.meta) return;
+    const printable = evt.sequence && evt.sequence.length === 1 ? evt.sequence : undefined;
+    if (printable && printable >= ' ') {
+      evt.preventDefault();
+      replaceSelectionOrInsert(printable);
+      return;
+    }
     if (name === 'space' || name === ' ') {
       evt.preventDefault();
-      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
-        const start = Math.min(selStart, selEnd);
-        const end = Math.max(selStart, selEnd);
-        setValue(value.slice(0, start) + ' ' + value.slice(end));
-        setCursor(start + 1);
-        setSelStart(-1);
-        setSelEnd(-1);
-      } else {
-        setValue(value.slice(0, cursor) + ' ' + value.slice(cursor));
-        setCursor(cursor + 1);
-        setSelStart(-1);
-        setSelEnd(-1);
-      }
+      replaceSelectionOrInsert(' ');
       return;
     }
     if (name.length === 1 && !evt.ctrl && !evt.meta) {
       const input = evt.shift ? name.toUpperCase() : name;
-      if (selStart >= 0 && selEnd >= 0 && selStart !== selEnd) {
-        // Replace selected text
-        const start = Math.min(selStart, selEnd);
-        const end = Math.max(selStart, selEnd);
-        setValue(value.slice(0, start) + input + value.slice(end));
-        setCursor(start + input.length);
-        setSelStart(-1);
-        setSelEnd(-1);
-      } else {
-        setValue(value.slice(0, cursor) + input + value.slice(cursor));
-        setCursor(cursor + input.length);
-        setSelStart(-1);
-        setSelEnd(-1);
-      }
+      replaceSelectionOrInsert(input);
     }
   });
 

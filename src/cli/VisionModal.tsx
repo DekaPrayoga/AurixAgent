@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
+import { isPasteKey, readClipboard } from './Clipboard.js';
 import { theme } from './theme.js';
 
 interface VisionModalProps {
@@ -70,17 +71,32 @@ export function VisionModal({
   ];
 
   const current = fields[step];
+  const stepRef = React.useRef(step);
+  const cursorRef = React.useRef(cursor);
+  const fieldSetters = [setModel, setBaseUrl, setApiKey, setProvider, setApiStyle];
 
   useEffect(() => {
+    stepRef.current = step;
+    cursorRef.current = current.value.length;
     setCursor(current.value.length);
   }, [step]);
 
-  usePaste((event) => {
-    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+  useEffect(() => {
+    cursorRef.current = cursor;
+  }, [cursor]);
+
+  const insertText = (rawText?: string) => {
+    const text = rawText?.replace(/\r\n/g, '\n').trimEnd();
     if (!text) return;
-    const insertAt = cursor;
-    current.setter((prev) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    const insertAt = cursorRef.current;
+    const setter = fieldSetters[stepRef.current];
+    setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    cursorRef.current = insertAt + text.length;
     setCursor(insertAt + text.length);
+  };
+
+  usePaste((event) => {
+    insertText(new TextDecoder().decode(event.bytes));
   });
 
   useKeyboard((evt) => {
@@ -105,33 +121,10 @@ export function VisionModal({
       return;
     }
 
-    if (name === 'v' && evt.ctrl) {
+    if (isPasteKey(evt)) {
       evt.preventDefault();
-      import('child_process')
-        .then(({ execSync }) => {
-          try {
-            let text = '';
-            if (process.platform === 'win32')
-              text = execSync('powershell -NoProfile -Command "Get-Clipboard"', {
-                encoding: 'utf8',
-                windowsHide: true,
-              })
-                .replace(/\r\n/g, '\n')
-                .trimEnd();
-            else if (process.platform === 'darwin')
-              text = execSync('pbpaste', { encoding: 'utf8', timeout: 2000 })
-                .replace(/\r\n/g, '\n')
-                .trimEnd();
-            else
-              text = execSync('wl-paste --no-newline', { encoding: 'utf8', timeout: 2000 })
-                .replace(/\r\n/g, '\n')
-                .trimEnd();
-            if (!text) return;
-            const insertAt = cursor;
-            current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
-            setCursor(insertAt + text.length);
-          } catch {}
-        })
+      readClipboard()
+        .then(insertText)
         .catch(() => {});
       return;
     }

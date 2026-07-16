@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import readline from 'readline';
-import { readClipboard, writeClipboard } from './InputBox.js';
+import { readClipboard, writeClipboard } from './Clipboard.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 const teal = chalk.hex('#fab283');

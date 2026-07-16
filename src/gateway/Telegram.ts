@@ -271,14 +271,28 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
       let result: any;
       if (part.type === 'text') {
-        result = await this.api('sendMessage', {
+        const params: Record<string, any> = {
           chat_id: channelId,
-          text: part.text,
+          text: markdownToTelegramHtml(part.text),
+          parse_mode: 'HTML',
           ...(currentReplyTo ? { reply_to_message_id: currentReplyTo } : {}),
           ...(options?.disable_web_page_preview !== undefined
             ? { disable_web_page_preview: options.disable_web_page_preview }
             : {}),
-        });
+        };
+        try {
+          result = await this.api('sendMessage', params);
+        } catch (e: any) {
+          if (
+            !String(e.message || '')
+              .toLowerCase()
+              .includes('parse')
+          )
+            throw e;
+          delete params.parse_mode;
+          params.text = stripMarkdown(part.text);
+          result = await this.api('sendMessage', params);
+        }
       } else {
         params.rich_message = {
           blocks: [
@@ -695,6 +709,65 @@ function looksLikeMarkdownTable(text: string): boolean {
     if (dividerCells.every((cell) => /^:?-{3,}:?$/.test(cell))) return true;
   }
   return false;
+}
+
+function escapeTelegramHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function stripMarkdown(text: string): string {
+  return stripTelegramHtml(text)
+    .replace(/```[\s\S]*?```/g, (match) =>
+      match
+        .replace(/^```[a-z]*\n?/i, '')
+        .replace(/```$/g, '')
+        .trim()
+    )
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '$1')
+    .replace(/(?<!_)_([^_]+)_(?!_)/g, '$1')
+    .replace(/~~([^~]+)~~/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^>\s?/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function renderInlineTelegramHtml(text: string): string {
+  let out = escapeTelegramHtml(text);
+  out = out.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').replace(/__([^_\n]+)__/g, '<b>$1</b>');
+  out = out.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<i>$1</i>');
+  out = out.replace(/(?<!_)_([^_\n]+)_(?!_)/g, '<i>$1</i>');
+  out = out.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
+  return out;
+}
+
+function markdownToTelegramHtml(text: string): string {
+  const blocks: string[] = [];
+  const withBlocks = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, _lang, code) => {
+    const token = `@@AURIX_BLOCK_${blocks.length}@@`;
+    blocks.push(`<pre>${escapeTelegramHtml(String(code).trim())}</pre>`);
+    return token;
+  });
+
+  const rendered = withBlocks
+    .split('\n')
+    .map((line) => {
+      const blockMatch = line.match(/^@@AURIX_BLOCK_(\d+)@@$/);
+      if (blockMatch) return blocks[Number(blockMatch[1])] || '';
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) return `<b>${renderInlineTelegramHtml(heading[2])}</b>`;
+      const quote = line.match(/^>\s?(.*)$/);
+      if (quote) return `<blockquote>${renderInlineTelegramHtml(quote[1])}</blockquote>`;
+      return renderInlineTelegramHtml(line);
+    })
+    .join('\n');
+
+  return rendered.replace(/@@AURIX_BLOCK_(\d+)@@/g, (_, idx) => blocks[Number(idx)] || '');
 }
 
 function stripTelegramHtml(text: string): string {

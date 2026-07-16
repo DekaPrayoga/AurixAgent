@@ -6,7 +6,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ChatArea, type ChatMessage } from './ChatArea.js';
-import { InputBox, writeClipboard } from './InputBox.js';
+import { writeClipboard } from './Clipboard.js';
+import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
@@ -21,6 +22,7 @@ import {
   theme,
   switchTheme,
   ALL_THEME_NAMES,
+  getThemeVersion,
   type ThemeName,
   setBorderStyle,
   type BorderStyle,
@@ -263,6 +265,12 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const [todos, setTodos] = useState<{ text: string; done: boolean }[]>([]);
   const [btwMessages, setBtwMessages] = useState<string[]>([]);
   const [showOutputPanel, setShowOutputPanel] = useState(false);
+  const [themeVersion, setThemeVersion] = useState(getThemeVersion());
+  const liveToolOutputRef = React.useRef<{
+    toolName?: string;
+    text: string;
+    timer?: ReturnType<typeof setTimeout>;
+  }>({ text: '' });
 
   useEffect(() => {
     setGlobalAskCallback((sessionKey, question, toolOptions) => {
@@ -283,9 +291,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       }
     });
 
+    let lastTodoSnapshot = '';
     const refreshTodos = () => {
       const fileTodos = loadTodosFromFile();
-      setTodos(fileTodos.map((t) => ({ text: t.text, done: t.done })));
+      const next = fileTodos.map((t) => ({ text: t.text, done: t.done }));
+      const snapshot = JSON.stringify(next);
+      if (snapshot === lastTodoSnapshot) return;
+      lastTodoSnapshot = snapshot;
+      setTodos(next);
     };
 
     refreshTodos();
@@ -481,7 +494,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (evt.ctrl && name === 'l') {
       evt.preventDefault();
-      agent.clearHistory();
+      agentRef.current?.clearHistory();
+      clearLiveToolOutput();
       setMessages([]);
       setShowBanner(true);
       setScrollOffset(0);
@@ -604,6 +618,53 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     [agent]
   );
 
+  const flushLiveToolOutput = useCallback(() => {
+    const live = liveToolOutputRef.current;
+    if (live.timer) {
+      clearTimeout(live.timer);
+      live.timer = undefined;
+    }
+    if (!live.text) return;
+    const content = `Live output: ${live.toolName || 'tool'}\n${live.text}`;
+    const toolName = live.toolName;
+    live.text = '';
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (
+        last?.role === 'tool' &&
+        last.toolName === toolName &&
+        last.content.startsWith('Live output:')
+      ) {
+        return [...prev.slice(0, -1), { ...last, content, timestamp: new Date() }];
+      }
+      return [...prev, { role: 'tool', content, toolName, timestamp: new Date() }];
+    });
+  }, []);
+
+  const clearLiveToolOutput = useCallback(() => {
+    const live = liveToolOutputRef.current;
+    if (live.timer) clearTimeout(live.timer);
+    live.timer = undefined;
+    live.text = '';
+    live.toolName = undefined;
+  }, []);
+
+  useEffect(() => clearLiveToolOutput, [clearLiveToolOutput]);
+
+  const queueLiveToolOutput = useCallback(
+    (toolName: string | undefined, chunk: string) => {
+      const live = liveToolOutputRef.current;
+      if (live.toolName !== toolName) {
+        flushLiveToolOutput();
+        live.toolName = toolName;
+      }
+      const nextText = `${live.text}${live.text ? '\n' : ''}${chunk}`;
+      live.text = nextText.split('\n').slice(-40).join('\n');
+      if (!live.timer) live.timer = setTimeout(flushLiveToolOutput, 180);
+    },
+    [flushLiveToolOutput]
+  );
+
   const handleSubmit = useCallback(
     async (text: string) => {
       if (AskUserManager.isWaiting('default')) {
@@ -661,7 +722,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         }
 
         if (commandName === 'clear') {
-          agent.clearHistory();
+          agentRef.current?.clearHistory();
+          clearLiveToolOutput();
           setMessages([]);
           setShowBanner(true);
           setScrollOffset(0);
@@ -895,6 +957,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           try {
             agentRef.current?.interrupt();
           } catch {}
+          clearLiveToolOutput();
           agentRef.current = new AgentLoop(config, registry);
           setMessages([
             {
@@ -1581,6 +1644,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('Configuration snapshot saved. Use /snapshot restore <name> to restore.');
           return;
         } else if (commandName === 'new') {
+          clearLiveToolOutput();
           agentRef.current = new AgentLoop(config, registry);
           setMessages([
             { role: 'assistant', content: 'New session started.', timestamp: new Date() },
@@ -1721,6 +1785,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               return;
             }
             switchTheme(name);
+            setThemeVersion(getThemeVersion());
             config.themeName = name;
             saveConfig(config);
             addAssistant(`Skin switched to: ${name}`);
@@ -2519,7 +2584,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
       const sessionDirectives = [
         sessionGoal ? `[Session goal: ${sessionGoal}]` : '',
-        sessionRules.length > 0 ? `[Session rules:\n${sessionRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}]` : '',
+        sessionRules.length > 0
+          ? `[Session rules:\n${sessionRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}]`
+          : '',
       ].filter(Boolean);
       if (sessionDirectives.length > 0) {
         outboundText = `${sessionDirectives.join('\n')}\n\n${outboundText}`;
@@ -2588,35 +2655,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               break;
 
             case 'tool_chunk':
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (
-                  last?.role === 'tool' &&
-                  last.toolName === event.toolName &&
-                  last.content.startsWith('Live output:')
-                ) {
-                  return [
-                    ...prev.slice(0, -1),
-                    {
-                      ...last,
-                      content: `Live output: ${event.toolName || 'tool'}\n${event.data}`,
-                      timestamp: new Date(),
-                    },
-                  ];
-                }
-                return [
-                  ...prev,
-                  {
-                    role: 'tool',
-                    content: `Live output: ${event.toolName || 'tool'}\n${event.data}`,
-                    toolName: event.toolName,
-                    timestamp: new Date(),
-                  },
-                ];
-              });
+              queueLiveToolOutput(event.toolName, event.data);
               break;
 
             case 'tool_end':
+              flushLiveToolOutput();
               setActiveTool(undefined);
               setMessages((prev) => [
                 ...prev,
@@ -2670,15 +2713,38 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         ]);
       }
 
+      flushLiveToolOutput();
       setIsProcessing(false);
       setActiveTool(undefined);
     },
-    [isProcessing, commands, allCommands, doExit]
-  ); // commands & doExit are stable (memoized); isProcessing gates submission
+    [
+      isProcessing,
+      commands,
+      allCommands,
+      doExit,
+      flushLiveToolOutput,
+      queueLiveToolOutput,
+      clearLiveToolOutput,
+      agent,
+      registry,
+      config,
+      baseUrl,
+      messages,
+      researchMode,
+      planMode,
+      showBanner,
+      toolCount,
+      skillCount,
+      skills,
+      sessionGoal,
+      sessionRules,
+      cronDaemon,
+    ]
+  ); // Keep dependencies explicit so slash commands always read current session state.
 
   const isHome = showBanner && messages.length === 0 && !isProcessing;
   const ctxStats = agent.getContextStats();
-  const tokenStats = agent.getTokenStats();
+  const tokenStats = agent.getTokenStats(ctxStats);
   const mode: 'auto' | 'ask' | 'deny' = permissionMode === 'bypass' ? 'auto' : permissionMode;
   const cycleMode = useCallback(() => {
     const current = registry.getPermissionMode();
@@ -2772,6 +2838,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   activeTool={activeTool}
                   scrollOffset={scrollOffset}
                   todos={todos}
+                  themeVersion={themeVersion}
                 />
                 {permissionPrompt && (
                   <PermissionPrompt

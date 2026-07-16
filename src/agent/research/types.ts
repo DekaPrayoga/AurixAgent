@@ -50,17 +50,24 @@ export interface ResearchEvent {
 }
 
 export class BaseAgent {
+  private abortSignal?: AbortSignal;
+
   constructor(
     protected provider: Provider,
     protected name: string
   ) {}
 
+  setAbortSignal(signal?: AbortSignal): void {
+    this.abortSignal = signal;
+  }
+
   protected async call(systemPrompt: string, userMessage: string): Promise<string> {
+    if (this.abortSignal?.aborted) throw new Error('Research interrupted.');
     const messages: Message[] = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage },
     ];
-    const res = await this.provider.chat(messages);
+    const res = await this.provider.chat(messages, undefined, this.abortSignal);
     return res.text;
   }
 }

@@ -518,16 +518,47 @@ Rules:
 
   searchMemory(query: string): string {
     ensureDirs();
-    const queryLower = query.toLowerCase();
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter(Boolean);
+    if (terms.length === 0) return '';
+    const rawLines = fs.existsSync(RAW_FILE)
+      ? fs
+          .readFileSync(RAW_FILE, 'utf-8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : [];
+    const legacyLines = fs.existsSync(SUMMARY_FILE)
+      ? fs
+          .readFileSync(SUMMARY_FILE, 'utf-8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : [];
     const lines = [
       ...readEntries(USER_FILE).map((entry) => `USER: ${entry}`),
       ...readEntries(MEMORY_FILE).map((entry) => `MEMORY: ${entry}`),
+      ...legacyLines.map((entry) => `SUMMARY: ${entry}`),
+      ...rawLines.map((entry) => `RAW: ${entry}`),
     ];
 
-    const matches = lines.filter((line) => line.toLowerCase().includes(queryLower));
+    const scored = lines
+      .map((line) => {
+        const lower = line.toLowerCase();
+        const score = terms.reduce((total, term) => total + (lower.includes(term) ? 1 : 0), 0);
+        return { line, score };
+      })
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score);
 
-    if (matches.length === 0) return '';
-    return matches.slice(0, 20).join('\n');
+    if (scored.length === 0) return '';
+    return scored
+      .slice(0, 20)
+      .map((item) => item.line)
+      .join('\n');
   }
 
   getStats(): { summarySize: number; rawSize: number; memorySize: number; sessionCount: number } {

@@ -4,7 +4,6 @@ import chalk from 'chalk';
 import { createRoot } from '@opentui/react';
 import { createCliRenderer } from '@opentui/core';
 import { App } from './cli/App.js';
-import { runLiteApp } from './cli/LiteApp.js';
 
 // --- CRITICAL FIX FOR 9ROUTER / LOCALHOST PROXY ISSUES ---
 // Node.js/Bun fetch aggressively uses these env vars, causing local requests (127.0.0.1:20128)
@@ -304,6 +303,7 @@ async function main() {
   });
 
   if (process.argv.includes('--lite')) {
+    const { runLiteApp } = await import('./cli/LiteApp.js');
     await runLiteApp(config, registry);
     return;
   }

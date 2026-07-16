@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
+import { isPasteKey, readClipboard } from './Clipboard.js';
 import { theme } from './theme.js';
 
 interface ConnectModalProps {
@@ -25,15 +26,25 @@ const platformConfig = {
 export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps) {
   const [value, setValue] = useState('');
   const [cursor, setCursor] = useState(0);
+  const cursorRef = React.useRef(0);
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const cfg = platformConfig[platform];
 
-  usePaste((event) => {
-    const text = new TextDecoder().decode(event.bytes).replace(/\r\n/g, '\n').trimEnd();
+  useEffect(() => {
+    cursorRef.current = cursor;
+  }, [cursor]);
+
+  const insertText = (rawText?: string) => {
+    const text = rawText?.replace(/\r\n/g, '\n').trimEnd();
     if (!text) return;
-    const insertAt = cursor;
-    setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    const insertAt = cursorRef.current;
+    setValue((prev) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    cursorRef.current = insertAt + text.length;
     setCursor(insertAt + text.length);
+  };
+
+  usePaste((event) => {
+    insertText(new TextDecoder().decode(event.bytes));
   });
 
   useKeyboard((evt) => {
@@ -51,42 +62,32 @@ export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps
       return;
     }
 
-    if (name === 'v' && evt.ctrl) {
+    if (isPasteKey(evt)) {
       evt.preventDefault();
-      // Import readClipboard from child_process dynamically
-      import('child_process').then(({ execSync }) => {
-        try {
-          let text = '';
-          if (process.platform === 'win32') text = execSync('powershell -NoProfile -Command "Get-Clipboard"', { encoding: 'utf8', windowsHide: true }).replace(/\r\n/g, '\n').trimEnd();
-          else if (process.platform === 'darwin') text = execSync('pbpaste', { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
-          else text = execSync('wl-paste --no-newline', { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
-          if (!text) return;
-          const insertAt = cursor;
-          setValue(prev => prev.slice(0, insertAt) + text + prev.slice(insertAt));
-          setCursor(insertAt + text.length);
-        } catch {}
-      }).catch(() => {});
+      readClipboard()
+        .then(insertText)
+        .catch(() => {});
       return;
     }
 
     if (name === 'backspace') {
       evt.preventDefault();
       if (cursor > 0) {
-        setValue(prev => prev.slice(0, cursor - 1) + prev.slice(cursor));
-        setCursor(prev => prev - 1);
+        setValue((prev) => prev.slice(0, cursor - 1) + prev.slice(cursor));
+        setCursor((prev) => prev - 1);
       }
       return;
     }
 
     if (name === 'left') {
       evt.preventDefault();
-      setCursor(prev => Math.max(0, prev - 1));
+      setCursor((prev) => Math.max(0, prev - 1));
       return;
     }
 
     if (name === 'right') {
       evt.preventDefault();
-      setCursor(prev => Math.min(value.length, prev + 1));
+      setCursor((prev) => Math.min(value.length, prev + 1));
       return;
     }
 
@@ -116,15 +117,15 @@ export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps
 
     if (name === 'space' || name === ' ') {
       evt.preventDefault();
-      setValue(prev => prev.slice(0, cursor) + ' ' + prev.slice(cursor));
-      setCursor(prev => prev + 1);
+      setValue((prev) => prev.slice(0, cursor) + ' ' + prev.slice(cursor));
+      setCursor((prev) => prev + 1);
       return;
     }
 
     if (evt.name.length === 1 && !evt.ctrl && !evt.meta) {
       evt.preventDefault();
-      setValue(prev => prev.slice(0, cursor) + evt.name + prev.slice(cursor));
-      setCursor(prev => prev + 1);
+      setValue((prev) => prev.slice(0, cursor) + evt.name + prev.slice(cursor));
+      setCursor((prev) => prev + 1);
     }
   });
 
@@ -143,18 +144,22 @@ export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps
       left={Math.floor((termWidth - modalWidth) / 2)}
       width={modalWidth}
       backgroundColor={theme.bgPanel}
-      border={["top", "bottom", "left", "right"]}
+      border={['top', 'bottom', 'left', 'right']}
       borderColor={theme.borderActive}
       paddingTop={1}
       paddingBottom={1}
       paddingLeft={2}
       paddingRight={2}
     >
-      <text fg={theme.primary} attributes={TextAttributes.BOLD}>{cfg.title}</text>
+      <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+        {cfg.title}
+      </text>
       <box height={1} />
 
       <box flexDirection="column">
-        <text fg={theme.primary} attributes={TextAttributes.BOLD}>{cfg.label}</text>
+        <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+          {cfg.label}
+        </text>
         <box
           backgroundColor={theme.bgElement}
           paddingLeft={1}
@@ -162,12 +167,14 @@ export function ConnectModal({ platform, onSubmit, onCancel }: ConnectModalProps
           paddingTop={1}
           paddingBottom={1}
           marginTop={1}
-          border={["top", "bottom", "left", "right"]}
+          border={['top', 'bottom', 'left', 'right']}
           borderColor={theme.primary}
         >
           <box flexDirection="row">
             <text fg={theme.text}>{before}</text>
-            <text fg={theme.cursor} attributes={TextAttributes.BOLD}>│</text>
+            <text fg={theme.cursor} attributes={TextAttributes.BOLD}>
+              │
+            </text>
             <text fg={theme.text}>{after || ' '}</text>
           </box>
         </box>

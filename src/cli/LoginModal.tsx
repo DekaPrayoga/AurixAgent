@@ -1,38 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
+import { isPasteKey, readClipboard } from './Clipboard.js';
 import { theme } from './theme.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
-
-async function readClipboard(): Promise<string> {
-  const { execSync } = await import('child_process');
-  try {
-    if (process.platform === 'win32') {
-      return execSync('powershell -NoProfile -Command "Get-Clipboard"', {
-        encoding: 'utf8',
-        windowsHide: true,
-      })
-        .replace(/\r\n/g, '\n')
-        .trimEnd();
-    }
-    if (process.platform === 'darwin') {
-      return execSync('pbpaste', { encoding: 'utf8', timeout: 2000 })
-        .replace(/\r\n/g, '\n')
-        .trimEnd();
-    }
-    // Linux
-    for (const cmd of [
-      'wl-paste --no-newline',
-      'xclip -selection clipboard -o',
-      'xsel --clipboard --output',
-    ]) {
-      try {
-        return execSync(cmd, { encoding: 'utf8', timeout: 2000 }).replace(/\r\n/g, '\n').trimEnd();
-      } catch {}
-    }
-  } catch {}
-  return '';
-}
 
 interface LoginModalProps {
   currentBaseUrl?: string;
@@ -76,19 +47,34 @@ export function LoginModal({
   ];
 
   const current = fields[step];
+  const stepRef = React.useRef(step);
+  const cursorRef = React.useRef(cursor);
+  const fieldSetters = [setBaseUrl, setApiKey, setModel, setApiStyle];
 
   useEffect(() => {
+    stepRef.current = step;
+    cursorRef.current = current.value.length;
     setCursor(current.value.length);
   }, [step]);
 
-  usePaste((event) => {
-    const text = safeDisplayText(new TextDecoder().decode(event.bytes))
+  useEffect(() => {
+    cursorRef.current = cursor;
+  }, [cursor]);
+
+  const insertText = (rawText?: string) => {
+    const text = safeDisplayText(rawText || '')
       .replace(/\r\n/g, '\n')
       .trimEnd();
     if (!text) return;
-    const insertAt = cursor;
-    current.setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    const insertAt = cursorRef.current;
+    const setter = fieldSetters[stepRef.current];
+    setter((prev: string) => prev.slice(0, insertAt) + text + prev.slice(insertAt));
+    cursorRef.current = insertAt + text.length;
     setCursor(insertAt + text.length);
+  };
+
+  usePaste((event) => {
+    insertText(new TextDecoder().decode(event.bytes));
   });
 
   useKeyboard((evt) => {
@@ -123,16 +109,10 @@ export function LoginModal({
       return;
     }
 
-    if ((name === 'v' || name === 'V') && evt.ctrl) {
+    if (isPasteKey(evt)) {
       evt.preventDefault();
       readClipboard()
-        .then((text) => {
-          const clean = safeDisplayText(text).replace(/\r\n/g, '\n').trimEnd();
-          if (!clean) return;
-          const insertAt = cursor;
-          current.setter((prev: string) => prev.slice(0, insertAt) + clean + prev.slice(insertAt));
-          setCursor(insertAt + clean.length);
-        })
+        .then(insertText)
         .catch(() => {});
       return;
     }

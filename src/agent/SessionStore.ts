@@ -583,6 +583,25 @@ export class SessionStore {
 
   recordToolEvent(event: StoredToolEvent): void {
     const ts = nowIso();
+    if (event.phase === 'chunk') {
+      agentObserverBus.publish({
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        source: 'agent_loop',
+        eventType: 'tool_chunk',
+        status: event.status,
+        toolName: event.toolName,
+        summary: event.result || event.toolName,
+        payload: {
+          toolCallId: event.toolCallId,
+          resultPath: event.resultPath,
+          durationMs: event.durationMs,
+          errorType: event.errorType,
+        },
+        createdAt: ts,
+      });
+      return;
+    }
     const resultPreview = event.result ? redactSessionText(event.result).slice(0, 4000) : null;
     const stmt = this.db.prepare(`
       INSERT INTO tool_events (session_id, turn_id, tool_call_id, tool_name, phase, args_json, result_preview, result_path, status, duration_ms, error_type, created_at)
@@ -604,12 +623,14 @@ export class SessionStore {
     ]);
     const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
     stmt.free();
+    const argsPreview = safeJson(event.args);
     const searchable = [
       event.toolName,
       event.phase,
       event.status,
       event.errorType,
       event.resultPath,
+      argsPreview,
       resultPreview,
     ]
       .filter(Boolean)
@@ -1048,6 +1069,7 @@ export class SessionStore {
   searchSessions(query: string, limit = 10): SessionSummary[] {
     const trimmed = query.trim();
     if (!trimmed) return this.listSessions(limit);
+    let ftsRows: SessionSummary[] = [];
     if (this.ftsAvailable) {
       try {
         const stmt = this.db.prepare(`
@@ -1063,9 +1085,8 @@ export class SessionStore {
           LIMIT ?
         `);
         stmt.bind([ftsQuery(trimmed), limit]);
-        const rows = this.rowsToSummaries(stmt);
+        ftsRows = this.rowsToSummaries(stmt);
         stmt.free();
-        if (rows.length > 0) return rows;
       } catch {
         this.ftsAvailable = false;
       }
@@ -1078,7 +1099,7 @@ export class SessionStore {
              (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count,
              COALESCE(
                (SELECT content FROM messages m WHERE m.session_id = s.id AND m.content LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT 1),
-               (SELECT tool_name || ': ' || COALESCE(result_preview, '') FROM tool_events te WHERE te.session_id = s.id AND (te.tool_name LIKE ? ESCAPE '\\' OR te.result_preview LIKE ? ESCAPE '\\') ORDER BY te.id DESC LIMIT 1),
+               (SELECT tool_name || ': ' || COALESCE(result_preview, args_json, '') FROM tool_events te WHERE te.session_id = s.id AND (te.tool_name LIKE ? ESCAPE '\\' OR te.result_preview LIKE ? ESCAPE '\\' OR te.args_json LIKE ? ESCAPE '\\') ORDER BY te.id DESC LIMIT 1),
                (SELECT label || ': ' || COALESCE(result_preview, '') FROM evidence_items ei WHERE ei.session_id = s.id AND (ei.label LIKE ? ESCAPE '\\' OR ei.result_preview LIKE ? ESCAPE '\\') ORDER BY ei.id DESC LIMIT 1),
                s.title,
                ''
@@ -1086,15 +1107,38 @@ export class SessionStore {
       FROM sessions s
       WHERE s.title LIKE ? ESCAPE '\\'
          OR EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.content LIKE ? ESCAPE '\\')
-         OR EXISTS (SELECT 1 FROM tool_events te WHERE te.session_id = s.id AND (te.tool_name LIKE ? ESCAPE '\\' OR te.result_preview LIKE ? ESCAPE '\\'))
+         OR EXISTS (SELECT 1 FROM tool_events te WHERE te.session_id = s.id AND (te.tool_name LIKE ? ESCAPE '\\' OR te.result_preview LIKE ? ESCAPE '\\' OR te.args_json LIKE ? ESCAPE '\\'))
          OR EXISTS (SELECT 1 FROM evidence_items ei WHERE ei.session_id = s.id AND (ei.label LIKE ? ESCAPE '\\' OR ei.result_preview LIKE ? ESCAPE '\\'))
       ORDER BY saved_at DESC
       LIMIT ?
     `);
-    stmt.bind([like, like, like, like, like, like, like, like, like, like, like, limit]);
+    stmt.bind([
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      like,
+      limit,
+    ]);
     const rows = this.rowsToSummaries(stmt);
     stmt.free();
-    return rows;
+    if (ftsRows.length === 0) return rows;
+    const merged = [...ftsRows];
+    const seen = new Set(ftsRows.map((row) => row.id));
+    for (const row of rows) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      merged.push(row);
+    }
+    return merged.slice(0, limit);
   }
 
   private rowsToSummaries(stmt: Statement): SessionSummary[] {

@@ -91,16 +91,20 @@ export class ContextManager {
 
     if (toSummarize.length < 3) return messages;
 
-    const conversationText = toSummarize
-      .map((m) => {
-        if (m.role === 'tool') return `[tool: ${m.toolCallId}] ${m.content.slice(0, 200)}`;
-        if (m.role === 'assistant' && m.toolCalls?.length) {
-          const toolNames = m.toolCalls.map((tc) => tc.name).join(', ');
-          return `[assistant: used tools: ${toolNames}] ${m.content.slice(0, 300)}`;
-        }
-        return `[${m.role}]: ${m.content.slice(0, 500)}`;
-      })
-      .join('\n');
+    const rendered = toSummarize.map((m) => {
+      if (m.role === 'tool') return `[tool: ${m.toolCallId}] ${m.content.slice(0, 1200)}`;
+      if (m.role === 'assistant' && m.toolCalls?.length) {
+        const calls = m.toolCalls
+          .map((tc) => `${tc.name} ${JSON.stringify(tc.arguments || {}).slice(0, 600)}`)
+          .join('; ');
+        return `[assistant: used tools: ${calls}] ${m.content.slice(0, 600)}`;
+      }
+      return `[${m.role}]: ${m.content.slice(0, 900)}`;
+    });
+    const recentRendered = rendered.slice(-30).join('\n');
+    const olderBudget = Math.max(0, 12000 - recentRendered.length);
+    const olderRendered = rendered.slice(0, -30).join('\n').slice(-olderBudget);
+    const conversationText = [olderRendered, recentRendered].filter(Boolean).join('\n');
 
     const summary = await this.summarize(conversationText);
 
@@ -194,15 +198,17 @@ export class ContextManager {
 
 CRITICAL — preserve ALL of the following:
 - Every file path mentioned (absolute paths, not relative)
+- Operational state the agent must continue from: IPs/hosts, ports, usernames, server directories, tmux/session names, service names, process state, downloaded file paths, extracted folders, world/project names, and current blocker/next command
+- Tool arguments and commands that created the current state, especially SSH/SCP/terminal commands and remote paths
 - Key decisions made and why
-- Tools used and their results (especially file edits, search results)
+- Tools used and their results (especially file edits, search results, installs, downloads, remote server changes)
 - Code patterns and architecture discovered
 - Unresolved issues or pending tasks
 - Any errors encountered and how they were resolved
 
-Format as structured bullet points. Include file paths inline. Be thorough about WHAT was done, brief about HOW.`,
+Format as structured bullet points. Include file paths, hosts/IPs, ports, session names, and exact next steps inline. Be thorough about WHAT was done and where to resume, brief about HOW.`,
         },
-        { role: 'user', content: text.slice(0, 12000) },
+        { role: 'user', content: text },
       ]);
       return res.text;
     } catch {

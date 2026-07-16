@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
@@ -80,7 +80,7 @@ function parseInline(text: string): TextSegment[] {
 }
 
 function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
-  const segments = parseInline(safeDisplayText(text));
+  const segments = useMemo(() => parseInline(safeDisplayText(text)), [text]);
   const fg = baseFg || theme.text;
 
   return (
@@ -217,203 +217,207 @@ function renderTable(headers: string[], rows: string[][], key: string): React.Re
   );
 }
 
-function MarkdownText({ content }: { content: string }) {
-  const lines = safeDisplayText(content).split('\n');
-  const elements: React.ReactNode[] = [];
-  let i = 0;
+function MarkdownText({ content, themeVersion }: { content: string; themeVersion: number }) {
+  const elements = useMemo(() => {
+    const lines = safeDisplayText(content).split('\n');
+    const elements: React.ReactNode[] = [];
+    let i = 0;
 
-  while (i < lines.length) {
-    const line = lines[i];
+    while (i < lines.length) {
+      const line = lines[i];
 
-    // Fenced code block: ```
-    if (line.trimStart().startsWith('```')) {
-      const lang = line.trimStart().slice(3).trim();
-      const codeLines: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
-        codeLines.push(lines[i]);
+      // Fenced code block: ```
+      if (line.trimStart().startsWith('```')) {
+        const lang = line.trimStart().slice(3).trim();
+        const codeLines: string[] = [];
         i++;
-      }
-      i++; // skip closing ```
-      elements.push(
-        <box
-          key={`code-${i}`}
-          flexDirection="column"
-          backgroundColor={theme.bgElement}
-          border={['left']}
-          borderColor={theme.accent}
-          paddingLeft={2}
-          paddingRight={2}
-          paddingTop={1}
-          paddingBottom={1}
-          marginTop={1}
-          marginBottom={1}
-          flexShrink={0}
-          minWidth={0}
-        >
-          {lang && (
-            <text fg={theme.textMuted} attributes={TextAttributes.DIM}>
-              {lang}
-            </text>
-          )}
-          {codeLines.map((cl, j) => (
-            <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>
-              {cl}
-            </text>
-          ))}
-        </box>
-      );
-      continue;
-    }
-
-    // Table: | col1 | col2 | col3 |
-    if (line.trimStart().startsWith('|') && line.includes('|', 1)) {
-      const tableLines: string[] = [];
-      while (i < lines.length && lines[i].trimStart().startsWith('|')) {
-        tableLines.push(lines[i]);
-        i++;
-      }
-      const table = parseMarkdownTableBlock(tableLines, 0);
-      if (table) {
-        const blockText = renderMarkdownTableAsBlocks(table.headers, table.rows);
+        while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
+          codeLines.push(lines[i]);
+          i++;
+        }
+        i++; // skip closing ```
         elements.push(
-          <box key={`table-${i}`} flexDirection="column" marginTop={1} marginBottom={1}>
-            {blockText.split('\n').map((blockLine: string, j: number) =>
-              isRuleLine(blockLine) ? (
-                <text key={j} fg={theme.border}>
-                  {blockLine}
-                </text>
-              ) : (
-                <box key={j} flexShrink={0}>
-                  <InlineText text={blockLine} />
-                </box>
-              )
-            )}
-          </box>
-        );
-      }
-      continue;
-    }
-
-    const labeledTable = collectLabeledTable(lines, i);
-    if (labeledTable) {
-      elements.push(renderTable(labeledTable.headers, labeledTable.rows, `kv-table-${i}`));
-      i = labeledTable.nextIndex;
-      continue;
-    }
-
-    // Headers: # ## ###
-    const headerMatch = line.match(/^(#{1,6})\s+(.*)/);
-    if (headerMatch) {
-      const level = headerMatch[1].length;
-      const text = headerMatch[2];
-      const color = level <= 2 ? theme.primary : level <= 4 ? theme.secondary : theme.text;
-      const size = level === 1 ? `━━ ${text} ━━` : level === 2 ? `── ${text} ──` : text;
-      elements.push(
-        <box key={`h-${i}`} paddingTop={level <= 2 ? 1 : 0}>
-          <text fg={color} attributes={TextAttributes.BOLD} wrapMode="word">
-            {size}
-          </text>
-        </box>
-      );
-      i++;
-      continue;
-    }
-
-    // Horizontal rule: ---, ***, ___
-    if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
-      elements.push(
-        <box key={`hr-${i}`}>
-          <text fg={theme.border}>{'─'.repeat(40)}</text>
-        </box>
-      );
-      i++;
-      continue;
-    }
-
-    // Blockquote: > text
-    if (line.trimStart().startsWith('>')) {
-      const quoteText = line.replace(/^\s*>\s?/, '');
-      elements.push(
-        <box
-          key={`q-${i}`}
-          paddingLeft={2}
-          border={['left']}
-          borderColor={theme.accent}
-          flexShrink={0}
-          minWidth={0}
-        >
-          <text
-            fg={theme.textMuted}
-            attributes={TextAttributes.ITALIC}
-            wrapMode="word"
+          <box
+            key={`code-${i}`}
+            flexDirection="column"
+            backgroundColor={theme.bgElement}
+            border={['left']}
+            borderColor={theme.accent}
+            paddingLeft={2}
+            paddingRight={2}
+            paddingTop={1}
+            paddingBottom={1}
+            marginTop={1}
+            marginBottom={1}
+            flexShrink={0}
             minWidth={0}
           >
-            {quoteText}
-          </text>
-        </box>
-      );
-      i++;
-      continue;
-    }
+            {lang && (
+              <text fg={theme.textMuted} attributes={TextAttributes.DIM}>
+                {lang}
+              </text>
+            )}
+            {codeLines.map((cl, j) => (
+              <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>
+                {cl}
+              </text>
+            ))}
+          </box>
+        );
+        continue;
+      }
 
-    // Unordered list: - item, * item, + item
-    const bulletMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX]\])(.*)/);
-    if (bulletMatch) {
-      const indent = Math.floor((bulletMatch[1]?.length || 0) / 2);
+      // Table: | col1 | col2 | col3 |
+      if (line.trimStart().startsWith('|') && line.includes('|', 1)) {
+        const tableLines: string[] = [];
+        while (i < lines.length && lines[i].trimStart().startsWith('|')) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        const table = parseMarkdownTableBlock(tableLines, 0);
+        if (table) {
+          const blockText = renderMarkdownTableAsBlocks(table.headers, table.rows);
+          elements.push(
+            <box key={`table-${i}`} flexDirection="column" marginTop={1} marginBottom={1}>
+              {blockText.split('\n').map((blockLine: string, j: number) =>
+                isRuleLine(blockLine) ? (
+                  <text key={j} fg={theme.border}>
+                    {blockLine}
+                  </text>
+                ) : (
+                  <box key={j} flexShrink={0}>
+                    <InlineText text={blockLine} />
+                  </box>
+                )
+              )}
+            </box>
+          );
+        }
+        continue;
+      }
+
+      const labeledTable = collectLabeledTable(lines, i);
+      if (labeledTable) {
+        elements.push(renderTable(labeledTable.headers, labeledTable.rows, `kv-table-${i}`));
+        i = labeledTable.nextIndex;
+        continue;
+      }
+
+      // Headers: # ## ###
+      const headerMatch = line.match(/^(#{1,6})\s+(.*)/);
+      if (headerMatch) {
+        const level = headerMatch[1].length;
+        const text = headerMatch[2];
+        const color = level <= 2 ? theme.primary : level <= 4 ? theme.secondary : theme.text;
+        const size = level === 1 ? `━━ ${text} ━━` : level === 2 ? `── ${text} ──` : text;
+        elements.push(
+          <box key={`h-${i}`} paddingTop={level <= 2 ? 1 : 0}>
+            <text fg={color} attributes={TextAttributes.BOLD} wrapMode="word">
+              {size}
+            </text>
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Horizontal rule: ---, ***, ___
+      if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
+        elements.push(
+          <box key={`hr-${i}`}>
+            <text fg={theme.border}>{'─'.repeat(40)}</text>
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Blockquote: > text
+      if (line.trimStart().startsWith('>')) {
+        const quoteText = line.replace(/^\s*>\s?/, '');
+        elements.push(
+          <box
+            key={`q-${i}`}
+            paddingLeft={2}
+            border={['left']}
+            borderColor={theme.accent}
+            flexShrink={0}
+            minWidth={0}
+          >
+            <text
+              fg={theme.textMuted}
+              attributes={TextAttributes.ITALIC}
+              wrapMode="word"
+              minWidth={0}
+            >
+              {quoteText}
+            </text>
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Unordered list: - item, * item, + item
+      const bulletMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX]\])(.*)/);
+      if (bulletMatch) {
+        const indent = Math.floor((bulletMatch[1]?.length || 0) / 2);
+        elements.push(
+          <box key={`li-${i}`} paddingLeft={2 + indent * 2} flexDirection="row">
+            <text fg={theme.primary}>● </text>
+            <InlineText text={bulletMatch[2]} />
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Ordered list: 1. item
+      const numMatch = line.match(/^(\s*)(\d+)[.)]\s+(.*)/);
+      if (numMatch) {
+        elements.push(
+          <box key={`ol-${i}`} paddingLeft={2} flexDirection="row">
+            <text fg={theme.secondary}>{numMatch[2]}. </text>
+            <InlineText text={numMatch[3]} />
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Checkbox: - [ ] or - [x]
+      const checkMatch = line.match(/^\s*-\s+\[([ xX])\]\s+(.*)/);
+      if (checkMatch) {
+        const checked = checkMatch[1] !== ' ';
+        elements.push(
+          <box key={`cb-${i}`} paddingLeft={2} flexDirection="row">
+            <text fg={checked ? theme.ok : theme.textMuted}>{checked ? '✓ ' : '○ '}</text>
+            <text fg={checked ? theme.text : theme.textMuted} wrapMode="word">
+              {checkMatch[2]}
+            </text>
+          </box>
+        );
+        i++;
+        continue;
+      }
+
+      // Empty line
+      if (line.trim() === '') {
+        i++;
+        continue;
+      }
+
+      // Regular text with inline markdown
       elements.push(
-        <box key={`li-${i}`} paddingLeft={2 + indent * 2} flexDirection="row">
-          <text fg={theme.primary}>● </text>
-          <InlineText text={bulletMatch[2]} />
+        <box key={`p-${i}`} flexShrink={0}>
+          <InlineText text={line} />
         </box>
       );
       i++;
-      continue;
     }
 
-    // Ordered list: 1. item
-    const numMatch = line.match(/^(\s*)(\d+)[.)]\s+(.*)/);
-    if (numMatch) {
-      elements.push(
-        <box key={`ol-${i}`} paddingLeft={2} flexDirection="row">
-          <text fg={theme.secondary}>{numMatch[2]}. </text>
-          <InlineText text={numMatch[3]} />
-        </box>
-      );
-      i++;
-      continue;
-    }
-
-    // Checkbox: - [ ] or - [x]
-    const checkMatch = line.match(/^\s*-\s+\[([ xX])\]\s+(.*)/);
-    if (checkMatch) {
-      const checked = checkMatch[1] !== ' ';
-      elements.push(
-        <box key={`cb-${i}`} paddingLeft={2} flexDirection="row">
-          <text fg={checked ? theme.ok : theme.textMuted}>{checked ? '✓ ' : '○ '}</text>
-          <text fg={checked ? theme.text : theme.textMuted} wrapMode="word">
-            {checkMatch[2]}
-          </text>
-        </box>
-      );
-      i++;
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === '') {
-      i++;
-      continue;
-    }
-
-    // Regular text with inline markdown
-    elements.push(
-      <box key={`p-${i}`} flexShrink={0}>
-        <InlineText text={line} />
-      </box>
-    );
-    i++;
-  }
+    return elements;
+  }, [content, themeVersion]);
 
   return (
     <box flexDirection="column" flexShrink={0}>
@@ -437,6 +441,7 @@ interface ChatAreaProps {
   activeTool?: { name: string; args?: Record<string, unknown> };
   scrollOffset: number;
   todos?: { text: string; done: boolean }[];
+  themeVersion?: number;
 }
 
 function ThinkingIndicator() {
@@ -473,19 +478,14 @@ function outputLineColor(line: string, fallback: string): string {
 }
 
 function ToolOutputText({ content, color }: { content: string; color: string }) {
+  const lines = useMemo(() => truncateOutput(content).split('\n'), [content]);
   return (
     <box flexDirection="column">
-      {truncateOutput(content)
-        .split('\n')
-        .map((line, i) => (
-          <text
-            key={i}
-            fg={outputLineColor(line, i === 0 ? color : theme.textMuted)}
-            wrapMode="word"
-          >
-            {line}
-          </text>
-        ))}
+      {lines.map((line, i) => (
+        <text key={i} fg={outputLineColor(line, i === 0 ? color : theme.textMuted)} wrapMode="word">
+          {line}
+        </text>
+      ))}
     </box>
   );
 }
@@ -522,7 +522,12 @@ function truncateOutput(content: string, maxLines: number = 14): string {
   return content;
 }
 
-function UserMessage({ msg }: { msg: ChatMessage }) {
+const UserMessage = React.memo(function UserMessage({
+  msg,
+}: {
+  msg: ChatMessage;
+  themeVersion: number;
+}) {
   return (
     <box flexDirection="column" paddingX={2} flexShrink={0}>
       <box
@@ -542,9 +547,15 @@ function UserMessage({ msg }: { msg: ChatMessage }) {
       </box>
     </box>
   );
-}
+});
 
-function AssistantMessage({ msg }: { msg: ChatMessage }) {
+const AssistantMessage = React.memo(function AssistantMessage({
+  msg,
+  themeVersion,
+}: {
+  msg: ChatMessage;
+  themeVersion: number;
+}) {
   if (!msg.content) return null;
   return (
     <box flexDirection="column" paddingX={2} flexShrink={0}>
@@ -566,13 +577,18 @@ function AssistantMessage({ msg }: { msg: ChatMessage }) {
         flexShrink={0}
         minWidth={0}
       >
-        <MarkdownText content={msg.content} />
+        <MarkdownText content={msg.content} themeVersion={themeVersion} />
       </box>
     </box>
   );
-}
+});
 
-function ToolMessage({ msg }: { msg: ChatMessage }) {
+const ToolMessage = React.memo(function ToolMessage({
+  msg,
+}: {
+  msg: ChatMessage;
+  themeVersion: number;
+}) {
   const content = safeDisplayText(msg.content);
   const color = toolColor(msg.toolName);
   const canRenderDiff = msg.toolName === 'file_edit' || msg.toolName === 'write_file';
@@ -604,9 +620,14 @@ function ToolMessage({ msg }: { msg: ChatMessage }) {
       </box>
     </box>
   );
-}
+});
 
-function SystemMessage({ msg }: { msg: ChatMessage }) {
+const SystemMessage = React.memo(function SystemMessage({
+  msg,
+}: {
+  msg: ChatMessage;
+  themeVersion: number;
+}) {
   return (
     <box paddingLeft={4} paddingRight={2} flexShrink={0}>
       <text fg={theme.warn} wrapMode="word">
@@ -614,7 +635,7 @@ function SystemMessage({ msg }: { msg: ChatMessage }) {
       </text>
     </box>
   );
-}
+});
 
 export function ChatArea({
   messages,
@@ -622,6 +643,7 @@ export function ChatArea({
   activeTool,
   scrollOffset,
   todos,
+  themeVersion = 0,
 }: ChatAreaProps) {
   const maxVisible = 100;
   const end = Math.max(0, messages.length - scrollOffset);
@@ -655,10 +677,12 @@ export function ChatArea({
           ) : (
             visible.map((msg, i) => (
               <box key={start + i} flexDirection="column" flexShrink={0}>
-                {msg.role === 'user' && <UserMessage msg={msg} />}
-                {msg.role === 'assistant' && <AssistantMessage msg={msg} />}
-                {msg.role === 'tool' && <ToolMessage msg={msg} />}
-                {msg.role === 'system' && <SystemMessage msg={msg} />}
+                {msg.role === 'user' && <UserMessage msg={msg} themeVersion={themeVersion} />}
+                {msg.role === 'assistant' && (
+                  <AssistantMessage msg={msg} themeVersion={themeVersion} />
+                )}
+                {msg.role === 'tool' && <ToolMessage msg={msg} themeVersion={themeVersion} />}
+                {msg.role === 'system' && <SystemMessage msg={msg} themeVersion={themeVersion} />}
               </box>
             ))
           )}

@@ -889,18 +889,6 @@ export class Gateway extends EventEmitter {
     if (cmd !== 'btw' && cmd !== 'cancel' && !AskUserManager.isWaiting(agentKey)) {
       if (this.processing.has(agentKey) || this.activeProcessing.has(agentKey)) {
         const queue = this.messageQueue.get(agentKey) || [];
-        if (this.isShortFollowUp(text)) {
-          const agent = this.agents.get(agentKey);
-          if (agent) {
-            agent.injectContext(`[Gateway follow-up while busy from ${msg.authorName}]: ${text}`);
-            await platform.send(
-              '🧭 Update received. I added it to the current task.',
-              msg.channelId,
-              msg.replyTo
-            );
-            return;
-          }
-        }
         queue.push(msg);
         this.messageQueue.set(agentKey, queue.slice(-10));
         await platform.send(
@@ -2138,11 +2126,15 @@ export class Gateway extends EventEmitter {
         >();
         const compactProgressText = (): string =>
           ['🧠 Working...', ...progressLines.slice(-18), liveOutputText].filter(Boolean).join('\n');
+        const isCurrentRun = (): boolean =>
+          !this.cancelledRuns.has(currentRunId) && this.activeRuns.get(agentKey) === currentRunId;
         const publishProgress = async (rendered: { text: string; options?: any }) => {
+          if (!isCurrentRun()) return;
           if (progressMode && progressCanEdit && progressMessageId && platform.edit) {
             await platform.edit(rendered.text, msg.channelId, progressMessageId, rendered.options);
             return;
           }
+          if (!isCurrentRun()) return;
           const sentId = await sendGatewayMessage(
             platform,
             rendered.text,
@@ -2162,8 +2154,20 @@ export class Gateway extends EventEmitter {
           const rendered = gatewayText(compactProgressText(), platform.name);
           await publishProgress(rendered);
         };
-        const progressKeyFor = (event: any): string =>
-          String(event.toolCallId || `${event.toolName || 'tool'}:${progressLines.length}`);
+        const stableProgressKeyFor = (event: any): string | undefined => {
+          if (event.toolCallId) return String(event.toolCallId);
+          const toolName = event.toolName || event.data;
+          if (!toolName) return undefined;
+          const args = event.toolArgs ? JSON.stringify(event.toolArgs).slice(0, 120) : '';
+          if (args) return `${toolName}:${args}`;
+          const matching = [...progressInputByTool.entries()].reverse().find(([, started]) => {
+            if (started.toolName !== toolName) return false;
+            return progressLineByTool.has(
+              `${started.toolName}:${JSON.stringify(started.args || {}).slice(0, 120)}`
+            );
+          });
+          return matching?.[0] || `${toolName}:`;
+        };
 
         for await (const event of agent.run(
           taggedPrompt,
@@ -2183,7 +2187,8 @@ export class Gateway extends EventEmitter {
             if (!shouldShowGatewayToolProgress(toolName, event.toolArgs)) {
               continue;
             }
-            const key = progressKeyFor(event);
+            const key =
+              stableProgressKeyFor(event) || `${toolName || 'tool'}:${progressLines.length}`;
             progressLineByTool.set(key, progressLines.length);
             progressInputByTool.set(key, { toolName, args: event.toolArgs });
             progressLines.push(
@@ -2197,7 +2202,7 @@ export class Gateway extends EventEmitter {
             await publishProgressLog();
             sawToolStatus = true;
           } else if (event.type === 'tool_chunk') {
-            const started = progressInputByTool.get(progressKeyFor(event));
+            const started = progressInputByTool.get(stableProgressKeyFor(event) || '');
             const toolName = started?.toolName || event.toolName;
             if (!shouldShowGatewayLiveOutput(toolName, started?.args)) {
               continue;
@@ -2211,7 +2216,8 @@ export class Gateway extends EventEmitter {
             }
             sawToolStatus = true;
           } else if (event.type === 'tool_end') {
-            const key = progressKeyFor(event);
+            const key =
+              stableProgressKeyFor(event) || `${event.toolName || 'tool'}:${progressLines.length}`;
             const started = progressInputByTool.get(key);
             const toolName = started?.toolName || event.toolName;
             if (pendingChunkText && shouldShowGatewayLiveOutput(toolName, started?.args)) {

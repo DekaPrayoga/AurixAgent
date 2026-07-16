@@ -9,7 +9,7 @@ import { createProvider } from '../providers/index.js';
 import { countTokens, TokenLedger } from './TokenCounter.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import { MultiAgentSystem } from './MultiAgent.js';
-import { ContextManager } from './ContextManager.js';
+import { ContextManager, type ContextStats } from './ContextManager.js';
 import { MemoryEngine } from './MemoryEngine.js';
 import { MemoryManager } from './MemoryManager.js';
 import { ResearchPipeline } from './ResearchPipeline.js';
@@ -43,19 +43,52 @@ function ensureToolResultsDir(): void {
 }
 
 const TEXT_TOOL_CALL_PATTERN = /<function=([a-zA-Z0-9_]+)>([\s\S]*?)<\/function>/g;
+const TEXT_TOOL_PARAMETER_PATTERN = /<parameter=([a-zA-Z0-9_]+)>([\s\S]*?)<\/parameter>/g;
+
+function parseInlineToolValue(name: string, value: string): unknown {
+  const trimmed = value.trim();
+  if (name === 'timeout' && /^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  if (name === 'command' || name === 'cmd') return trimmed;
+  return value;
+}
+
+function parseTextToolArguments(rawArgs: string): Record<string, unknown> | null {
+  if (!rawArgs.trim()) return {};
+  if (TEXT_TOOL_PARAMETER_PATTERN.test(rawArgs)) {
+    TEXT_TOOL_PARAMETER_PATTERN.lastIndex = 0;
+    const args: Record<string, unknown> = {};
+    let paramMatch: RegExpExecArray | null;
+    while ((paramMatch = TEXT_TOOL_PARAMETER_PATTERN.exec(rawArgs))) {
+      args[paramMatch[1]] = parseInlineToolValue(paramMatch[1], paramMatch[2]);
+    }
+    return Object.keys(args).length > 0 ? args : null;
+  }
+  try {
+    const parsed = JSON.parse(rawArgs);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : { value: parsed };
+  } catch {
+    return null;
+  }
+}
+
+function cheapHash(text: string): number {
+  let hash = 0;
+  const step = Math.max(1, Math.floor(text.length / 512));
+  for (let i = 0; i < text.length; i += step) {
+    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
 
 function parseTextToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
   const calls: { name: string; arguments: Record<string, unknown> }[] = [];
   const pattern = new RegExp(TEXT_TOOL_CALL_PATTERN);
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text))) {
-    const rawArgs = match[2].trim();
-    let args: Record<string, unknown> = {};
-    try {
-      args = rawArgs ? JSON.parse(rawArgs) : {};
-    } catch {
-      continue;
-    }
+    const args = parseTextToolArguments(match[2]);
+    if (!args) continue;
     calls.push({ name: match[1], arguments: args });
   }
   return calls;
@@ -298,6 +331,7 @@ export class AgentLoop {
   private ledger = new TokenLedger();
   private abortController = new AbortController();
   private brain: AurixBrain;
+  private cachedContextStats?: { signature: string; stats: ContextStats };
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     installObserverBusSessionSink();
@@ -605,11 +639,35 @@ export class AgentLoop {
     if (n >= 10 && n <= 10000) this.maxIterations = n;
   }
 
-  getContextStats() {
-    return this.contextManager.getStats(this.messages);
+  private invalidateContextStats(): void {
+    this.cachedContextStats = undefined;
   }
 
-  getTokenStats(): {
+  private contextStatsSignature(): string {
+    let totalLen = 0;
+    let images = 0;
+    let hash = 0;
+    for (let i = 0; i < this.messages.length; i++) {
+      const msg = this.messages[i];
+      totalLen += msg.content?.length || 0;
+      images += msg.images?.length || 0;
+      if (i === 0 || i === this.messages.length - 1 || i % 8 === 0) {
+        hash =
+          (hash * 33 + cheapHash(`${msg.role}:${msg.toolCallId || ''}:${msg.content || ''}`)) >>> 0;
+      }
+    }
+    return `${this.contextManager.getContextLimit()}:${this.messages.length}:${totalLen}:${images}:${hash}`;
+  }
+
+  getContextStats(): ContextStats {
+    const signature = this.contextStatsSignature();
+    if (this.cachedContextStats?.signature === signature) return this.cachedContextStats.stats;
+    const stats = this.contextManager.getStats(this.messages);
+    this.cachedContextStats = { signature, stats };
+    return stats;
+  }
+
+  getTokenStats(ctx = this.getContextStats()): {
     input: number;
     output: number;
     total: number;
@@ -618,7 +676,6 @@ export class AgentLoop {
     apiInput: number;
     apiOutput: number;
   } {
-    const ctx = this.contextManager.getStats(this.messages);
     return {
       input:
         this.ledger.get('systemPrompt') +
@@ -2134,11 +2191,16 @@ export class AgentLoop {
               let lastHeartbeatAt = Date.now();
               while (!settled) {
                 while (pendingChunks.length > 0) yield pendingChunks.shift()!;
+                let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+                const heartbeat = new Promise<null>((resolve) => {
+                  heartbeatTimer = setTimeout(() => resolve(null), 15_000);
+                });
                 const next = await Promise.race([
                   execution,
                   wakeOnChunk().then(() => null),
-                  new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000)),
+                  heartbeat,
                 ]);
+                if (heartbeatTimer) clearTimeout(heartbeatTimer);
                 if (next) settled = next;
                 else if (Date.now() - lastHeartbeatAt >= 15_000) {
                   lastHeartbeatAt = Date.now();
@@ -2466,7 +2528,11 @@ export class AgentLoop {
     yield { type: 'research', data: `Starting deep research pipeline (depth: ${mode})...` };
 
     try {
-      for await (const event of this.researchPipeline.run(query, mode)) {
+      for await (const event of this.researchPipeline.run(
+        query,
+        mode,
+        this.abortController.signal
+      )) {
         if (this.interrupted) {
           this.interrupted = false;
           yield { type: 'error', data: 'Research interrupted.' };
@@ -2529,16 +2595,19 @@ export class AgentLoop {
       system && system.role === 'system' && (msgs.length === 0 || msgs[0].role !== 'system')
         ? [system, ...msgs]
         : [...msgs];
+    this.invalidateContextStats();
   }
 
   clearHistory(): void {
     const system = this.messages[0];
     this.messages = [system];
+    this.invalidateContextStats();
   }
 
   async compactMessages(): Promise<number> {
     const before = this.messages.length;
     this.messages = await this.contextManager.compact(this.messages);
+    this.invalidateContextStats();
     return before - this.messages.length;
   }
 
@@ -2578,6 +2647,7 @@ export class AgentLoop {
     }
     const systemPrompt = buildSystemPrompt(this.config, this.registry.list());
     this.messages[0] = { role: 'system', content: systemPrompt };
+    this.invalidateContextStats();
   }
 
   getModel(): string {
@@ -2597,6 +2667,7 @@ export class AgentLoop {
     if (loaded.length > 0) {
       this.messages = loaded;
       this.sessionId = sessionId;
+      this.invalidateContextStats();
     }
     return loaded.length;
   }
@@ -2611,6 +2682,7 @@ export class AgentLoop {
           ? [system, ...loaded.filter((m) => m.role !== 'system')]
           : loaded;
       this.sessionId = sessionId;
+      this.invalidateContextStats();
       return loaded.length;
     }
     return this.loadSession(sessionId);

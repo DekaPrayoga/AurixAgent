@@ -124,6 +124,28 @@ export class ResearchPipeline {
     this.finalReviewer = new FinalReviewer(this.provider);
   }
 
+  private setAbortSignal(signal?: AbortSignal): void {
+    [
+      this.requestAnalyzer,
+      this.planningAgent,
+      this.researchAgent,
+      this.videoAgent,
+      this.claimExtractor,
+      this.supporter,
+      this.skeptic,
+      this.debateSystem,
+      this.judge,
+      this.citationGuardian,
+      this.logicCritic,
+      this.writer,
+      this.finalReviewer,
+    ].forEach((agent) => agent.setAbortSignal(signal));
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) throw new Error('Research interrupted.');
+  }
+
   private webQueries(query: string, mode: ResearchDepth): string[] {
     const base = query.replace(/^\[[^\]]+\]\s*/, '').trim();
     const queries = [base];
@@ -168,7 +190,13 @@ export class ResearchPipeline {
     return requestedMode;
   }
 
-  async *run(query: string, depth?: ResearchDepth): AsyncGenerator<ResearchEvent> {
+  async *run(
+    query: string,
+    depth?: ResearchDepth,
+    signal?: AbortSignal
+  ): AsyncGenerator<ResearchEvent> {
+    this.setAbortSignal(signal);
+    this.throwIfAborted(signal);
     const requestedMode = depth || (this.config.researchMode as ResearchDepth) || 'low';
     const mode = this.effectiveDepth(query, requestedMode);
     const active = new Set(DEPTH_AGENTS[mode] || []);
@@ -192,7 +220,7 @@ export class ResearchPipeline {
         },
         { role: 'user' as const, content: query },
       ];
-      const res = await this.provider.chat(messages);
+      const res = await this.provider.chat(messages, undefined, signal);
       yield { type: 'text', agent: 'Direct', data: formatStructuredOutput(res.text, 'terminal') };
       yield { type: 'agent_end', agent: 'Direct', data: 'Done' };
       return;
@@ -203,6 +231,7 @@ export class ResearchPipeline {
     if (active.has('RequestAnalyzer')) {
       yield { type: 'agent_start', agent: 'RequestAnalyzer', data: 'Analyzing request...' };
       analysis = await this.requestAnalyzer.analyze(query);
+      this.throwIfAborted(signal);
       yield {
         type: 'agent_end',
         agent: 'RequestAnalyzer',
@@ -229,6 +258,7 @@ export class ResearchPipeline {
       for (const webQuery of queries) {
         yield { type: 'agent_start', agent: 'web_search', data: webQuery };
         const raw = await webSearchTool.execute({ query: webQuery, max_results: 6 });
+        this.throwIfAborted(signal);
         const webSources = this.sourcesFromSearch(raw);
         sources = [...sources, ...webSources];
         if (webSources.length > 0) {
@@ -406,6 +436,7 @@ export class ResearchPipeline {
     }
 
     // Step 10: Write output
+    this.throwIfAborted(signal);
     let output = '';
     if (active.has('WriterAgent')) {
       yield { type: 'agent_start', agent: 'WriterAgent', data: 'Composing response...' };
@@ -426,6 +457,7 @@ export class ResearchPipeline {
         analysis.format || 'DETAILED',
         findings
       );
+      this.throwIfAborted(signal);
       yield { type: 'agent_end', agent: 'WriterAgent', data: 'Response composed' };
     } else {
       output = findings.join('\n\n');
