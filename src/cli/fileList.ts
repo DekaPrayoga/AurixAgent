@@ -22,7 +22,7 @@ export function listProjectFiles(root: string = process.cwd()): string[] {
     }
     for (const e of entries) {
       if (out.length >= MAX_FILES) return;
-      if (e.name.startsWith('.') && e.name !== '.env.example') continue;
+      if (e.name.startsWith('.')) continue;
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(e.name)) continue;
         walk(path.join(dir, e.name), depth + 1);

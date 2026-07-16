@@ -40,27 +40,25 @@ if (process.platform === 'win32') {
   }
 }
 
-// ─── 2. Hint about Bun (don't auto-install on Windows — UAC prompt) ───────
+// ─── 2. Ensure Bun runtime is available ────────────────────────────────────
 try {
   execSync('bun --version', { stdio: 'ignore' });
   log('✓ Bun already installed');
 } catch {
-  if (process.platform === 'win32') {
-    log('');
-    log('⚠ Bun not found. Bun is RECOMMENDED on Windows because it has');
-    log('  built-in FFI (no --experimental-ffi flag needed).');
-    log('');
-    log('  To install, run in PowerShell:');
-    log('    powershell -c "irm bun.sh/install.ps1 | iex"');
-    log('');
-    log('  Skipping auto-install to avoid UAC prompts in non-interactive mode.');
+  log('Bun not found — installing Bun runtime automatically...');
+  const ok = process.platform === 'win32'
+    ? run('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'irm bun.sh/install.ps1 | iex',
+      ], { shell: false })
+    : run('bash', ['-c', 'curl -fsSL https://bun.sh/install | bash']);
+  if (ok) {
+    log('✓ Bun installed');
   } else {
-    log('Installing Bun...');
-    if (run('bash', ['-c', 'curl -fsSL https://bun.sh/install | bash'])) {
-      log('✓ Bun installed');
-    } else {
-      log('⚠ Bun install failed — aurix will fall back to Node');
-    }
+    log('⚠ Bun install failed — aurix launcher will try managed Node at runtime');
   }
 }
 

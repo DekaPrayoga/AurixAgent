@@ -26,4 +26,4 @@ pm2 restart aurix-agent 2>/dev/null && info "PM2 restarted" || warn "PM2 aurix-a
 curl -sf http://localhost:$BACKEND_PORT/api/health >/dev/null && info "Backend api.haikz.me healthy" || warn "Backend not responding on port $BACKEND_PORT"
 
 echo ""
-info "Deploy complete — api.haikz.me/install.sh serves latest code"
+info "Deploy complete — Aurix backend is synced and restarted"

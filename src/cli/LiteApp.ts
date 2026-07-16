@@ -1,4 +1,4 @@
-import { input } from '@inquirer/prompts';
+import { createRequire } from 'module';
 import { marked } from 'marked';
 import markedTerminal from 'marked-terminal';
 import chalk from 'chalk';
@@ -21,19 +21,37 @@ marked.setOptions({
   }),
 } as any);
 
+function readLiteInput(message: string): Promise<string> {
+  return new Promise((resolve) => {
+    const readline = createRequire(import.meta.url)(
+      'readline',
+    ) as typeof import('readline');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(message + ' ', (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
 export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
   const agent = new AgentLoop(config, registry);
 
   console.clear();
   console.log(asciiLogo());
   console.log(chalk.dim('AURIX Agent  ::  terminal autonomy workspace'));
-  console.log(chalk.gray('provider ' + config.provider + ' · model ' + config.model));
+  console.log(
+    chalk.gray('provider ' + config.provider + ' · model ' + config.model),
+  );
   console.log();
   console.log(chalk.dim('Type /help for commands. Ctrl+C to exit.'));
   console.log();
 
   while (true) {
-    const userInput = await input({ message: chalk.cyan.bold('aurix >') });
+    const userInput = await readLiteInput(chalk.cyan.bold('aurix >'));
     const text = userInput.trim();
     if (!text) continue;
 
@@ -59,7 +77,10 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
       continue;
     }
 
-    const spinner = ora({ text: chalk.yellow('Thinking...'), color: 'yellow' }).start();
+    const spinner = ora({
+      text: chalk.yellow('Thinking...'),
+      color: 'yellow',
+    }).start();
 
     try {
       let assistantText = '';
@@ -70,7 +91,10 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
           spinner.text = safeDisplayText(event.data);
         } else if (event.type === 'tool_start') {
           spinner.text = chalk.dim(
-            renderToolSpinnerText({ toolName: event.toolName, args: event.toolArgs })
+            renderToolSpinnerText({
+              toolName: event.toolName,
+              args: event.toolArgs,
+            }),
           );
         } else if (event.type === 'tool_chunk') {
           spinner.text = chalk.gray(safeDisplayText(event.data).slice(0, 160));
@@ -81,8 +105,12 @@ export async function runLiteApp(config: AurixConfig, registry: ToolRegistry) {
           break;
         } else if (event.type === 'done') {
           spinner.stop();
-          const finalText = formatStructuredOutput(event.data || assistantText, 'terminal');
-          if (finalText.trim()) console.log('\n' + marked.parse(safeDisplayText(finalText)));
+          const finalText = formatStructuredOutput(
+            event.data || assistantText,
+            'terminal',
+          );
+          if (finalText.trim())
+            console.log('\n' + marked.parse(safeDisplayText(finalText)));
           console.log();
         }
       }

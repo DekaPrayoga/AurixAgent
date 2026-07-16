@@ -70,3 +70,14 @@ debug-*.js
 fix-*.js
 patch-*.js
 check-*.js
+
+# Local setup/config and backup artifacts
+.env.example
+.npmrc
+.prettierrc
+install.sh
+install.mac.sh
+install.ps1
+install.bat
+run-task.bat
+*.zip

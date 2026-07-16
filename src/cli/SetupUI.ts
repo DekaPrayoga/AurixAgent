@@ -13,6 +13,30 @@ const border = chalk.hex('#484848');
 const bg = chalk.bgHex('#1e1e1e');
 
 const panelBg = chalk.bgHex('#141414');
+let setupScreenActive = false;
+
+export function enterSetupScreen(): void {
+  if (!process.stdout.isTTY || setupScreenActive) {
+    console.clear();
+    return;
+  }
+  setupScreenActive = true;
+  process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H');
+  process.once('exit', () => leaveSetupScreen());
+}
+
+export function leaveSetupScreen(): void {
+  if (!process.stdout.isTTY || !setupScreenActive) return;
+  setupScreenActive = false;
+  process.stdout.write(
+    '\x1b[?1049l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m',
+  );
+}
+
+function clearSetupScreen(): void {
+  if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[H');
+  else console.clear();
+}
 
 export function drawBox(lines: string[], width = 60): void {
   const top = border('╭' + '─'.repeat(width) + '╮');
@@ -21,7 +45,9 @@ export function drawBox(lines: string[], width = 60): void {
   for (const line of lines) {
     const stripped = line.replace(/\u001b\[[0-9;]*m/g, '');
     const pad = Math.max(0, width - stripped.length);
-    console.log(border('│') + panelBg(' ' + line + ' '.repeat(pad) + ' ') + border('│'));
+    console.log(
+      border('│') + panelBg(' ' + line + ' '.repeat(pad) + ' ') + border('│'),
+    );
   }
   console.log(bot);
 }
@@ -34,6 +60,7 @@ export function drawInputScreen(opts: {
   extra?: string[];
 }): Promise<string> {
   return new Promise((resolve) => {
+    clearSetupScreen();
     console.log();
     const titleLine = teal.bold(opts.title);
     const hintLine = dim(opts.hint);
@@ -132,7 +159,9 @@ export function drawInputScreen(opts: {
               renderLine();
               return;
             }
-            buf += safeDisplayText(p.slice(0, pEnd)).replace(/\r/g, '').replace(/\n$/, '');
+            buf += safeDisplayText(p.slice(0, pEnd))
+              .replace(/\r/g, '')
+              .replace(/\n$/, '');
             stdin.removeListener('data', onPaste);
             stdin.on('data', onData);
             renderLine();
@@ -389,7 +418,7 @@ export function drawSelector(opts: {
     };
 
     const repaint = () => {
-      console.clear();
+      clearSetupScreen();
       const lines = [teal.bold(opts.title), ''];
       if (opts.extra) {
         opts.extra.forEach((line) => lines.push(dim('  ' + line)));
@@ -397,7 +426,9 @@ export function drawSelector(opts: {
       }
       opts.items.forEach((item, i) => {
         const isActive = i === active;
-        const checked = opts.multi ? (selected.has(item.id) ? green('[x]') : dim('[ ]')) + ' ' : '';
+        const checked = opts.multi
+          ? (selected.has(item.id) ? green('[x]') : dim('[ ]')) + ' '
+          : '';
         const pointer = isActive ? teal('›') : dim(' ');
         const num = isActive
           ? orange.bold(String(i + 1).padStart(2))
@@ -409,13 +440,17 @@ export function drawSelector(opts: {
       if (opts.allowSkip) {
         const skipActive = active === opts.items.length;
         lines.push('');
-        lines.push(`  ${skipActive ? teal('›') : dim(' ')} ${teal(' 0')}  ${dim('Skip for now')}`);
+        lines.push(
+          `  ${skipActive ? teal('›') : dim(' ')} ${teal(' 0')}  ${dim('Skip for now')}`,
+        );
       }
       lines.push('');
       lines.push(
         opts.multi
-          ? dim('  ↑/↓ or tab move · space toggle · a all · enter confirm · mouse click · esc back')
-          : dim('  ↑/↓ or tab move · enter confirm · mouse click · esc back')
+          ? dim(
+              '  ↑/↓ or tab move · space toggle · a all · enter confirm · mouse click · esc back',
+            )
+          : dim('  ↑/↓ or tab move · enter confirm · mouse click · esc back'),
       );
       drawBox(lines, 76);
     };
@@ -441,7 +476,8 @@ export function drawSelector(opts: {
         return;
       }
       if (opts.multi) {
-        if (selected.size === 0 && opts.items[active]) selected.add(opts.items[active].id);
+        if (selected.size === 0 && opts.items[active])
+          selected.add(opts.items[active].id);
         finish(Array.from(selected));
         return;
       }
@@ -459,7 +495,10 @@ export function drawSelector(opts: {
         }, 300);
         return;
       }
-      if (escBuf.length === 1 && (escBuf.charCodeAt(0) === 0 || escBuf.charCodeAt(0) === 0xe0)) {
+      if (
+        escBuf.length === 1 &&
+        (escBuf.charCodeAt(0) === 0 || escBuf.charCodeAt(0) === 0xe0)
+      ) {
         clearEscTimer();
         const scanCode = ch.charCodeAt(0);
         escBuf = '';
@@ -518,7 +557,8 @@ export function drawSelector(opts: {
           const mouse = {
             x: Number(mouseMatch[2]),
             y: Number(mouseMatch[3]),
-            action: mouseMatch[4] === 'M' ? ('press' as const) : ('release' as const),
+            action:
+              mouseMatch[4] === 'M' ? ('press' as const) : ('release' as const),
           };
           if (mouse.action === 'press') {
             const itemRowStart = 5;
@@ -528,7 +568,10 @@ export function drawSelector(opts: {
               if (opts.multi) toggleActive();
               else confirmActive();
             }
-            if (opts.allowSkip && mouse.y === itemRowStart + opts.items.length + 1) {
+            if (
+              opts.allowSkip &&
+              mouse.y === itemRowStart + opts.items.length + 1
+            ) {
               active = opts.items.length;
               confirmActive();
             }
@@ -617,7 +660,10 @@ export function drawSelector(opts: {
     }
 
     // Cross-platform keypress handler (arrow keys work on Windows/Linux/macOS)
-    const onKeypress = (_ch: string | undefined, key: readline.Key | undefined) => {
+    const onKeypress = (
+      _ch: string | undefined,
+      key: readline.Key | undefined,
+    ) => {
       if (!key) return;
       if (key.name === 'up') {
         move(-1);
@@ -653,7 +699,9 @@ function disableMouse(): void {
   process.stdout.write('\x1b[?1000l\x1b[?1006l');
 }
 
-function parseMouse(input: string): { x: number; y: number; action: 'press' | 'release' } | null {
+function parseMouse(
+  input: string,
+): { x: number; y: number; action: 'press' | 'release' } | null {
   const match = /\x1b\[<(\d+);(\d+);(\d+)([mM])/.exec(input);
   if (!match) return null;
   return {
@@ -663,7 +711,10 @@ function parseMouse(input: string): { x: number; y: number; action: 'press' | 'r
   };
 }
 
-export function drawConfirm(opts: { title: string; message: string }): Promise<boolean> {
+export function drawConfirm(opts: {
+  title: string;
+  message: string;
+}): Promise<boolean> {
   return new Promise((resolve) => {
     console.log();
     const lines = [
