@@ -28,8 +28,31 @@ import {
 import { checkAudioButton, solveAudioCaptcha } from './AudioBypass.js';
 import { loadConfig } from '../../agent/Config.js';
 
+export type CaptchaSaveState = {
+  instruction: string;
+  gridRows: number;
+  gridCols: number;
+  actualTileCount: number;
+  matchedIndices: number[];
+  gridScreenshotPath: string;
+  is3x3Flip: boolean;
+};
+
+export function createCaptchaSaveState(_provider: string): CaptchaSaveState {
+  return {
+    instruction: '',
+    gridRows: 0,
+    gridCols: 0,
+    actualTileCount: 0,
+    matchedIndices: [],
+    gridScreenshotPath: join(homedir(), '.aurix-captcha-grid.png'),
+    is3x3Flip: false,
+  };
+}
+
 export async function solveCaptchaGrid(page: any, frame: any, provider: string): Promise<string> {
   const results: string[] = [];
+  const saveState = createCaptchaSaveState(provider);
   const isRecaptcha = provider === 'recaptcha';
   const _t0 = Date.now();
   const _elapsed = () => ((Date.now() - _t0) / 1000).toFixed(1);
@@ -68,18 +91,18 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
     _saved = true;
     sessionLog.verifyResult = verifyResult;
     try {
-      const objMatch = instruction.match(
+      const objMatch = saveState.instruction.match(
         /(?:with|of|containing)\s+(.+?)(?:\.|Click|If\s|Verify|$)/i
       );
       const objectType = objMatch ? objMatch[1].trim() : '';
       const isPass = /\[VERIFIED\]|\[BFRAME_GONE\]/.test(results.join('\n'));
       const isNewChallenge = /\[NEW_CHALLENGE\]/.test(results.join('\n'));
       const result: CaptchaResult = {
-        instruction: instruction.substring(0, 120),
+        instruction: saveState.instruction.substring(0, 120),
         objectType,
-        gridSize: `${gridRows}x${gridCols}`,
-        tileCount: actualTileCount,
-        matchedIndices: [...matchedIndices],
+        gridSize: `${saveState.gridRows}x${saveState.gridCols}`,
+        tileCount: saveState.actualTileCount,
+        matchedIndices: [...saveState.matchedIndices],
         result: isPass
           ? 'verified'
           : isNewChallenge
@@ -92,7 +115,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
         tileDescriptions: sessionLog.tileDescriptions.map((t) => ({
           idx: t.idx,
           description: t.description,
-          selected: matchedIndices.includes(t.idx),
+          selected: saveState.matchedIndices.includes(t.idx),
         })),
         gridAnalysis:
           sessionLog.gridLevelResult.length > 0
@@ -104,8 +127,8 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
           sessionLog.directResult.length > 0 ? { result: sessionLog.directResult } : undefined,
         verifyResults: sessionLog.verifyResults.length > 0 ? sessionLog.verifyResults : undefined,
         mergeInfo: sessionLog.mergeInfo || undefined,
-        gridImagePath: gridScreenshotPath,
-        is3x3Flip,
+        gridImagePath: saveState.gridScreenshotPath,
+        is3x3Flip: saveState.is3x3Flip,
         errorNotes: verifyResult,
       };
       saveCaptchaResult(result);
@@ -345,6 +368,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
     return results.join('\n');
   }
 
+  saveState.instruction = instruction;
   results.push(`Auto-solving: "${instruction}"`);
   _dbg(`instruction: "${instruction}"`);
 
@@ -382,6 +406,10 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
   let gridRows = is3x3 ? 3 : 4;
   let visibleTiles: any[] = tiles;
   let actualTileCount = tiles.length;
+  saveState.gridCols = gridCols;
+  saveState.gridRows = gridRows;
+  saveState.actualTileCount = actualTileCount;
+  saveState.is3x3Flip = is3x3Flip;
 
   try {
     const tileBoxes: { tile: any; box: { x: number; y: number; width: number; height: number } }[] =
@@ -439,9 +467,12 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
     _dbg(`grid layout fallback: ${gridRows}x${gridCols} (${tiles.length} tiles, ${e.message})`);
   }
 
+  saveState.gridCols = gridCols;
+  saveState.gridRows = gridRows;
+  saveState.actualTileCount = actualTileCount;
   let gridSize = `${gridRows}x${gridCols}`;
 
-  const gridScreenshotPath = join(homedir(), '.aurix-captcha-grid.png');
+  const gridScreenshotPath = saveState.gridScreenshotPath;
   let domTileBufs: { idx: number; buf: Buffer }[] = [];
   let gridShot = false;
   let gridShotFromTable = false;
@@ -820,7 +851,7 @@ export async function solveCaptchaGrid(page: any, frame: any, provider: string):
     } catch {}
   }
 
-  const matchedIndices: number[] = [];
+  const matchedIndices = saveState.matchedIndices;
 
   if (gridShot) {
     // ============================================

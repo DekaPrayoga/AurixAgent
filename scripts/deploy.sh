@@ -21,9 +21,10 @@ info "Repo synced"
 
 npx tsc 2>/dev/null && info "Build OK" || warn "Build skipped (tsc not found or errors)"
 
-pm2 restart aurix-agent 2>/dev/null && info "PM2 restarted" || warn "PM2 aurix-agent not running (run: pm2 start dist/index.js --name aurix-agent)"
+pm2 delete aurix-reddit-api >/dev/null 2>&1 || true
+pm2 restart aurix-agent --update-env 2>/dev/null && info "PM2 restarted" || warn "PM2 aurix-agent not running (run: pm2 start dist/index.js --name aurix-agent)"
 
-curl -sf http://localhost:$BACKEND_PORT/api/health >/dev/null && info "Backend api.haikz.me healthy" || warn "Backend not responding on port $BACKEND_PORT"
+curl -sf http://localhost:$BACKEND_PORT/api/health >/dev/null && info "Embedded Reddit API healthy" || warn "Embedded Reddit API not responding on port $BACKEND_PORT"
 
 echo ""
 info "Deploy complete — Aurix backend is synced and restarted"

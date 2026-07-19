@@ -1,9 +1,5 @@
 #!/usr/bin/env bun
-import React from 'react';
 import chalk from 'chalk';
-import { createRoot } from '@opentui/react';
-import { createCliRenderer } from '@opentui/core';
-import { App } from './cli/App.js';
 
 // --- CRITICAL FIX FOR 9ROUTER / LOCALHOST PROXY ISSUES ---
 // Node.js/Bun fetch aggressively uses these env vars, causing local requests (127.0.0.1:20128)
@@ -17,6 +13,7 @@ delete process.env.ALL_PROXY;
 delete process.env.all_proxy;
 
 import { applyTheme } from './cli/theme.js';
+import { createTerminalLifecycle } from './cli/TerminalLifecycle.js';
 import { loadConfig } from './agent/Config.js';
 import { runSetup } from './agent/Setup.js';
 import { createProvider } from './providers/index.js';
@@ -74,6 +71,7 @@ import { archiveReaderTool } from './tools/ArchiveReader.js';
 import { brainTool } from './tools/Brain.js';
 import { audioCaptchaTool, audioCaptchaLocalTool } from './tools/AudioCaptcha.js';
 import { tempMailingTool } from './tools/TempMail.js';
+import { createNonInteractiveCleanup } from './cli/NonInteractiveCleanup.js';
 
 function createRegistry(features?: string[]): ToolRegistry {
   const registry = new ToolRegistry();
@@ -179,23 +177,111 @@ function createRegistry(features?: string[]): ToolRegistry {
 
 export { createRegistry };
 
+async function runNonInteractive(
+  config: ReturnType<typeof loadConfig>,
+  registry: ToolRegistry,
+  prompt: string
+): Promise<number> {
+  const { AgentLoop } = await import('./agent/AgentLoop.js');
+  const { safeDisplayText } = await import('./utils/terminal-sanitize.js');
+  const agent = new AgentLoop(config, registry);
+  let finalText = '';
+  let errorText = '';
+  let signalCount = 0;
+  const cleanup = createNonInteractiveCleanup({
+    saveSession: async () => {
+      await agent.saveSessionAsync();
+    },
+    closeBrowsers: async () => {
+      if (registry.has('browser')) await registry.execute('browser', { action: 'close-all' });
+    },
+  });
+
+  const interrupt = () => {
+    signalCount++;
+    agent.interrupt();
+    process.exitCode = 130;
+    void cleanup().finally(() => {
+      if (signalCount > 1) process.exit(130);
+    });
+  };
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', interrupt);
+
+  try {
+    for await (const event of agent.run(prompt)) {
+      if (event.type === 'text' && event.data.trim()) {
+        finalText = event.data;
+      } else if (event.type === 'done' && event.data.trim()) {
+        finalText = event.data;
+      } else if (event.type === 'error') {
+        errorText = event.data;
+      } else if (
+        process.env.AURIX_NON_INTERACTIVE_VERBOSE === '1' &&
+        ['route', 'research', 'compact', 'tool_start', 'tool_chunk', 'tool_end'].includes(event.type)
+      ) {
+        const label = event.toolName || event.type;
+        const detail = event.data ? `: ${safeDisplayText(event.data)}` : '';
+        process.stderr.write(`[${label}]${detail}\n`);
+      }
+    }
+
+    if (process.exitCode === 130) return 130;
+    if (errorText) {
+      process.stderr.write(`${safeDisplayText(errorText).trim()}\n`);
+      return 1;
+    }
+    if (!finalText.trim()) {
+      process.stderr.write('Aurix returned no final answer.\n');
+      return 1;
+    }
+
+    const cleanAnswer = safeDisplayText(finalText)
+      .replace(
+        /\n+---\n+[^\n]*This model is FREE and served by inferhub\.dev\.[\s\S]*$/i,
+        ''
+      )
+      .trim();
+    process.stdout.write(`${cleanAnswer}\n`);
+    return 0;
+  } catch (error: any) {
+    process.stderr.write(`Fatal: ${safeDisplayText(error?.message || error).trim()}\n`);
+    return process.exitCode === 130 ? 130 : 1;
+  } finally {
+    process.removeListener('SIGINT', interrupt);
+    process.removeListener('SIGTERM', interrupt);
+    await cleanup();
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
+  const hasNonInteractiveArg = args.some(
+    (arg) => arg === '--non-interactive' || arg === '-p' || arg === '--prompt'
+  );
 
-  const cleanupTerminal = () => {
-    try {
-      process.stdout.write(
-        '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[0m'
-      );
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    } catch {}
-  };
-  process.on('exit', cleanupTerminal);
-  process.on('uncaughtException', (err) => {
-    cleanupTerminal();
-    console.error(err);
-    process.exit(1);
+  const terminalLifecycle = createTerminalLifecycle({
+    installSignalHandlers: false,
+    exitOnSignal: false,
   });
+  process.on('exit', () => {
+    void terminalLifecycle.dispose();
+  });
+  process.on('uncaughtException', (err) => {
+    void terminalLifecycle.dispose().finally(() => {
+      console.error(err);
+      process.exit(1);
+    });
+  });
+
+  if (args.some((arg) => arg === '-h' || arg === '--help' || arg === 'help')) {
+    process.stdout.write(`AURIX Agent\n\nUsage:\n  aurix                         Start interactive session\n  aurix --non-interactive <prompt>\n  aurix -p <prompt>             Run one prompt, print the answer, exit\n  aurix setup                   Configure provider and model\n  aurix gateway                 Start messaging gateway\n`);
+    return;
+  }
+  if (args.some((arg) => arg === '-v' || arg === '--version' || arg === 'version')) {
+    process.stdout.write(`aurix v${process.env.AURIX_VERSION || 'dev'}\n`);
+    return;
+  }
 
   if (process.platform === 'linux' && !process.env.DISPLAY) {
     try {
@@ -227,18 +313,45 @@ async function main() {
 
   if (args[0] === 'gateway') {
     const { startGateway } = await import('./gateway-entry.js');
+    const { ensureRedditApiServer } = await import('./api/RedditApiServer.js');
     const gatewayConfig = loadConfig();
+    if (
+      (!gatewayConfig.redditBackend || ['auto', 'relay'].includes(gatewayConfig.redditBackend)) &&
+      !gatewayConfig.redditRelayUrl
+    ) {
+      await ensureRedditApiServer();
+    }
     const gatewayRegistry = createRegistry(gatewayConfig.features);
     gatewayRegistry.register(createSpawnAgentTool(gatewayConfig, gatewayRegistry));
     await startGateway(gatewayRegistry);
     return;
   }
 
+  if (args[0] === 'api' || args[0] === 'reddit-api') {
+    const { startRedditApiServer } = await import('./api/RedditApiServer.js');
+    await startRedditApiServer();
+    return;
+  }
+
+  const nonInteractiveIdx = args.findIndex(
+    (arg) => arg === '--non-interactive' || arg === '-p' || arg === '--prompt'
+  );
+  const nonInteractive = nonInteractiveIdx !== -1;
+  const promptParts = nonInteractive ? args.slice(nonInteractiveIdx + 1) : [];
+  const nonInteractivePrompt = promptParts.join(' ').trim();
+  if (nonInteractive && !nonInteractivePrompt) {
+    process.stderr.write('Usage: aurix --non-interactive <prompt>\n');
+    process.exitCode = 2;
+    return;
+  }
+
   // Non-blocking update check — fetches latest version from npm registry,
   // caches the result for 24h. Prints a banner if newer version exists.
-  const updateCheckPromise = import('./utils/UpdateCheck.js')
-    .then((m) => m.checkForUpdate())
-    .catch(() => {});
+  const updateCheckPromise = nonInteractive
+    ? Promise.resolve()
+    : import('./utils/UpdateCheck.js')
+        .then((m) => m.checkForUpdate())
+        .catch(() => {});
 
   // Mouse handling is done by OpenTUI internally
   const isSetup = args[0] === 'setup' || args.includes('--setup');
@@ -248,8 +361,29 @@ async function main() {
 
   let config = loadConfig();
 
+  if (nonInteractive && !config.apiKey) {
+    process.stderr.write('Aurix is not configured. Run `aurix setup` first.\n');
+    process.exitCode = 1;
+    return;
+  }
+
   if (isSetup || (!config.apiKey && !isContinue && !resumeId)) {
     config = await runSetup(isContinue);
+  }
+
+  if (nonInteractive) {
+    const registry = createRegistry(config.features);
+    registry.register(createSpawnAgentTool(config, registry));
+    process.exitCode = await runNonInteractive(config, registry, nonInteractivePrompt);
+    return;
+  }
+
+  if (
+    (!config.redditBackend || ['auto', 'relay'].includes(config.redditBackend)) &&
+    !config.redditRelayUrl
+  ) {
+    const { ensureRedditApiServer } = await import('./api/RedditApiServer.js');
+    await ensureRedditApiServer();
   }
 
   applyTheme(config);
@@ -308,6 +442,14 @@ async function main() {
     return;
   }
 
+  const [{ default: React }, { createRoot }, { createCliRenderer }, { App }] = await Promise.all([
+    import('react'),
+    import('@opentui/react'),
+    import('@opentui/core'),
+    import('./cli/App.js'),
+  ]);
+
+  await terminalLifecycle.start();
   let renderer;
   try {
     renderer = await createCliRenderer({

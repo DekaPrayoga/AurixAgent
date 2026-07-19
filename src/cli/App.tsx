@@ -6,9 +6,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { ChatArea, type ChatMessage } from './ChatArea.js';
+import { applyAgentEvent, createPresentationState, startUserTurn } from './TurnState.js';
+import type { PresentationState } from './TurnState.js';
 import { writeClipboard } from './Clipboard.js';
 import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
+import { detectInstallMethod, terminalDiagnostics } from './InstallDiagnostics.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { VisionModal } from './VisionModal.js';
@@ -221,6 +224,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const renderer = useRenderer();
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const presentationStateRef = React.useRef<PresentationState>(createPresentationState());
+  const setPresentationState = useCallback((next: PresentationState) => {
+    presentationStateRef.current = next;
+    setMessages(next.messages as ChatMessage[]);
+  }, []);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAskingUser, setIsAskingUser] = useState(false);
   const [activeTool, setActiveTool] = useState<
@@ -452,12 +460,6 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
   useKeyboard((evt) => {
     const name = evt.name;
-
-    if (evt.ctrl && name === 'c') {
-      evt.preventDefault();
-      doExit();
-      return;
-    }
 
     if (evt.ctrl && name === 'o') {
       evt.preventDefault();
@@ -1068,6 +1070,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             `Model: ${agent.getModel()}`,
             `Base URL: ${baseUrl || '(default)'}`,
           ];
+          const install = detectInstallMethod(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..'));
+          checks.push(...terminalDiagnostics());
+          checks.push(`Install: ${install.detail}`);
+          checks.push(`Update: ${install.updateCommand}`);
           const audit = auditCommandCoverage(allCommands, HANDLED_COMMANDS, ['tool:*']);
           const commandAudit =
             `Command audit:\n` +
@@ -1721,8 +1727,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           );
           return;
         } else if (commandName === 'update') {
+          const install = detectInstallMethod(path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..'));
           addAssistant(
-            'AURIX Agent is up to date. Run `git pull` in the aurix-agent directory to check for updates.'
+            `Update method: ${install.detail}\n\nRun:\n  ${install.updateCommand}\n\nRestart Aurix after the command completes.`
           );
           return;
         } else if (commandName === 'redraw') {
@@ -2592,16 +2599,17 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         outboundText = `${sessionDirectives.join('\n')}\n\n${outboundText}`;
       }
 
-      const checkpointId = `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'user',
-          content: outboundText,
-          timestamp: new Date(),
-          checkpointId,
-        },
-      ]);
+      const turnStartedAt = Date.now();
+      const checkpointId = `cp_${turnStartedAt}_${Math.random().toString(36).slice(2, 8)}`;
+      const turnId = checkpointId;
+      const startedTurn = startUserTurn(createPresentationState(messages), outboundText, {
+        now: new Date(),
+        turnId,
+      });
+      if (startedTurn.messages.length > 0) {
+        startedTurn.messages[startedTurn.messages.length - 1].checkpointId = checkpointId;
+      }
+      setPresentationState(startedTurn);
       try {
         const { getCheckpointEngine } = await import('../agent/Checkpoint.js');
         getCheckpointEngine()?.commit(checkpointId);
@@ -2624,96 +2632,38 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           pendingImagesRef.current.length > 0 ? [...pendingImagesRef.current] : undefined;
         pendingImagesRef.current = [];
 
-        for await (const event of currentAgent.run(outboundText, images)) {
-          switch (event.type) {
-            case 'text':
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'assistant',
-                  content: event.data,
-                  model: agent.getModel(),
-                  timestamp: new Date(),
-                },
-              ]);
-              break;
-
-            case 'route':
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'tool',
-                  content: event.data,
-                  toolName: `route:${event.toolName || 'native'}`,
-                  timestamp: new Date(),
-                },
-              ]);
-              break;
-
-            case 'tool_start':
-              setActiveTool({ name: event.toolName || '', args: event.toolArgs });
-              break;
-
-            case 'tool_chunk':
-              queueLiveToolOutput(event.toolName, event.data);
-              break;
-
-            case 'tool_end':
-              flushLiveToolOutput();
-              setActiveTool(undefined);
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'tool',
-                  content: `${renderToolEnd({
-                    toolName: event.toolName,
-                    data: event.data,
-                    durationMs: event.durationMs,
-                    status: event.status,
-                    errorType: event.errorType,
-                  })}\n\n${event.data}`,
-                  toolName: event.toolName,
-                  timestamp: new Date(),
-                },
-              ]);
-              break;
-
-            case 'compact':
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'tool',
-                  content: event.data,
-                  toolName: 'context-compact',
-                  timestamp: new Date(),
-                },
-              ]);
-              break;
-
-            case 'error':
-              setMessages((prev) => [
-                ...prev,
-                {
-                  role: 'assistant',
-                  content: `Error: ${event.data}`,
-                  timestamp: new Date(),
-                },
-              ]);
-              break;
+        for await (const rawEvent of currentAgent.run(outboundText, images)) {
+          const event = { ...rawEvent, turnId: rawEvent.turnId || turnId };
+          if (event.type === 'tool_start') {
+            setActiveTool({ name: event.toolName || '', args: event.toolArgs });
+          } else if (event.type === 'tool_end') {
+            setActiveTool(undefined);
           }
+          setPresentationState(
+            applyAgentEvent(presentationStateRef.current, event, {
+              model: agent.getModel(),
+              renderToolEnd,
+            })
+          );
         }
+        setPresentationState(
+          applyAgentEvent(
+            presentationStateRef.current,
+            { type: 'done', data: '', turnId, durationMs: Date.now() - turnStartedAt },
+            { model: agent.getModel(), renderToolEnd }
+          )
+        );
       } catch (e: any) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: `Fatal error: ${e.message}`,
-            timestamp: new Date(),
-          },
-        ]);
+        setPresentationState(
+          applyAgentEvent(
+            presentationStateRef.current,
+            { type: 'error', data: `Fatal error: ${e.message}`, turnId },
+            { model: agent.getModel(), renderToolEnd }
+          )
+        );
       }
 
-      flushLiveToolOutput();
+      clearLiveToolOutput();
       setIsProcessing(false);
       setActiveTool(undefined);
     },
@@ -2765,7 +2715,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const barStr = Array.from({ length: barW })
     .map((_, i) => (i < barFill ? '█' : '░'))
     .join('');
-  const promptW = Math.max(60, Math.min(80, termWidth - 8));
+  const promptW = Math.max(32, Math.min(80, termWidth - 8));
+  const showFullSidebar = termWidth >= 120;
 
   return (
     <box
@@ -3097,7 +3048,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 />
               </box>
             </box>
-            <box
+            {showFullSidebar && <box
               flexDirection="column"
               width={28}
               backgroundColor={theme.bgPanel}
@@ -3170,7 +3121,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   <text fg={theme.text}>{toolCount}</text>
                 </box>
               </box>
-            </box>
+            </box>}
           </box>
         )}
       </box>

@@ -18,10 +18,10 @@ export function FileDiff({ filePath, oldLines, newLines, lineStart = 1 }: DiffPr
   const added = newLines.length - oldLines.length;
   const changeTag = added > 0 ? `+${added}` : added < 0 ? `${added}` : '~';
 
-  const removedBg = '#7f1d1d';
-  const addedBg = '#14532d';
-  const removedFg = '#ffffff';
-  const addedFg = '#ffffff';
+  const removedBg = theme.diffRemovedBg;
+  const addedBg = theme.diffAddedBg;
+  const removedFg = theme.diffRemoved;
+  const addedFg = theme.diffAdded;
   const lineWidth = Math.max(
     3,
     String(lineStart + Math.max(oldLines.length, newLines.length)).length

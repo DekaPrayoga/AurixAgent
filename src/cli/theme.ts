@@ -42,6 +42,31 @@ export const theme = {
   panel: '#141414',
   panelInner: '#1e1e1e',
 
+  surfaceBase: '#0a0a0a',
+  surfacePanel: '#141414',
+  surfaceElevated: '#1e1e1e',
+  surfaceHover: '#282828',
+  surfaceSelected: '#323232',
+  textPrimary: '#eeeeee',
+  textSecondary: '#cfcfcf',
+  textSubtle: '#606060',
+  intentInfo: '#56b6c2',
+  intentSuccess: '#7fd88f',
+  intentWarning: '#f5a742',
+  intentDanger: '#e06c75',
+  markdownHeading: '#9d7cd8',
+  markdownLink: '#56b6c2',
+  markdownCode: '#7fd88f',
+  markdownQuote: '#f5a742',
+  markdownStrong: '#fab283',
+  toolPending: '#eeeeee',
+  toolRunning: '#f5a742',
+  toolSuccess: '#808080',
+  toolError: '#e06c75',
+  diffAddedBg: '#17351f',
+  diffRemovedBg: '#3b1d22',
+  diffLineNumber: '#606060',
+
   // Legacy aliases for backward compat during migration
   navy: '#0a0a0a',
   light: '#56b6c2',
@@ -358,6 +383,30 @@ export function applyTheme(config: Pick<AurixConfig, 'themeName' | 'accentColor'
   theme.light = palette.info || theme.info;
   theme.muted = palette.textMuted || theme.textMuted;
   theme.bright = palette.textBright || theme.textBright;
+  theme.surfaceBase = theme.bg;
+  theme.surfacePanel = theme.bgPanel;
+  theme.surfaceElevated = theme.bgElement;
+  theme.surfaceHover = theme.bgMenu;
+  theme.surfaceSelected = theme.bgSelected;
+  theme.textPrimary = theme.text;
+  theme.textSecondary = theme.textBright;
+  theme.textSubtle = theme.borderActive;
+  theme.intentInfo = theme.info;
+  theme.intentSuccess = theme.ok;
+  theme.intentWarning = theme.warn;
+  theme.intentDanger = theme.error;
+  theme.markdownHeading = theme.accent;
+  theme.markdownLink = theme.info;
+  theme.markdownCode = theme.ok;
+  theme.markdownQuote = theme.warn;
+  theme.markdownStrong = theme.primary;
+  theme.toolPending = theme.text;
+  theme.toolRunning = theme.running;
+  theme.toolSuccess = theme.textMuted;
+  theme.toolError = theme.error;
+  theme.diffAddedBg = `${theme.diffAdded}33`;
+  theme.diffRemovedBg = `${theme.diffRemoved}33`;
+  theme.diffLineNumber = theme.textSubtle;
   themeVersion++;
 }
 

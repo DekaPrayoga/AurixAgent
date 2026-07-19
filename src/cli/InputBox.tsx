@@ -1,8 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { TextAttributes, decodePasteBytes } from '@opentui/core';
+import { TextAttributes, decodePasteBytes, type TextareaRenderable } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
-import { isPasteKey, readClipboard, readClipboardImage, writeClipboard } from './Clipboard.js';
+import {
+  isPasteKey,
+  normalizeClipboardText,
+  readClipboard,
+  readClipboardImage,
+  writeClipboard,
+} from './Clipboard.js';
 import type { SlashCommand } from './commands.js';
 import { completeCommand, filterSlashCommands } from './commands.js';
 import { filterFiles } from './fileList.js';
@@ -34,12 +40,98 @@ const MODE_COLOR: Record<'auto' | 'ask' | 'deny', string> = {
 };
 
 const MAX_VISIBLE_SUGGESTIONS = 8;
+const EXIT_HINT = 'press Ctrl+C again to exit';
 
 let pasteInProgress = false;
 let lastPasteStart = -1;
 let lastPasteLen = 0;
 let lastCtrlCEmpty = 0;
 const pastedBlocks = new Map<string, string>();
+
+export function shouldCompactPaste(text: string): boolean {
+  return text.split('\n').length >= 2 || text.length > 200;
+}
+
+export function makePastedPlaceholder(index: number): string {
+  return `[pasted-${index}]`;
+}
+
+export function expandPastedPlaceholders(value: string, blocks: ReadonlyMap<string, string>): string {
+  let expanded = value;
+  for (const [placeholder, fullText] of blocks) {
+    expanded = expanded.split(placeholder).join(fullText);
+  }
+  return expanded;
+}
+
+export function extractCommandQuery(value: string): string | null {
+  return value.startsWith('/') && !/\s/.test(value.slice(1)) ? value.slice(1) : null;
+}
+
+export function extractAtQuery(value: string): string | null {
+  const match = value.match(/(?:^|\s)@([^\s]*)$/);
+  return match ? match[1] : null;
+}
+
+function getEditorText(editor: TextareaRenderable | null): string {
+  return editor?.editBuffer?.getText?.() ?? '';
+}
+
+function getEditorCursorOffset(editor: TextareaRenderable | null): number {
+  if (!editor) return 0;
+  const cursor = editor.editBuffer.getCursorPosition();
+  return editor.editBuffer.positionToOffset(cursor.row, cursor.col) ?? getEditorText(editor).length;
+}
+
+function setEditorText(editor: TextareaRenderable | null, text: string): void {
+  editor?.setText(text);
+  const end = editor?.editBuffer.offsetToPosition(text.length);
+  if (editor && end) editor.setCursor(end.row, end.col);
+}
+
+function insertIntoEditor(editor: TextareaRenderable | null, text: string): void {
+  editor?.insertText(text);
+}
+
+function NativePromptEditor({
+  editorRef,
+  value,
+  disabled,
+  onChange,
+  onNativeSubmit,
+}: {
+  editorRef: React.RefObject<TextareaRenderable | null>;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onNativeSubmit: () => void;
+}) {
+  return (
+    <textarea
+      ref={editorRef as React.Ref<TextareaRenderable>}
+      focused={!disabled}
+      initialValue={value}
+      placeholder="Ask anything..."
+      minHeight={3}
+      wrapMode="word"
+      backgroundColor={theme.bgElement}
+      focusedBackgroundColor={theme.bgElement}
+      textColor={theme.text}
+      focusedTextColor={theme.text}
+      placeholderColor={theme.textMuted}
+      cursorColor={theme.cursor}
+      selectionBg={theme.cursor}
+      selectionFg={theme.bg}
+      // Let InputBox keep owning Enter/Tab so slash/file completion and submit semantics stay stable.
+      keyBindings={[
+        { name: 'return', action: 'submit' },
+        { name: 'tab', action: 'submit' },
+      ]}
+      onContentChange={() => onChange(getEditorText(editorRef.current))}
+      onSubmit={onNativeSubmit}
+    />
+  );
+}
 
 export function InputBox({
   onSubmit,
@@ -57,80 +149,41 @@ export function InputBox({
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
-  const [cursor, setCursor] = useState(0);
-  const cursorRef = React.useRef(0);
   const valueRef = React.useRef('');
+  const editorRef = React.useRef<TextareaRenderable | null>(null);
+  const submitCurrentRef = React.useRef<() => void>(() => {});
 
-  React.useEffect(() => {
-    cursorRef.current = cursor;
-    valueRef.current = value;
-  }, [cursor, value]);
-  const [selStart, setSelStart] = useState(-1);
-  const [selEnd, setSelEnd] = useState(-1);
-  const selStartRef = React.useRef(-1);
-  const selEndRef = React.useRef(-1);
-
-  const setInputState = React.useCallback((nextValue: string, nextCursor: number) => {
-    const clamped = Math.max(0, Math.min(nextCursor, nextValue.length));
-    valueRef.current = nextValue;
-    cursorRef.current = clamped;
-    setValue(nextValue);
-    setCursor(clamped);
+  const syncValue = React.useCallback((next: string) => {
+    valueRef.current = next;
+    setValue(next);
   }, []);
 
-  const clearSelection = React.useCallback(() => {
-    selStartRef.current = -1;
-    selEndRef.current = -1;
-    setSelStart(-1);
-    setSelEnd(-1);
-  }, []);
-
-  const setSelectionState = React.useCallback((start: number, end: number) => {
-    selStartRef.current = start;
-    selEndRef.current = end;
-    setSelStart(start);
-    setSelEnd(end);
-  }, []);
-  const hasActiveSelection = React.useCallback(() => {
-    return (
-      selStartRef.current >= 0 &&
-      selEndRef.current >= 0 &&
-      selStartRef.current !== selEndRef.current
-    );
-  }, []);
+  const setInputState = React.useCallback(
+    (nextValue: string, nextCursor = nextValue.length) => {
+      syncValue(nextValue);
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.setText(nextValue);
+      const pos = editor.editBuffer.offsetToPosition(Math.max(0, Math.min(nextCursor, nextValue.length)));
+      if (pos) editor.setCursor(pos.row, pos.col);
+    },
+    [syncValue]
+  );
 
   const replaceSelectionOrInsert = React.useCallback(
     (text: string) => {
-      const currentValue = valueRef.current;
-      const currentCursor = cursorRef.current;
-      if (hasActiveSelection()) {
-        const start = Math.min(selStartRef.current, selEndRef.current);
-        const end = Math.max(selStartRef.current, selEndRef.current);
-        setInputState(
-          currentValue.slice(0, start) + text + currentValue.slice(end),
-          start + text.length
-        );
-        clearSelection();
-        return;
-      }
-      setInputState(
-        currentValue.slice(0, currentCursor) + text + currentValue.slice(currentCursor),
-        currentCursor + text.length
-      );
-      clearSelection();
+      insertIntoEditor(editorRef.current, text);
+      syncValue(getEditorText(editorRef.current));
     },
-    [clearSelection, hasActiveSelection, setInputState]
+    [syncValue]
   );
 
   const insertPastedText = React.useCallback(
     (rawText?: string) => {
-      const clean = safeDisplayText(rawText || '')
-        .replace(/\r\n/g, '\n')
-        .trimEnd();
+      const clean = normalizeClipboardText(safeDisplayText(rawText || '')).trimEnd();
       if (!clean) return;
-      const lines = clean.split('\n');
-      if (lines.length >= 2 || clean.length > 200) {
-        const placeholder = `[pasted-${pastedBlocks.size + 1}]`;
+      if (shouldCompactPaste(clean)) {
+        const placeholder = makePastedPlaceholder(pastedBlocks.size + 1);
         pastedBlocks.set(placeholder, clean);
         replaceSelectionOrInsert(placeholder);
         return;
@@ -143,23 +196,19 @@ export function InputBox({
   const insertClipboardImage = React.useCallback(
     (imgPath: string) => {
       const summary = `[image: ${imgPath}]`;
-      lastPasteStart = hasActiveSelection()
-        ? Math.min(selStartRef.current, selEndRef.current)
-        : cursorRef.current;
+      lastPasteStart = getEditorCursorOffset(editorRef.current);
       lastPasteLen = summary.length;
       replaceSelectionOrInsert(summary);
     },
-    [hasActiveSelection, replaceSelectionOrInsert]
+    [replaceSelectionOrInsert]
   );
 
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
   const [spinnerTick, setSpinnerTick] = useState(0);
-  const lastEscRef = React.useRef<number>(0);
+  const submittingRef = React.useRef(false);
 
-  // Only animate spinner when input is disabled — avoids render contention
-  // with keystrokes during normal typing (was causing ~500ms input lag)
   useEffect(() => {
     if (!disabled) return;
     const id = setInterval(() => setSpinnerTick((n) => n + 1), 530);
@@ -167,9 +216,7 @@ export function InputBox({
   }, [disabled]);
 
   useEffect(() => {
-    if (process.stdin.isTTY) {
-      process.stdout.write('\x1b[?2004h');
-    }
+    if (process.stdin.isTTY) process.stdout.write('\x1b[?2004h');
     const onContinue = () => {
       if (process.stdin.isTTY) process.stdout.write('\x1b[?2004h');
     };
@@ -182,10 +229,26 @@ export function InputBox({
 
   usePaste((event) => {
     if (disabled) return;
+    const pasteEvent = event as typeof event & { preventDefault?: () => void; stopPropagation?: () => void };
+    pasteEvent.preventDefault?.();
+    pasteEvent.stopPropagation?.();
     pasteInProgress = true;
-    const text = safeDisplayText(decodePasteBytes(event.bytes)).replace(/\r\n/g, '\n').trimEnd();
+    const text = normalizeClipboardText(safeDisplayText(decodePasteBytes(event.bytes))).trimEnd();
     pasteInProgress = false;
-    insertPastedText(text);
+    if (text) {
+      insertPastedText(text);
+      return;
+    }
+    Promise.allSettled([readClipboardImage(), readClipboard()])
+      .then(([imageResult, textResult]) => {
+        const imgPath = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
+        if (imgPath) {
+          insertClipboardImage(imgPath);
+          return;
+        }
+        insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
+      })
+      .catch(() => {});
   });
 
   const frame = () => {
@@ -193,36 +256,26 @@ export function InputBox({
     return frames[spinnerTick % frames.length];
   };
 
-  const commandQuery = value.startsWith('/') && !/\s/.test(value.slice(1)) ? value.slice(1) : null;
-
+  const commandQuery = extractCommandQuery(value);
   const suggestions = useMemo(() => {
     if (commandQuery === null || commands.length === 0) return [];
     return filterSlashCommands(commands, commandQuery, commands.length);
   }, [commandQuery, commands]);
-
   const suggestionsVisible = suggestions.length > 0;
-  useEffect(() => {
-    setSelectedCommand(0);
-  }, [commandQuery]);
+  useEffect(() => setSelectedCommand(0), [commandQuery]);
 
-  // @-mention: detect a trailing @token (no whitespace after the @) to attach a file.
-  const atQuery = (() => {
-    const m = value.match(/(?:^|\s)@([^\s]*)$/);
-    return m ? m[1] : null;
-  })();
+  const atQuery = extractAtQuery(value);
   const fileSuggestions = useMemo(() => {
     if (atQuery === null) return [];
     return filterFiles(atQuery, 12);
   }, [atQuery]);
   const fileSuggestionsVisible = fileSuggestions.length > 0;
-  useEffect(() => {
-    setSelectedCommand(0);
-  }, [atQuery]);
+  useEffect(() => setSelectedCommand(0), [atQuery]);
 
   function applyFileCompletion(index = selectedCommand) {
     const file = fileSuggestions[index];
     if (!file) return;
-    const next = value.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `);
+    const next = valueRef.current.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `);
     setInputState(next, next.length);
   }
 
@@ -233,59 +286,44 @@ export function InputBox({
     setInputState(next, next.length);
   }
 
+  const submitCurrent = React.useCallback(() => {
+    lastPasteStart = -1;
+    lastPasteLen = 0;
+    if (suggestionsVisible) return applyCommandCompletion();
+    if (fileSuggestionsVisible) return applyFileCompletion();
+    const currentValue = getEditorText(editorRef.current) || valueRef.current;
+    const trimmed = currentValue.trim();
+    if (!trimmed || submittingRef.current) return;
+    submittingRef.current = true;
+    queueMicrotask(() => {
+      submittingRef.current = false;
+    });
+    const expanded = expandPastedPlaceholders(trimmed, pastedBlocks);
+    pastedBlocks.clear();
+    onSubmit(expanded);
+    setHistory((prev) => [...prev, trimmed]);
+    setInputState('', 0);
+    setHistoryIdx(-1);
+  }, [fileSuggestionsVisible, onSubmit, selectedCommand, suggestionsVisible]);
+  submitCurrentRef.current = submitCurrent;
+
   useKeyboard((evt) => {
     const name = evt.name;
-
-    // ESC must always propagate to App.tsx for interrupt handling
-    if (name === 'escape') {
-      return; // Don't preventDefault, don't handle - let App.tsx handle it
-    }
-
+    if (name === 'escape') return;
     if (disabled || pasteInProgress) return;
 
     if (name === 'return') {
       evt.preventDefault();
       evt.stopPropagation();
-      lastPasteStart = -1;
-      lastPasteLen = 0;
-      if (suggestionsVisible) {
-        applyCommandCompletion();
-        return;
-      }
-      if (fileSuggestionsVisible) {
-        applyFileCompletion();
-        return;
-      }
-      const currentValue = valueRef.current;
-      const trimmed = currentValue.trim();
-      if (trimmed) {
-        let expanded = trimmed;
-        for (const [placeholder, fullText] of pastedBlocks) {
-          expanded = expanded.split(placeholder).join(fullText);
-        }
-        pastedBlocks.clear();
-        onSubmit(expanded);
-        setHistory((prev) => [...prev, trimmed]);
-        setInputState('', 0);
-        setHistoryIdx(-1);
-      }
+      submitCurrentRef.current();
       return;
     }
     if (name === 'tab') {
       evt.preventDefault();
       evt.stopPropagation();
-      if (evt.shift && onModeCycle) {
-        onModeCycle();
-        return;
-      }
-      if (suggestionsVisible) {
-        applyCommandCompletion();
-        return;
-      }
-      if (fileSuggestionsVisible) {
-        applyFileCompletion();
-        return;
-      }
+      if (evt.shift && onModeCycle) return onModeCycle();
+      if (suggestionsVisible) return applyCommandCompletion();
+      if (fileSuggestionsVisible) return applyFileCompletion();
       return;
     }
     if (evt.ctrl && name === 'p') {
@@ -297,39 +335,25 @@ export function InputBox({
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
-      // Copy selected text or all text
-      const currentValue = valueRef.current;
-      if (hasActiveSelection()) {
-        const start = Math.min(selStartRef.current, selEndRef.current);
-        const end = Math.max(selStartRef.current, selEndRef.current);
-        writeClipboard(currentValue.slice(start, end));
-      } else if (currentValue && currentValue !== 'press Ctrl+C again to exit') {
-        writeClipboard(currentValue);
-      }
-      const isHintText = currentValue === 'press Ctrl+C again to exit';
+      const editor = editorRef.current;
+      const currentValue = getEditorText(editor) || valueRef.current;
+      const selected = editor?.getSelectedText() || '';
+      if (selected) writeClipboard(selected);
+      else if (currentValue && currentValue !== EXIT_HINT) writeClipboard(currentValue);
+      const isHintText = currentValue === EXIT_HINT;
       if (!currentValue || isHintText) {
         const now = Date.now();
         if (now - lastCtrlCEmpty < 1000) {
-          if (onExit) {
-            onExit();
-          } else {
-            process.exit(0);
-          }
+          if (onExit) onExit();
+          else process.exit(0);
         } else {
           lastCtrlCEmpty = now;
-          setInputState('press Ctrl+C again to exit', 0);
-          clearSelection();
+          setInputState(EXIT_HINT, 0);
           setTimeout(() => {
-            if (valueRef.current === 'press Ctrl+C again to exit') setInputState('', 0);
+            if (valueRef.current === EXIT_HINT) setInputState('', 0);
           }, 1500);
         }
       }
-      return;
-    }
-    if (evt.ctrl && name === 'a') {
-      evt.preventDefault();
-      setSelectionState(0, valueRef.current.length);
-      setInputState(valueRef.current, valueRef.current.length);
       return;
     }
     if (evt.ctrl && name === 'z') {
@@ -343,107 +367,23 @@ export function InputBox({
       Promise.allSettled([readClipboardImage(), readClipboard()])
         .then(([imageResult, textResult]) => {
           const imgPath = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
-          if (imgPath) {
-            insertClipboardImage(imgPath);
-            return;
-          }
-          const text = textResult.status === 'fulfilled' ? textResult.value : undefined;
-          insertPastedText(text);
+          if (imgPath) return insertClipboardImage(imgPath);
+          insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
         })
         .catch(() => {});
       return;
     }
     if (name === 'backspace' || name === 'delete') {
-      evt.preventDefault();
-      const currentValue = valueRef.current;
-      const currentCursor = cursorRef.current;
-      if (hasActiveSelection()) {
-        // Delete selected text
-        const start = Math.min(selStartRef.current, selEndRef.current);
-        const end = Math.max(selStartRef.current, selEndRef.current);
-        setInputState(currentValue.slice(0, start) + currentValue.slice(end), start);
-        clearSelection();
+      const currentCursor = getEditorCursorOffset(editorRef.current);
+      const currentValue = getEditorText(editorRef.current) || valueRef.current;
+      if (name === 'backspace' && lastPasteStart >= 0 && currentCursor === lastPasteStart + lastPasteLen) {
+        evt.preventDefault();
+        setInputState(currentValue.slice(0, lastPasteStart) + currentValue.slice(currentCursor), lastPasteStart);
         lastPasteStart = -1;
         lastPasteLen = 0;
-      } else if (
-        currentCursor > 0 &&
-        lastPasteStart >= 0 &&
-        currentCursor === lastPasteStart + lastPasteLen
-      ) {
-        setInputState(
-          currentValue.slice(0, lastPasteStart) + currentValue.slice(currentCursor),
-          lastPasteStart
-        );
+      } else {
         lastPasteStart = -1;
         lastPasteLen = 0;
-      } else if (currentCursor > 0) {
-        lastPasteStart = -1;
-        lastPasteLen = 0;
-        setInputState(
-          currentValue.slice(0, currentCursor - 1) + currentValue.slice(currentCursor),
-          currentCursor - 1
-        );
-      }
-      return;
-    }
-    if (name === 'left') {
-      evt.preventDefault();
-      const currentCursor = cursorRef.current;
-      if (evt.shift) {
-        // Shift+Left: extend selection left
-        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
-        const newCursor = Math.max(0, currentCursor - 1);
-        setInputState(valueRef.current, newCursor);
-        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, newCursor);
-      } else {
-        setInputState(valueRef.current, Math.max(0, currentCursor - 1));
-        clearSelection();
-      }
-      return;
-    }
-    if (name === 'right') {
-      evt.preventDefault();
-      const currentValue = valueRef.current;
-      const currentCursor = cursorRef.current;
-      if (evt.shift) {
-        // Shift+Right: extend selection right
-        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
-        const newCursor = Math.min(currentValue.length, currentCursor + 1);
-        setInputState(currentValue, newCursor);
-        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, newCursor);
-      } else {
-        setInputState(currentValue, Math.min(currentValue.length, currentCursor + 1));
-        clearSelection();
-      }
-      return;
-    }
-    if (name === 'home') {
-      evt.preventDefault();
-      const currentCursor = cursorRef.current;
-      if (evt.shift) {
-        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
-        setInputState(valueRef.current, 0);
-        setSelectionState(selStartRef.current < 0 ? currentCursor : selStartRef.current, 0);
-      } else {
-        setInputState(valueRef.current, 0);
-        clearSelection();
-      }
-      return;
-    }
-    if (name === 'end') {
-      evt.preventDefault();
-      const currentValue = valueRef.current;
-      const currentCursor = cursorRef.current;
-      if (evt.shift) {
-        if (selStartRef.current < 0) setSelectionState(currentCursor, currentCursor);
-        setInputState(currentValue, currentValue.length);
-        setSelectionState(
-          selStartRef.current < 0 ? currentCursor : selStartRef.current,
-          currentValue.length
-        );
-      } else {
-        setInputState(currentValue, currentValue.length);
-        clearSelection();
       }
       return;
     }
@@ -471,7 +411,7 @@ export function InputBox({
       setSelectedCommand((prev) => (prev + 1) % suggestions.length);
       return;
     }
-    if (!suggestionsVisible && name === 'up') {
+    if (!suggestionsVisible && !fileSuggestionsVisible && name === 'up') {
       if (history.length === 0 || (historyIdx < 0 && valueRef.current === '')) return;
       evt.preventDefault();
       evt.stopPropagation();
@@ -481,7 +421,7 @@ export function InputBox({
       setInputState(next, next.length);
       return;
     }
-    if (!suggestionsVisible && name === 'down') {
+    if (!suggestionsVisible && !fileSuggestionsVisible && name === 'down') {
       if (historyIdx < 0) return;
       evt.preventDefault();
       evt.stopPropagation();
@@ -496,44 +436,10 @@ export function InputBox({
       setInputState(next, next.length);
       return;
     }
-    if (evt.ctrl || evt.meta) return;
-    const printable = evt.sequence && evt.sequence.length === 1 ? evt.sequence : undefined;
-    if (printable && printable >= ' ') {
-      evt.preventDefault();
-      replaceSelectionOrInsert(printable);
-      return;
-    }
-    if (name === 'space' || name === ' ') {
-      evt.preventDefault();
-      replaceSelectionOrInsert(' ');
-      return;
-    }
-    if (name.length === 1 && !evt.ctrl && !evt.meta) {
-      const input = evt.shift ? name.toUpperCase() : name;
-      replaceSelectionOrInsert(input);
-    }
+    // Printable text, cursor movement, selection, Ctrl+A, undo/redo and native edits are handled by OpenTUI TextareaRenderable.
   });
 
-  // Compute before/cursor/after with selection highlighting
-  const hasSelection = selStart >= 0 && selEnd >= 0 && selStart !== selEnd;
-  const selFrom = hasSelection ? Math.min(selStart!, selEnd!) : -1;
-  const selTo = hasSelection ? Math.max(selStart!, selEnd!) : -1;
-
-  let beforeText = '';
-  let selectedText = '';
-  let afterText = '';
-  if (hasSelection) {
-    beforeText = value.slice(0, selFrom);
-    selectedText = value.slice(selFrom, selTo);
-    afterText = value.slice(selTo);
-  } else {
-    beforeText = value.slice(0, cursor);
-    afterText = value.slice(cursor + 1);
-  }
-  const cursorChar = value[cursor] || ' ';
-  const after = value.slice(cursor + 1);
   const homeDir = (cwd || process.cwd()).replace(/^\/root\//, '~/');
-
   const barLen = 8;
   const filled = Math.round((contextPct / 100) * barLen);
   const barColor = contextPct > 75 ? theme.error : contextPct > 50 ? theme.warn : theme.ok;
@@ -544,77 +450,38 @@ export function InputBox({
   if (disabled) {
     return (
       <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-        <box
-          backgroundColor={theme.bgElement}
-          paddingX={2}
-          paddingTop={1}
-          paddingBottom={1}
-          minHeight={3}
-        >
-          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
-            {MODE_LABEL[mode]}
-          </text>
-          <text fg={theme.textMuted}>
-            {'  '}
-            {frame()} thinking...
-          </text>
+        <box backgroundColor={theme.bgElement} paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
+          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+          <text fg={theme.textMuted}>{'  '}{frame()} thinking...</text>
           <text fg={theme.textMuted}>{'  '}esc to cancel</text>
         </box>
         <box marginTop={1} paddingX={1}>
-          <text fg={theme.text}>{model || 'aurix'}</text>
-          <text fg={theme.textMuted}>{' · ctx '}</text>
-          <text fg={barColor}>{ctxBar}</text>
-          <text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
-          <text fg={theme.border}>{' · '}</text>
-          <text fg={theme.textMuted}>{homeDir}</text>
+          <text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text><text fg={theme.border}>{' · '}</text><text fg={theme.textMuted}>{homeDir}</text>
         </box>
       </box>
     );
   }
 
+  const editor = (
+    <NativePromptEditor
+      editorRef={editorRef}
+      value={value}
+      disabled={disabled}
+      onChange={syncValue}
+      onNativeSubmit={() => submitCurrentRef.current()}
+    />
+  );
+
   if (home) {
-    const boxWidth = Math.min(termWidth - 4, 72);
+    const boxWidth = Math.max(24, Math.min(termWidth - 4, 72));
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
-        <box
-          flexDirection="column"
-          border={
-            suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined
-          }
-          borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined}
-          backgroundColor={theme.bgElement}
-          width={boxWidth}
-        >
-          {suggestionsVisible && (
-            <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
-          )}
-          {fileSuggestionsVisible && (
-            <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
-          )}
-          <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
-            {value ? (
-              <text fg={theme.text} wrapMode="word">
-                <span style={{ fg: theme.text }}>{beforeText}</span>
-                {hasSelection ? (
-                  <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span>
-                ) : (
-                  <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
-                )}
-                <span style={{ fg: theme.text }}>{afterText}</span>
-              </text>
-            ) : (
-              <text fg={theme.textMuted}>Ask anything...</text>
-            )}
-          </box>
+        <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
+          {suggestionsVisible && <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />}
+          {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
+          <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
           <box paddingX={2} paddingBottom={1} flexDirection="row" justifyContent="flex-end">
-            <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
-              {MODE_LABEL[mode]}
-            </text>
-            <text fg={theme.textMuted}>{'  '}</text>
-            <text fg={theme.text}>{model || 'aurix'}</text>
-            <text fg={theme.textMuted}>{' · ctx '}</text>
-            <text fg={barColor}>{ctxBar}</text>
-            <text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
+            <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
           </box>
         </box>
       </box>
@@ -623,51 +490,14 @@ export function InputBox({
 
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-      <box
-        flexDirection="column"
-        border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined}
-        borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined}
-        backgroundColor={theme.bgElement}
-      >
-        {suggestionsVisible && (
-          <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />
-        )}
-        {fileSuggestionsVisible && (
-          <FileSuggestions files={fileSuggestions} selected={selectedCommand} />
-        )}
-        <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
-          {value ? (
-            <text fg={theme.text} wrapMode="word">
-              <span style={{ fg: theme.text }}>{beforeText}</span>
-              {hasSelection ? (
-                <span style={{ bg: theme.cursor, fg: theme.bg }}>{selectedText}</span>
-              ) : (
-                <span style={{ bg: theme.cursor, fg: theme.bg }}>{cursorChar}</span>
-              )}
-              <span style={{ fg: theme.text }}>{afterText}</span>
-            </text>
-          ) : (
-            <text fg={theme.textMuted}>Ask anything...</text>
-          )}
-        </box>
+      <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
+        {suggestionsVisible && <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />}
+        {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
+        <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
       </box>
       <box paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
-        <box>
-          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>
-            {MODE_LABEL[mode]}
-          </text>
-          <text fg={theme.textMuted}>{'  '}</text>
-          <text fg={theme.text}>{model || 'aurix'}</text>
-          <text fg={theme.textMuted}>{' · ctx '}</text>
-          <text fg={barColor}>{ctxBar}</text>
-          <text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
-        </box>
-        <box>
-          <text fg={theme.textMuted}>{homeDir}</text>
-        </box>
-      </box>
-      <box paddingX={1}>
-        <text fg={theme.textMuted}>To Exit: Type /exit or Double Ctrl+C</text>
+        <box><text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
+        <box><text fg={theme.textMuted}>{homeDir}</text></box>
       </box>
     </box>
   );

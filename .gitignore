@@ -71,6 +71,10 @@ fix-*.js
 patch-*.js
 check-*.js
 
+# Local AI/session configuration
+.claude/
+SOUL.md
+
 # Local setup/config and backup artifacts
 .env.example
 .npmrc

@@ -47,7 +47,7 @@ else
   fi
 fi
 if [ "$NEED_BUILD" -eq 1 ]; then
-  echo -e "\033[90mbuilding...\033[0m"
+  echo -e "\033[90mbuilding...\033[0m" >&2
   cd "$SCRIPT_DIR" && npx tsc >/dev/null 2>&1
 fi
 
@@ -66,15 +66,18 @@ show_help() {
   echo -e "    \033[38;2;250;178;131msessions\033[0m       List saved sessions"
   echo ""
   echo -e "  \033[1mOptions:\033[0m"
-  echo -e "    --resume <id>   Resume a previous session"
-  echo -e "    --continue      Continue last session"
-  echo -e "    --setup         Force setup wizard"
+  echo -e "    --non-interactive <prompt>  Run one prompt, print the answer, exit"
+  echo -e "    -p, --prompt <prompt>       Alias for --non-interactive"
+  echo -e "    --resume <id>               Resume a previous session"
+  echo -e "    --continue                  Continue last session"
+  echo -e "    --setup                     Force setup wizard"
   echo -e "    --no-kitty      Skip kitty terminal detection"
   echo -e "    -v, --version   Show version"
   echo -e "    -h, --help      Show this help"
   echo ""
   echo -e "  \033[90mExamples:\033[0m"
   echo -e "    aurix"
+  echo -e "    aurix --non-interactive \"hai apa kabar\""
   echo -e "    aurix setup"
   echo -e "    aurix --resume abc123"
   echo -e "    aurix gateway"
@@ -122,7 +125,13 @@ do_update() {
 
 # --- run with optional kitty ---
 run_aurix() {
-  if [ "${AURIX_KITTY:-}" = "1" ] && command -v kitty &>/dev/null && [ -z "${KITTY_WINDOW_ID:-}" ]; then
+  local non_interactive=0
+  for arg in "$@"; do
+    case "$arg" in
+      --non-interactive|-p|--prompt) non_interactive=1 ;;
+    esac
+  done
+  if [ "$non_interactive" -eq 0 ] && [ "${AURIX_KITTY:-}" = "1" ] && command -v kitty &>/dev/null && [ -z "${KITTY_WINDOW_ID:-}" ]; then
     exec kitty \
       --override background='#0a0a0a' \
       --override foreground='#eeeeee' \
