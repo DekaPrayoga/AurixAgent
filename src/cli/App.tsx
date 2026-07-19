@@ -12,6 +12,7 @@ import { writeClipboard } from './Clipboard.js';
 import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { detectInstallMethod, terminalDiagnostics } from './InstallDiagnostics.js';
+import { buildResumedDisplayMessages } from './ResumeDisplay.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { VisionModal } from './VisionModal.js';
@@ -388,13 +389,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       if (count > 0) {
         resumeSessionIdRef.current = resumeId;
         const loaded = agentRef.current?.getMessages() || [];
-        setMessages(
-          loaded.map((m) => ({
-            role: m.role as 'user' | 'assistant' | 'tool' | 'system',
-            content: m.content,
-            timestamp: new Date(),
-          }))
-        );
+        const display = buildResumedDisplayMessages(loaded, resumeId);
+        presentationStateRef.current = createPresentationState(display);
+        setMessages(display);
         setShowBanner(false);
       } else {
         setMessages([
@@ -1627,15 +1624,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             if (count > 0) {
               resumeSessionIdRef.current = target;
               const loaded = agent.getMessages();
-              setMessages(
-                loaded
-                  .filter((m) => m.role !== 'system')
-                  .map((m) => ({
-                    role: m.role as 'user' | 'assistant' | 'tool' | 'system',
-                    content: m.content,
-                    timestamp: new Date(),
-                  }))
-              );
+              const display = buildResumedDisplayMessages(loaded, target);
+              presentationStateRef.current = createPresentationState(display);
+              setMessages(display);
               setShowBanner(false);
               setScrollOffset(0);
               addAssistant(`Resumed session: ${target} (${count} messages)`);
@@ -2899,15 +2890,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                           const count = await agent.loadSessionAsync(id);
                           if (count > 0) {
                             const loaded = agent.getMessages();
-                            setMessages(
-                              loaded
-                                .filter((m) => m.role !== 'system')
-                                .map((m) => ({
-                                  role: m.role as 'user' | 'assistant' | 'tool' | 'system',
-                                  content: m.content,
-                                  timestamp: new Date(),
-                                }))
-                            );
+                            const display = buildResumedDisplayMessages(loaded, id);
+                            presentationStateRef.current = createPresentationState(display);
+                            setMessages(display);
                             setShowBanner(false);
                             setScrollOffset(0);
                           } else {

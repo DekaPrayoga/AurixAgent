@@ -427,6 +427,7 @@ function MarkdownText({ content, themeVersion }: { content: string; themeVersion
 }
 
 export interface ChatMessage {
+  id?: string;
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   toolName?: string;
@@ -514,8 +515,11 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   );
 }
 
-function truncateOutput(content: string, maxLines: number = 14): string {
-  const lines = content.split('\n');
+function truncateOutput(content: string, maxLines: number = 14, maxChars: number = 8_000): string {
+  const bounded = content.length > maxChars
+    ? `${content.slice(0, maxChars)}\n  ... (${content.length - maxChars} more characters)`
+    : content;
+  const lines = bounded.split('\n');
   if (lines.length > maxLines) {
     return lines.slice(0, maxLines).join('\n') + `\n  ... (${lines.length - maxLines} more lines)`;
   }
@@ -579,24 +583,54 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
   return markdownSyntax;
 }
 
+const MARKDOWN_TABLE_OPTIONS = { style: 'columns' as const, wrapMode: 'word' as const, cellPaddingX: 1 };
+const MAX_RENDERED_MESSAGE_CHARS = 24_000;
+const MAX_VISIBLE_MESSAGE_CHARS = 96_000;
+const MAX_VISIBLE_MESSAGES = 40;
+
+export function selectVisibleMessages(
+  messages: ChatMessage[],
+  scrollOffset: number,
+  maxMessages = MAX_VISIBLE_MESSAGES,
+  maxChars = MAX_VISIBLE_MESSAGE_CHARS
+): { visible: ChatMessage[]; start: number } {
+  const end = Math.max(0, messages.length - scrollOffset);
+  let start = end;
+  let chars = 0;
+  while (start > 0 && end - start < maxMessages) {
+    const nextLength = messages[start - 1]?.content.length || 0;
+    if (start < end && chars + nextLength > maxChars) break;
+    chars += nextLength;
+    start--;
+  }
+  return { visible: messages.slice(start, end), start };
+}
+
+function renderableMessageContent(content: string): string {
+  if (content.length <= MAX_RENDERED_MESSAGE_CHARS) return content;
+  return `${content.slice(0, MAX_RENDERED_MESSAGE_CHARS)}\n\n… ${content.length - MAX_RENDERED_MESSAGE_CHARS} more characters hidden from the TUI. Full content remains in the session.`;
+}
+
 const AssistantMessage = React.memo(function AssistantMessage({
   msg,
   themeVersion,
+  streaming,
 }: {
   msg: ChatMessage;
   themeVersion: number;
+  streaming: boolean;
 }) {
   if (!msg.content) return null;
   return (
     <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
       <markdown
-        content={msg.content}
+        content={renderableMessageContent(msg.content)}
         syntaxStyle={getMarkdownSyntax(themeVersion)}
         fg={theme.text}
-        streaming={true}
+        streaming={streaming}
         conceal={true}
         concealCode={false}
-        tableOptions={{ style: 'columns', wrapMode: 'word', cellPaddingX: 1 }}
+        tableOptions={MARKDOWN_TABLE_OPTIONS}
       />
     </box>
   );
@@ -665,10 +699,10 @@ export function ChatArea({
   todos,
   themeVersion = 0,
 }: ChatAreaProps) {
-  const maxVisible = 100;
-  const end = Math.max(0, messages.length - scrollOffset);
-  const start = Math.max(0, end - maxVisible);
-  const visible = messages.slice(start, end);
+  const { visible, start } = useMemo(
+    () => selectVisibleMessages(messages, scrollOffset),
+    [messages, scrollOffset]
+  );
 
   const todoCount = todos ? `${todos.filter((t) => t.done).length}/${todos.length}` : null;
 
@@ -696,10 +730,14 @@ export function ChatArea({
             </box>
           ) : (
             visible.map((msg, i) => (
-              <box key={start + i} flexDirection="column" flexShrink={0}>
+              <box key={msg.id || `${start + i}:${msg.role}`} flexDirection="column" flexShrink={0}>
                 {msg.role === 'user' && <UserMessage msg={msg} themeVersion={themeVersion} />}
                 {msg.role === 'assistant' && (
-                  <AssistantMessage msg={msg} themeVersion={themeVersion} />
+                  <AssistantMessage
+                    msg={msg}
+                    themeVersion={themeVersion}
+                    streaming={isProcessing && start + i === messages.length - 1}
+                  />
                 )}
                 {msg.role === 'tool' && <ToolMessage msg={msg} themeVersion={themeVersion} />}
                 {msg.role === 'system' && <SystemMessage msg={msg} themeVersion={themeVersion} />}
