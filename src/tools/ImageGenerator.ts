@@ -21,7 +21,10 @@ export function hasImageGenerationConfig(config: AurixConfig): config is AurixCo
 } {
   const image = config.imageGeneration;
   return Boolean(
-    image?.baseUrl && image.apiKey && (image.format === 'openai' || image.format === 'anthropic')
+    image?.baseUrl &&
+      isAllowedImageEndpoint(image.baseUrl) &&
+      image.apiKey &&
+      (image.format === 'openai' || image.format === 'anthropic')
   );
 }
 
@@ -196,11 +199,18 @@ async function postJson(
   return json;
 }
 
-function imageEndpoint(baseUrl: string, format: 'openai' | 'anthropic'): string {
+function isAllowedImageEndpoint(baseUrl: string): boolean {
+  return /\/v1\/(responses|chat\/completions|image\/generations)$/i.test(
+    baseUrl.replace(/\/+$/, '')
+  );
+}
+
+function imageEndpoint(baseUrl: string, _format: 'openai' | 'anthropic'): string {
   const trimmed = baseUrl.replace(/\/+$/, '');
-  if (/\/images\/generations$/i.test(trimmed)) return trimmed;
-  if (format === 'anthropic' && /\/v1\/messages$/i.test(trimmed)) return trimmed;
-  return `${trimmed}/images/generations`;
+  if (isAllowedImageEndpoint(trimmed)) return trimmed;
+  throw new Error(
+    'Invalid image endpoint. Must end with /v1/responses, /v1/chat/completions, or /v1/image/generations.'
+  );
 }
 
 function extractImagePayload(value: any): ImagePayload {

@@ -258,60 +258,61 @@ export class DiscordPlatform extends EventEmitter implements Platform {
     const modal = new ModalBuilder().setCustomId(id).setTitle('Image Generator Setup');
     const baseUrl = new TextInputBuilder()
       .setCustomId('baseUrl')
-      .setLabel('Base URL')
+      .setLabel('Please Type Your Base URL Below')
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
-      .setPlaceholder('https://api.example.com/v1');
+      .setPlaceholder('https://api.example.com/v1/image/generations');
     const apiKey = new TextInputBuilder()
       .setCustomId('apiKey')
-      .setLabel('API Key')
+      .setLabel('Please Type Your Api Key')
       .setStyle(TextInputStyle.Short)
       .setRequired(true);
-    const format = new TextInputBuilder()
-      .setCustomId('format')
-      .setLabel('Format: openai/anthropic or 1/2')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true)
-      .setPlaceholder('openai');
 
     modal.addComponents(
       new ActionRowBuilder().addComponents(baseUrl),
-      new ActionRowBuilder().addComponents(apiKey),
-      new ActionRowBuilder().addComponents(format)
+      new ActionRowBuilder().addComponents(apiKey)
     );
     await interaction.showModal(modal);
+  }
+
+  private inferImageFormat(baseUrl: string): 'openai' | 'anthropic' | null {
+    const trimmed = baseUrl.trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    try {
+      const pathname = new URL(trimmed).pathname.replace(/\/+$/, '').toLowerCase();
+      if (pathname.endsWith('/v1/responses')) return 'anthropic';
+      if (pathname.endsWith('/v1/chat/completions') || pathname.endsWith('/v1/image/generations')) {
+        return 'openai';
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   private async handleImageConfigSubmit(interaction: any): Promise<void> {
     const baseUrl = String(interaction.fields.getTextInputValue('baseUrl') || '').trim();
     const apiKey = String(interaction.fields.getTextInputValue('apiKey') || '').trim();
-    const formatRaw = String(interaction.fields.getTextInputValue('format') || '')
-      .trim()
-      .toLowerCase();
-    const format =
-      formatRaw === '1' || formatRaw === 'openai'
-        ? 'openai'
-        : formatRaw === '2' || formatRaw === 'anthropic'
-          ? 'anthropic'
-          : null;
+    const format = this.inferImageFormat(baseUrl);
 
     if (!format) {
       await interaction.reply({
-        content: 'Format invalid. Use openai/1 or anthropic/2.',
+        content:
+          'Invalid image endpoint. Must end with /v1/responses, /v1/chat/completions, or /v1/image/generations. Bare /v1 is not accepted.',
         ephemeral: true,
       });
       return;
     }
 
     await interaction.reply({
-      content: '✅ Image config received. Saving securely...',
+      content: '✅ Image config received. Generating image now...',
       ephemeral: true,
     });
     const description = this.pendingModalDescriptions.get(interaction.customId);
     this.pendingModalDescriptions.delete(interaction.customId);
     this.emit('message', {
       ...this.interactionMessage(interaction, '/image_configured'),
-      imageConfig: { baseUrl, apiKey, format, description },
+      imageConfig: { baseUrl: baseUrl.replace(/\/+$/, ''), apiKey, format, description },
     } as IncomingMessage);
   }
 

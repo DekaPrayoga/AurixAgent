@@ -1,6 +1,6 @@
 {
   "name": "aurix-ai",
-  "version": "3.0.7",
+  "version": "3.1.0",
   "description": "Open-source terminal AI agent for coding, deep research, automation, and multi-platform task execution.",
   "type": "module",
   "main": "dist/index.js",
@@ -54,10 +54,16 @@
   ],
   "scripts": {
     "build": "node scripts/build.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src",
+    "test:cli": "bun test src/cli",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
     "prepare": "node scripts/build.cjs",
     "postinstall": "node scripts/postinstall.mjs",
+    "deploy": "bash scripts/deploy.sh",
+    "deploy:mac": "bash scripts/deploy-macos.sh",
+    "deploy:win": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },

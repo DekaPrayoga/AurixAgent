@@ -211,16 +211,15 @@ export function installObserverBusSessionSink(): void {
 
 export class SessionStore {
   private ftsAvailable = false;
-  private lastLoadedMtimeMs = 0;
+  private diskSignature = '';
+  private writeSequence = 0;
 
   private constructor(
     private db: Database,
     private dbPath: string
   ) {
-    try {
-      this.lastLoadedMtimeMs = fs.existsSync(dbPath) ? fs.statSync(dbPath).mtimeMs : 0;
-    } catch {}
-    this.migrate();
+    this.diskSignature = this.getDiskSignature();
+    this.withWriteLock(() => {});
   }
 
   static async open(dbPath = DEFAULT_DB_PATH): Promise<SessionStore> {
@@ -230,6 +229,111 @@ export class SessionStore {
       ? new SQL.Database(fs.readFileSync(dbPath))
       : new SQL.Database();
     return new SessionStore(db, dbPath);
+  }
+
+  private getDiskSignature(): string {
+    try {
+      const stat = fs.statSync(this.dbPath);
+      return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+    } catch {
+      return '';
+    }
+  }
+
+  private reloadFromDisk(): void {
+    if (!SQL) throw new Error('SQLite runtime is not initialized.');
+    const next = fs.existsSync(this.dbPath)
+      ? new SQL.Database(fs.readFileSync(this.dbPath))
+      : new SQL.Database();
+    this.db.close();
+    this.db = next;
+    this.diskSignature = this.getDiskSignature();
+    this.ftsAvailable = false;
+  }
+
+  private refreshForRead(): void {
+    if (this.getDiskSignature() !== this.diskSignature) {
+      this.reloadFromDisk();
+      this.detectFtsAvailability();
+    }
+  }
+
+  private acquireWriteLock(): () => void {
+    const lockPath = `${this.dbPath}.lock`;
+    const deadline = Date.now() + 10_000;
+    const waitBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+    while (true) {
+      try {
+        fs.mkdirSync(lockPath);
+        const lockToken = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        fs.writeFileSync(
+          path.join(lockPath, 'owner.json'),
+          JSON.stringify({ pid: process.pid, createdAt: Date.now(), token: lockToken })
+        );
+        return () => {
+          try {
+            const owner = JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8'));
+            if (owner.token === lockToken) fs.rmSync(lockPath, { recursive: true, force: true });
+          } catch {}
+        };
+      } catch (error: any) {
+        if (error?.code !== 'EEXIST') throw error;
+
+        let stale = false;
+        try {
+          const stat = fs.statSync(lockPath);
+          const ownerPath = stat.isDirectory() ? path.join(lockPath, 'owner.json') : lockPath;
+          const raw = fs.readFileSync(ownerPath, 'utf8').trim();
+          const parsed = raw.startsWith('{') ? JSON.parse(raw) : { pid: Number(raw) };
+          const ownerPid = Number(parsed.pid);
+          const createdAt = Number(parsed.createdAt || stat.mtimeMs);
+          const ageMs = Date.now() - createdAt;
+          if (!Number.isFinite(ownerPid) || ownerPid <= 0) {
+            stale = ageMs > 1_000;
+          } else {
+            try {
+              process.kill(ownerPid, 0);
+              stale = false;
+            } catch (probeError: any) {
+              stale = probeError?.code === 'ESRCH';
+            }
+          }
+        } catch {
+          try {
+            stale = Date.now() - fs.statSync(lockPath).mtimeMs > 1_000;
+          } catch {}
+        }
+
+        if (stale) {
+          const quarantine = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+          try {
+            fs.renameSync(lockPath, quarantine);
+            fs.rmSync(quarantine, { recursive: true, force: true });
+          } catch {}
+          continue;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out waiting for state database lock: ${this.dbPath}`);
+        }
+        Atomics.wait(waitBuffer, 0, 0, 25);
+      }
+    }
+  }
+
+  private withWriteLock<T>(mutation: () => T): T {
+    ensureStateDir();
+    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    const release = this.acquireWriteLock();
+    try {
+      this.reloadFromDisk();
+      this.migrate();
+      const result = mutation();
+      this.persist();
+      return result;
+    } finally {
+      release();
+    }
   }
 
   get path(): string {
@@ -385,6 +489,10 @@ export class SessionStore {
     this.addColumnIfMissing('evidence_items', 'error_type', 'TEXT');
     this.addColumnIfMissing('verification_runs', 'turn_id', 'TEXT');
 
+    this.detectFtsAvailability();
+  }
+
+  private detectFtsAvailability(): void {
     try {
       this.db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
@@ -400,24 +508,28 @@ export class SessionStore {
     } catch {
       this.ftsAvailable = false;
     }
-
-    this.save();
   }
 
-  private save(): void {
+  private persist(): void {
     ensureStateDir();
-    if (fs.existsSync(this.dbPath)) {
-      const currentMtime = fs.statSync(this.dbPath).mtimeMs;
-      if (this.lastLoadedMtimeMs > 0 && currentMtime > this.lastLoadedMtimeMs + 1) {
-        throw new Error(
-          `State database changed on disk while this process was running: ${this.dbPath}. Restart Aurix to avoid overwriting newer data.`
-        );
+    const tmp = `${this.dbPath}.${process.pid}.${++this.writeSequence}.tmp`;
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeFileSync(fd, Buffer.from(this.db.export()));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, this.dbPath);
+    if (process.platform !== 'win32') {
+      const dirFd = fs.openSync(path.dirname(this.dbPath), 'r');
+      try {
+        fs.fsyncSync(dirFd);
+      } finally {
+        fs.closeSync(dirFd);
       }
     }
-    const tmp = `${this.dbPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, Buffer.from(this.db.export()));
-    fs.renameSync(tmp, this.dbPath);
-    this.lastLoadedMtimeMs = fs.statSync(this.dbPath).mtimeMs;
+    this.diskSignature = this.getDiskSignature();
   }
 
   private indexText(
@@ -441,46 +553,48 @@ export class SessionStore {
   }
 
   upsertSession(meta: SessionMeta): void {
-    const ts = nowIso();
-    const stmt = this.db.prepare(`
-      INSERT INTO sessions (id, title, platform, user_key, channel_id, model, provider, cwd, status, created_at, updated_at, last_message_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        title = COALESCE(excluded.title, sessions.title),
-        platform = COALESCE(excluded.platform, sessions.platform),
-        user_key = COALESCE(excluded.user_key, sessions.user_key),
-        channel_id = COALESCE(excluded.channel_id, sessions.channel_id),
-        model = COALESCE(excluded.model, sessions.model),
-        provider = COALESCE(excluded.provider, sessions.provider),
-        cwd = COALESCE(excluded.cwd, sessions.cwd),
-        status = COALESCE(excluded.status, sessions.status),
-        updated_at = excluded.updated_at
-    `);
-    stmt.run([
-      meta.id,
-      meta.title || null,
-      meta.platform || null,
-      meta.userKey || null,
-      meta.channelId || null,
-      meta.model || null,
-      meta.provider || null,
-      meta.cwd || process.cwd(),
-      meta.status || 'active',
-      ts,
-      ts,
-      ts,
-    ]);
-    stmt.free();
-    this.save();
+    this.withWriteLock(() => {
+      const ts = nowIso();
+      const stmt = this.db.prepare(`
+        INSERT INTO sessions (id, title, platform, user_key, channel_id, model, provider, cwd, status, created_at, updated_at, last_message_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = COALESCE(excluded.title, sessions.title),
+          platform = COALESCE(excluded.platform, sessions.platform),
+          user_key = COALESCE(excluded.user_key, sessions.user_key),
+          channel_id = COALESCE(excluded.channel_id, sessions.channel_id),
+          model = COALESCE(excluded.model, sessions.model),
+          provider = COALESCE(excluded.provider, sessions.provider),
+          cwd = COALESCE(excluded.cwd, sessions.cwd),
+          status = COALESCE(excluded.status, sessions.status),
+          updated_at = excluded.updated_at
+      `);
+      stmt.run([
+        meta.id,
+        meta.title || null,
+        meta.platform || null,
+        meta.userKey || null,
+        meta.channelId || null,
+        meta.model || null,
+        meta.provider || null,
+        meta.cwd || process.cwd(),
+        meta.status || 'active',
+        ts,
+        ts,
+        ts,
+      ]);
+      stmt.free();
+    });
   }
 
   setSessionTitle(sessionId: string, title: string): void {
-    const ts = nowIso();
-    const stmt = this.db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?');
-    stmt.run([title, ts, sessionId]);
-    stmt.free();
-    this.indexText(sessionId, 'session', sessionId, title, title, ts);
-    this.save();
+    this.withWriteLock(() => {
+      const ts = nowIso();
+      const stmt = this.db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?');
+      stmt.run([title, ts, sessionId]);
+      stmt.free();
+      this.indexText(sessionId, 'session', sessionId, title, title, ts);
+    });
   }
 
   appendMessage(input: {
@@ -489,63 +603,66 @@ export class SessionStore {
     message: Message;
     metadata?: Record<string, unknown>;
   }): void {
-    const ts = nowIso();
-    const content = redactSessionText(input.message.content || '');
-    const stmt = this.db.prepare(`
-      INSERT INTO messages (session_id, turn_id, role, content, tool_call_id, tool_calls_json, images_json, metadata_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run([
-      input.sessionId,
-      input.turnId || null,
-      input.message.role,
-      content,
-      input.message.toolCallId || null,
-      safeJson(input.message.toolCalls),
-      safeJson(input.message.images),
-      safeJson(input.metadata),
-      ts,
-    ]);
-    const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
-    stmt.free();
-    this.db.run('UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?', [
-      ts,
-      ts,
-      input.sessionId,
-    ]);
-    this.indexText(input.sessionId, 'message', String(id || ''), undefined, content, ts);
-    this.save();
+    this.withWriteLock(() => {
+      const ts = nowIso();
+      const content = redactSessionText(input.message.content || '');
+      const stmt = this.db.prepare(`
+        INSERT INTO messages (session_id, turn_id, role, content, tool_call_id, tool_calls_json, images_json, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run([
+        input.sessionId,
+        input.turnId || null,
+        input.message.role,
+        content,
+        input.message.toolCallId || null,
+        safeJson(input.message.toolCalls),
+        safeJson(input.message.images),
+        safeJson(input.metadata),
+        ts,
+      ]);
+      const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
+      stmt.free();
+      this.db.run('UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?', [
+        ts,
+        ts,
+        input.sessionId,
+      ]);
+      this.indexText(input.sessionId, 'message', String(id || ''), undefined, content, ts);
+    });
   }
 
   recordObserverEvent(event: StoredObserverEvent): void {
-    const ts = event.createdAt || nowIso();
-    const summary = event.summary ? redactSessionText(event.summary).slice(0, 1000) : null;
-    const stmt = this.db.prepare(`
-      INSERT INTO observer_events (session_id, turn_id, job_id, source, event_type, status, tool_name, summary, payload_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run([
-      event.sessionId || null,
-      event.turnId || null,
-      event.jobId || null,
-      event.source,
-      event.eventType,
-      event.status || null,
-      event.toolName || null,
-      summary,
-      safeJson(event.payload),
-      ts,
-    ]);
-    stmt.free();
-    if (event.sessionId)
-      this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
-    this.save();
+    this.withWriteLock(() => {
+      const ts = event.createdAt || nowIso();
+      const summary = event.summary ? redactSessionText(event.summary).slice(0, 1000) : null;
+      const stmt = this.db.prepare(`
+        INSERT INTO observer_events (session_id, turn_id, job_id, source, event_type, status, tool_name, summary, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run([
+        event.sessionId || null,
+        event.turnId || null,
+        event.jobId || null,
+        event.source,
+        event.eventType,
+        event.status || null,
+        event.toolName || null,
+        summary,
+        safeJson(event.payload),
+        ts,
+      ]);
+      stmt.free();
+      if (event.sessionId)
+        this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
+    });
   }
 
   listObserverEvents(
     filter: { sessionId?: string; jobId?: string } = {},
     limit = 100
   ): StoredObserverEvent[] {
+    this.refreshForRead();
     const stmt = this.db.prepare(`
       SELECT id, session_id, turn_id, job_id, source, event_type, status, tool_name, summary, payload_json, created_at
       FROM observer_events
@@ -602,42 +719,43 @@ export class SessionStore {
       });
       return;
     }
-    const resultPreview = event.result ? redactSessionText(event.result).slice(0, 4000) : null;
-    const stmt = this.db.prepare(`
-      INSERT INTO tool_events (session_id, turn_id, tool_call_id, tool_name, phase, args_json, result_preview, result_path, status, duration_ms, error_type, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run([
-      event.sessionId,
-      event.turnId || null,
-      event.toolCallId || null,
-      event.toolName,
-      event.phase,
-      safeJson(event.args),
-      resultPreview,
-      event.resultPath || null,
-      event.status || (event.phase === 'start' ? 'running' : null),
-      event.durationMs ?? null,
-      event.errorType || null,
-      ts,
-    ]);
-    const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
-    stmt.free();
-    const argsPreview = safeJson(event.args);
-    const searchable = [
-      event.toolName,
-      event.phase,
-      event.status,
-      event.errorType,
-      event.resultPath,
-      argsPreview,
-      resultPreview,
-    ]
-      .filter(Boolean)
-      .join('\n');
-    this.indexText(event.sessionId, 'tool', String(id || ''), event.toolName, searchable, ts);
-    this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
-    this.save();
+    this.withWriteLock(() => {
+      const resultPreview = event.result ? redactSessionText(event.result).slice(0, 4000) : null;
+      const stmt = this.db.prepare(`
+        INSERT INTO tool_events (session_id, turn_id, tool_call_id, tool_name, phase, args_json, result_preview, result_path, status, duration_ms, error_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run([
+        event.sessionId,
+        event.turnId || null,
+        event.toolCallId || null,
+        event.toolName,
+        event.phase,
+        safeJson(event.args),
+        resultPreview,
+        event.resultPath || null,
+        event.status || (event.phase === 'start' ? 'running' : null),
+        event.durationMs ?? null,
+        event.errorType || null,
+        ts,
+      ]);
+      const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
+      stmt.free();
+      const argsPreview = safeJson(event.args);
+      const searchable = [
+        event.toolName,
+        event.phase,
+        event.status,
+        event.errorType,
+        event.resultPath,
+        argsPreview,
+        resultPreview,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      this.indexText(event.sessionId, 'tool', String(id || ''), event.toolName, searchable, ts);
+      this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, event.sessionId]);
+    });
     agentObserverBus.publish({
       sessionId: event.sessionId,
       turnId: event.turnId,
@@ -658,45 +776,47 @@ export class SessionStore {
   }
 
   recordEvidenceItem(item: EvidenceItem): number {
-    const ts = item.createdAt || nowIso();
-    const resultPreview = item.result ? redactSessionText(item.result).slice(0, 4000) : null;
-    const stmt = this.db.prepare(`
-      INSERT INTO evidence_items (session_id, turn_id, kind, label, command, target, status, result_preview, result_path, error_type, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run([
-      item.sessionId,
-      item.turnId || null,
-      item.kind,
-      redactSessionText(item.label).slice(0, 240),
-      item.command ? redactSessionText(item.command).slice(0, 1000) : null,
-      item.target ? redactSessionText(item.target).slice(0, 500) : null,
-      item.status,
-      resultPreview,
-      item.resultPath || null,
-      item.errorType || null,
-      ts,
-    ]);
-    const id = Number(this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0] || 0);
-    stmt.free();
-    const searchable = [
-      item.kind,
-      item.label,
-      item.command,
-      item.target,
-      item.status,
-      item.errorType,
-      resultPreview,
-    ]
-      .filter(Boolean)
-      .join('\n');
-    this.indexText(item.sessionId, 'evidence', String(id), item.label, searchable, ts);
-    this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, item.sessionId]);
-    this.save();
-    return id;
+    return this.withWriteLock(() => {
+      const ts = item.createdAt || nowIso();
+      const resultPreview = item.result ? redactSessionText(item.result).slice(0, 4000) : null;
+      const stmt = this.db.prepare(`
+        INSERT INTO evidence_items (session_id, turn_id, kind, label, command, target, status, result_preview, result_path, error_type, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run([
+        item.sessionId,
+        item.turnId || null,
+        item.kind,
+        redactSessionText(item.label).slice(0, 240),
+        item.command ? redactSessionText(item.command).slice(0, 1000) : null,
+        item.target ? redactSessionText(item.target).slice(0, 500) : null,
+        item.status,
+        resultPreview,
+        item.resultPath || null,
+        item.errorType || null,
+        ts,
+      ]);
+      const id = Number(this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0] || 0);
+      stmt.free();
+      const searchable = [
+        item.kind,
+        item.label,
+        item.command,
+        item.target,
+        item.status,
+        item.errorType,
+        resultPreview,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      this.indexText(item.sessionId, 'evidence', String(id), item.label, searchable, ts);
+      this.db.run('UPDATE sessions SET updated_at = ? WHERE id = ?', [ts, item.sessionId]);
+      return id;
+    });
   }
 
   listEvidenceItems(sessionId: string, limit = 20, turnId?: string): EvidenceItem[] {
+    this.refreshForRead();
     const stmt = this.db.prepare(`
       SELECT id, session_id, turn_id, kind, label, command, target, status, result_preview, result_path, error_type, created_at
       FROM evidence_items
@@ -728,6 +848,7 @@ export class SessionStore {
   }
 
   getToolUsageStats(limit = 15): ToolUsageStat[] {
+    this.refreshForRead();
     const stmt = this.db.prepare(`
       SELECT tool_name,
              COUNT(*) AS total,
@@ -776,6 +897,7 @@ export class SessionStore {
   }
 
   detectWorkflowPatterns(limit = 10): WorkflowPattern[] {
+    this.refreshForRead();
     const stmt = this.db.prepare(`
       SELECT session_id, tool_name, status, id
       FROM tool_events
@@ -849,41 +971,43 @@ export class SessionStore {
     job: Omit<ScheduledJob, 'createdAt' | 'updatedAt'> &
       Partial<Pick<ScheduledJob, 'createdAt' | 'updatedAt'>>
   ): ScheduledJob {
-    const ts = nowIso();
-    const createdAt = job.createdAt || ts;
-    const updatedAt = job.updatedAt || ts;
-    const stmt = this.db.prepare(`
-      INSERT INTO scheduled_jobs (id, schedule, prompt, status, target_platform, target_channel_id, target_reply_to, created_at, updated_at, last_run_at, next_run_hint)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        schedule = excluded.schedule,
-        prompt = excluded.prompt,
-        status = excluded.status,
-        target_platform = excluded.target_platform,
-        target_channel_id = excluded.target_channel_id,
-        target_reply_to = excluded.target_reply_to,
-        updated_at = excluded.updated_at,
-        next_run_hint = excluded.next_run_hint
-    `);
-    stmt.run([
-      job.id,
-      job.schedule,
-      redactSessionText(job.prompt),
-      job.status,
-      job.targetPlatform || null,
-      job.targetChannelId || null,
-      job.targetReplyTo || null,
-      createdAt,
-      updatedAt,
-      job.lastRunAt || null,
-      job.nextRunHint || null,
-    ]);
-    stmt.free();
-    this.save();
-    return { ...job, createdAt, updatedAt };
+    return this.withWriteLock(() => {
+      const ts = nowIso();
+      const createdAt = job.createdAt || ts;
+      const updatedAt = job.updatedAt || ts;
+      const stmt = this.db.prepare(`
+        INSERT INTO scheduled_jobs (id, schedule, prompt, status, target_platform, target_channel_id, target_reply_to, created_at, updated_at, last_run_at, next_run_hint)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          schedule = excluded.schedule,
+          prompt = excluded.prompt,
+          status = excluded.status,
+          target_platform = excluded.target_platform,
+          target_channel_id = excluded.target_channel_id,
+          target_reply_to = excluded.target_reply_to,
+          updated_at = excluded.updated_at,
+          next_run_hint = excluded.next_run_hint
+      `);
+      stmt.run([
+        job.id,
+        job.schedule,
+        redactSessionText(job.prompt),
+        job.status,
+        job.targetPlatform || null,
+        job.targetChannelId || null,
+        job.targetReplyTo || null,
+        createdAt,
+        updatedAt,
+        job.lastRunAt || null,
+        job.nextRunHint || null,
+      ]);
+      stmt.free();
+      return { ...job, createdAt, updatedAt };
+    });
   }
 
   listScheduledJobs(includePaused = true): ScheduledJob[] {
+    this.refreshForRead();
     const stmt = this.db.prepare(`
       SELECT id, schedule, prompt, status, target_platform, target_channel_id, target_reply_to, created_at, updated_at, last_run_at, next_run_hint
       FROM scheduled_jobs
@@ -913,102 +1037,110 @@ export class SessionStore {
   }
 
   removeScheduledJob(id: string): boolean {
-    this.db.run('DELETE FROM scheduled_job_runs WHERE job_id = ?', [id]);
-    this.db.run('DELETE FROM scheduled_jobs WHERE id = ?', [id]);
-    const changed = this.db.getRowsModified() > 0;
-    this.save();
-    return changed;
+    return this.withWriteLock(() => {
+      this.db.run('DELETE FROM scheduled_job_runs WHERE job_id = ?', [id]);
+      this.db.run('DELETE FROM scheduled_jobs WHERE id = ?', [id]);
+      return this.db.getRowsModified() > 0;
+    });
   }
 
   recordScheduledJobRun(run: ScheduledJobRun): number {
-    let id = run.id || 0;
-    if (id) {
-      const stmt = this.db.prepare(`
-        UPDATE scheduled_job_runs
-        SET finished_at = ?, status = ?, result_preview = ?, error = ?
-        WHERE id = ?
-      `);
-      stmt.run([
-        run.finishedAt || null,
-        run.status,
-        run.result ? redactSessionText(run.result).slice(0, 4000) : null,
-        run.error ? redactSessionText(run.error).slice(0, 1000) : null,
-        id,
-      ]);
-      stmt.free();
-    } else {
-      const stmt = this.db.prepare(`
-        INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, status, result_preview, error)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      stmt.run([
-        run.jobId,
-        run.startedAt,
-        run.finishedAt || null,
-        run.status,
-        run.result ? redactSessionText(run.result).slice(0, 4000) : null,
-        run.error ? redactSessionText(run.error).slice(0, 1000) : null,
-      ]);
-      id = Number(this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0] || 0);
-      stmt.free();
-    }
-    if (run.finishedAt) {
-      this.db.run('UPDATE scheduled_jobs SET last_run_at = ?, updated_at = ? WHERE id = ?', [
-        run.finishedAt,
-        run.finishedAt,
-        run.jobId,
-      ]);
-    }
-    this.save();
-    return id;
+    return this.withWriteLock(() => {
+      let id = run.id || 0;
+      if (id) {
+        const stmt = this.db.prepare(`
+          UPDATE scheduled_job_runs
+          SET finished_at = ?, status = ?, result_preview = ?, error = ?
+          WHERE id = ?
+        `);
+        stmt.run([
+          run.finishedAt || null,
+          run.status,
+          run.result ? redactSessionText(run.result).slice(0, 4000) : null,
+          run.error ? redactSessionText(run.error).slice(0, 1000) : null,
+          id,
+        ]);
+        stmt.free();
+      } else {
+        const stmt = this.db.prepare(`
+          INSERT INTO scheduled_job_runs (job_id, started_at, finished_at, status, result_preview, error)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `);
+        stmt.run([
+          run.jobId,
+          run.startedAt,
+          run.finishedAt || null,
+          run.status,
+          run.result ? redactSessionText(run.result).slice(0, 4000) : null,
+          run.error ? redactSessionText(run.error).slice(0, 1000) : null,
+        ]);
+        id = Number(this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0] || 0);
+        stmt.free();
+      }
+      if (run.finishedAt) {
+        this.db.run('UPDATE scheduled_jobs SET last_run_at = ?, updated_at = ? WHERE id = ?', [
+          run.finishedAt,
+          run.finishedAt,
+          run.jobId,
+        ]);
+      }
+      return id;
+    });
   }
 
   recordAgentJobStart(job: AgentJobSummary): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO agent_jobs (id, kind, prompt, status, total_agents, completed_agents, started_at, finished_at, last_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        status = excluded.status,
-        total_agents = excluded.total_agents,
-        last_status = excluded.last_status
-    `);
-    stmt.run([
-      job.id,
-      job.kind,
-      redactSessionText(job.prompt).slice(0, 1000),
-      job.status,
-      job.totalAgents ?? null,
-      job.completedAgents ?? 0,
-      job.startedAt,
-      job.finishedAt || null,
-      job.lastStatus || null,
-    ]);
-    stmt.free();
-    this.save();
+    this.withWriteLock(() => {
+      const stmt = this.db.prepare(`
+        INSERT INTO agent_jobs (id, kind, prompt, status, total_agents, completed_agents, started_at, finished_at, last_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          total_agents = excluded.total_agents,
+          last_status = excluded.last_status
+      `);
+      stmt.run([
+        job.id,
+        job.kind,
+        redactSessionText(job.prompt).slice(0, 1000),
+        job.status,
+        job.totalAgents ?? null,
+        job.completedAgents ?? 0,
+        job.startedAt,
+        job.finishedAt || null,
+        job.lastStatus || null,
+      ]);
+      stmt.free();
+    });
   }
 
   updateAgentJob(id: string, patch: Partial<AgentJobSummary>): void {
-    const current = this.listAgentJobs(100).find((job) => job.id === id);
-    if (!current) return;
-    const next = { ...current, ...patch };
-    const stmt = this.db.prepare(`
-      UPDATE agent_jobs
-      SET status = ?, total_agents = ?, completed_agents = ?, finished_at = ?, last_status = ?
-      WHERE id = ?
-    `);
-    stmt.run([
-      next.status,
-      next.totalAgents ?? null,
-      next.completedAgents ?? 0,
-      next.finishedAt || null,
-      next.lastStatus || null,
-      id,
-    ]);
-    stmt.free();
-    this.save();
+    this.withWriteLock(() => {
+      const current = this.readAgentJobs(100).find((job) => job.id === id);
+      if (!current) return;
+      const next = { ...current, ...patch };
+      const stmt = this.db.prepare(`
+        UPDATE agent_jobs
+        SET status = ?, total_agents = ?, completed_agents = ?, finished_at = ?, last_status = ?
+        WHERE id = ?
+      `);
+      stmt.run([
+        next.status,
+        next.totalAgents ?? null,
+        next.completedAgents ?? 0,
+        next.finishedAt || null,
+        next.lastStatus || null,
+        id,
+      ]);
+      stmt.free();
+    });
   }
 
   listAgentJobs(limit = 10): AgentJobSummary[] {
+    this.refreshForRead();
+    return this.readAgentJobs(limit);
+  }
+
+  private readAgentJobs(limit: number): AgentJobSummary[] {
     const stmt = this.db.prepare(`
       SELECT id, kind, prompt, status, total_agents, completed_agents, started_at, finished_at, last_status
       FROM agent_jobs
@@ -1036,6 +1168,11 @@ export class SessionStore {
   }
 
   listSessions(limit = 20): SessionSummary[] {
+    this.refreshForRead();
+    return this.readSessions(limit);
+  }
+
+  private readSessions(limit: number): SessionSummary[] {
     const stmt = this.db.prepare(`
       SELECT s.id, COALESCE(s.title, s.id) AS title, s.platform, s.user_key, s.updated_at, s.last_message_at,
              COUNT(m.id) AS message_count,
@@ -1067,8 +1204,9 @@ export class SessionStore {
   }
 
   searchSessions(query: string, limit = 10): SessionSummary[] {
+    this.refreshForRead();
     const trimmed = query.trim();
-    if (!trimmed) return this.listSessions(limit);
+    if (!trimmed) return this.readSessions(limit);
     let ftsRows: SessionSummary[] = [];
     if (this.ftsAvailable) {
       try {
@@ -1168,6 +1306,11 @@ export class SessionStore {
   }
 
   loadSession(sessionId: string): Message[] {
+    this.refreshForRead();
+    return this.readSession(sessionId);
+  }
+
+  private readSession(sessionId: string): Message[] {
     const stmt = this.db.prepare(`
       SELECT role, content, tool_call_id, tool_calls_json, images_json
       FROM messages
@@ -1193,18 +1336,81 @@ export class SessionStore {
   }
 
   saveSnapshot(sessionId: string, messages: Message[], meta: Partial<SessionMeta> = {}): void {
-    this.upsertSession({ id: sessionId, ...meta });
-    const existing = this.loadSession(sessionId);
-    if (existing.length > 0) {
-      if (meta.title) this.setSessionTitle(sessionId, meta.title);
-      return;
-    }
-    const turnId = `snapshot-${Date.now()}`;
-    for (const message of messages.filter((m) => m.role !== 'system')) {
-      this.appendMessage({ sessionId, turnId, message });
-    }
-    if (meta.title) this.setSessionTitle(sessionId, meta.title);
-    if (!meta.title && messages.length > 0)
-      this.setSessionTitle(sessionId, firstUserPreview(messages));
+    this.withWriteLock(() => {
+      const ts = nowIso();
+      const sessionStmt = this.db.prepare(`
+        INSERT INTO sessions (id, title, platform, user_key, channel_id, model, provider, cwd, status, created_at, updated_at, last_message_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          title = COALESCE(excluded.title, sessions.title),
+          platform = COALESCE(excluded.platform, sessions.platform),
+          user_key = COALESCE(excluded.user_key, sessions.user_key),
+          channel_id = COALESCE(excluded.channel_id, sessions.channel_id),
+          model = COALESCE(excluded.model, sessions.model),
+          provider = COALESCE(excluded.provider, sessions.provider),
+          cwd = COALESCE(excluded.cwd, sessions.cwd),
+          status = COALESCE(excluded.status, sessions.status),
+          updated_at = excluded.updated_at
+      `);
+      sessionStmt.run([
+        sessionId,
+        meta.title || null,
+        meta.platform || null,
+        meta.userKey || null,
+        meta.channelId || null,
+        meta.model || null,
+        meta.provider || null,
+        meta.cwd || process.cwd(),
+        meta.status || 'active',
+        ts,
+        ts,
+        ts,
+      ]);
+      sessionStmt.free();
+
+      const existing = this.readSession(sessionId);
+      if (existing.length === 0) {
+        const turnId = `snapshot-${Date.now()}`;
+        for (const message of messages.filter((item) => item.role !== 'system')) {
+          const createdAt = nowIso();
+          const content = redactSessionText(message.content || '');
+          const stmt = this.db.prepare(`
+            INSERT INTO messages (session_id, turn_id, role, content, tool_call_id, tool_calls_json, images_json, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+          stmt.run([
+            sessionId,
+            turnId,
+            message.role,
+            content,
+            message.toolCallId || null,
+            safeJson(message.toolCalls),
+            safeJson(message.images),
+            null,
+            createdAt,
+          ]);
+          const id = this.db.exec('SELECT last_insert_rowid() AS id')[0]?.values?.[0]?.[0];
+          stmt.free();
+          this.indexText(sessionId, 'message', String(id || ''), undefined, content, createdAt);
+        }
+        this.db.run('UPDATE sessions SET updated_at = ?, last_message_at = ? WHERE id = ?', [
+          ts,
+          ts,
+          sessionId,
+        ]);
+      }
+
+      const title = meta.title || (existing.length === 0 && messages.length > 0
+        ? firstUserPreview(messages)
+        : undefined);
+      if (title) {
+        this.db.run('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?', [
+          title,
+          ts,
+          sessionId,
+        ]);
+        this.indexText(sessionId, 'session', sessionId, title, title, ts);
+      }
+    });
   }
 }

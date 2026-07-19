@@ -10,6 +10,24 @@ const execFileAsync = promisify(execFile);
 const SKILL_DIR = path.resolve(import.meta.dirname, '../../skills/research/social-researching');
 const ENGINE = path.join(SKILL_DIR, 'scripts', 'social-researching.py');
 
+async function detectLocalRedditApi(): Promise<string | undefined> {
+  if (process.env.AURIX_REDDIT_LOCAL_API === '0') return undefined;
+  const port = process.env.AURIX_API_PORT || process.env.PORT || '3001';
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 500);
+  try {
+    const response = await fetch(`${baseUrl}/api/health`, { signal: controller.signal });
+    if (!response.ok) return undefined;
+    const json = await response.json().catch(() => undefined);
+    return json?.service === 'aurix-reddit-relay' ? baseUrl : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const researchForumsTool: Tool = {
   name: 'research_forums',
   description:
@@ -61,7 +79,9 @@ export const researchForumsTool: Tool = {
 
     const config = loadConfig();
     const redditEnv: Record<string, string> = {};
+    const localRedditApi = config.redditRelayUrl ? undefined : await detectLocalRedditApi();
     if (config.redditRelayUrl) redditEnv.AURIX_REDDIT_RELAY_URL = config.redditRelayUrl;
+    else if (localRedditApi) redditEnv.AURIX_REDDIT_RELAY_URL = localRedditApi;
     if (config.redditRelayToken) redditEnv.AURIX_REDDIT_RELAY_TOKEN = config.redditRelayToken;
     if (config.redditBackend) redditEnv.AURIX_REDDIT_BACKEND = config.redditBackend;
     if (config.redditRelayStrict !== undefined) {

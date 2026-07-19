@@ -93,6 +93,11 @@ export interface AurixConfig {
   redditRelayToken?: string;
   redditBackend?: 'auto' | 'relay' | 'keyless' | 'scrapecreators' | 'off';
   redditRelayStrict?: boolean;
+  captchaSolver?: {
+    url?: string;
+    token?: string;
+    timeoutSeconds?: number;
+  };
 }
 
 const CONFIG_DIR = path.join(os.homedir(), '.aurix');
@@ -184,7 +189,23 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
       'auto',
     redditRelayStrict:
       parseBooleanEnv(process.env.AURIX_REDDIT_RELAY_STRICT) ?? file.redditRelayStrict,
+    captchaSolver: {
+      ...(file.captchaSolver || {}),
+      url: process.env.AURIX_CAPTCHA_SOLVER_URL || file.captchaSolver?.url,
+      token: process.env.AURIX_CAPTCHA_SOLVER_TOKEN || file.captchaSolver?.token,
+      timeoutSeconds:
+        parseNumberEnv(process.env.AURIX_CAPTCHA_SOLVER_TIMEOUT_SECONDS) ??
+        file.captchaSolver?.timeoutSeconds,
+    },
   };
+}
+
+function parseNumberEnv(value?: string): number | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function parseBooleanEnv(value?: string): boolean | undefined {

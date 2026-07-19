@@ -23,6 +23,8 @@ import sharp from 'sharp';
 import type { Tool } from './Registry.js';
 import { loadConfig } from '../agent/Config.js';
 import { Metrics } from '../agent/Metrics.js';
+import { BrowserLaunchTracker } from './BrowserLaunchTracker.js';
+import { formatFormAssistResult, runFormAssist } from './forms/FormIntelligence.js';
 import {
   visionClassify,
   readFileBase64,
@@ -44,6 +46,16 @@ import {
   FuncaptchaSolver,
   extractPublicKey,
   extractServiceUrl,
+  classifyHcaptchaFrames,
+  solveHcaptcha,
+  solveTurnstile,
+  injectA11yCookie,
+  setA11yCookieFromUser,
+  needsA11yCookieFromUser,
+  agentPromptForA11yCookie,
+  isA11yCookieValid,
+  a11yTtlSeconds,
+  getA11yCookie,
 } from './captcha/index.js';
 
 function ok(msg: string, details?: Record<string, string>): string {
@@ -159,6 +171,7 @@ interface BrowserSession {
 }
 
 const sessions = new Map<string, BrowserSession>();
+const pendingLaunches = new BrowserLaunchTracker<BrowserContext>();
 const sessionProxies = new Map<string, string>();
 const MAX_BROWSER_SESSIONS = 3;
 let currentSessionKey = 'default';
@@ -186,6 +199,7 @@ function getSession(): BrowserSession | undefined {
 }
 
 async function closeAllSessions(): Promise<void> {
+  await pendingLaunches.closeAllPending();
   for (const [key, session] of sessions) {
     session.cdpSession = undefined;
     if (session.mode === 'cdp') {
@@ -561,7 +575,24 @@ async function ensureBrowser(): Promise<Page> {
     }
   }
 
-  const context = await launchPersistentContext(launchOpts as any);
+  const launchSessionKey = currentSessionKey;
+  const launchPromise = launchPersistentContext(launchOpts as any);
+  const context = await pendingLaunches.track(launchSessionKey, launchPromise);
+  if (pendingLaunches.wasCancelled(launchPromise)) {
+    pendingLaunches.release(launchSessionKey, launchPromise);
+    await context.close().catch(() => {});
+    throw new Error('Browser launch cancelled during shutdown');
+  }
+
+  let registered = false;
+  try {
+  // Inject hCaptcha accessibility cookie into persistent profile when available
+  try {
+    const a11y = await injectA11yCookie(context);
+    if (a11y.injected) {
+      console.log(`[browser] ${a11y.reason}`);
+    }
+  } catch {}
 
   await context.addInitScript({
     content: `(() => {
@@ -683,14 +714,21 @@ async function ensureBrowser(): Promise<Page> {
   }
 
   const _updateCrashed = () => {
-    const s = sessions.get(currentSessionKey);
+    const s = sessions.get(launchSessionKey);
     if (s) (s as any).crashed = true;
   };
   page.on('crash', _updateCrashed);
   context.on('close', _updateCrashed);
 
-  sessions.set(currentSessionKey, { context, page, profileDir, mode: 'managed', crashed: false });
+  sessions.set(launchSessionKey, { context, page, profileDir, mode: 'managed', crashed: false });
+  registered = true;
   return page;
+  } catch (error) {
+    if (!registered) await context.close().catch(() => {});
+    throw error;
+  } finally {
+    pendingLaunches.release(launchSessionKey, launchPromise);
+  }
 }
 
 async function closeBrowser(): Promise<void> {
@@ -864,8 +902,14 @@ Forms: signup-assist, signin-assist, fill, type, click, select, press-key, uploa
 Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, open-tabs
 Read: state, screenshot, snapshot, text, html, url, title, cookies
 Advanced: evaluate (READ ONLY), drag-to, hold-click, wait, cdp-command
-Captcha: detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
+Captcha: detect-captcha, solve-captcha, set-hcaptcha-a11y, hcaptcha-a11y-status, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
 Config: connect-cdp, disconnect-cdp, cdp-status, set-proxy, set-ui, status, close
+
+# hCaptcha accessibility cookie
+- If hCaptcha shows an image challenge, cookie hc_accessibility is missing/expired.
+- Ask user for cookie value, then: action="set-hcaptcha-a11y" value="<cookie value>"
+- Cookie is stored in ~/.aurix/hcaptcha-a11y.json and injected into ~/.aurix-browser-profile (~12h TTL).
+- action="hcaptcha-a11y-status" to check TTL.
 
 Target: CSS (#id, .class, [attr]), text="...", role=button, placeholder="...", label="...", or plain text.
 Sessions: session="a"/"b"/"c" for parallel browsers. proxy="host:port:user:pass" per session.`,
@@ -1894,6 +1938,63 @@ except Exception as e:
             .join('\n');
         }
 
+        case 'set-hcaptcha-a11y':
+        case 'set-hcaptcha-accessibility': {
+          if (!value || !String(value).trim()) {
+            return err(
+              'value required: paste hc_accessibility cookie value',
+              'DevTools → Cookies → .hcaptcha.com → hc_accessibility'
+            );
+          }
+          try {
+            const hc = setA11yCookieFromUser(String(value).trim(), { source: 'browser_tool' });
+            const session = getSession();
+            let injectMsg = 'saved to disk (browser not open yet — will inject on next launch)';
+            if (session?.context) {
+              const inj = await injectA11yCookie(session.context);
+              injectMsg = inj.reason;
+            }
+            const ttl = a11yTtlSeconds(hc);
+            return ok('hc_accessibility saved + injected into browser profile', {
+              ttl: `${Math.floor(ttl / 3600)}h ${ttl % 3600}s`,
+              inject: injectMsg,
+              path: '~/.aurix/hcaptcha-a11y.json',
+            });
+          } catch (e: any) {
+            return err(`set-hcaptcha-a11y failed: ${e.message}`);
+          }
+        }
+
+        case 'hcaptcha-a11y-status': {
+          const hc = getA11yCookie();
+          if (!hc?.value) {
+            return (
+              warn('no hc_accessibility stored') +
+              '\n' +
+              agentPromptForA11yCookie()
+            );
+          }
+          const ttl = a11yTtlSeconds(hc);
+          const valid = isA11yCookieValid();
+          // re-inject into open browser if any
+          const session = getSession();
+          let inject = 'browser not open';
+          if (session?.context) {
+            const inj = await injectA11yCookie(session.context);
+            inject = inj.reason;
+          }
+          return ok('hCaptcha accessibility cookie status', {
+            valid: String(valid),
+            ttl_seconds: String(ttl),
+            ttl: ttl > 0 ? `${Math.floor(ttl / 3600)}h ${ttl % 3600}s` : 'EXPIRED',
+            value_preview: `${hc.value.slice(0, 24)}...${hc.value.slice(-12)}`,
+            inject,
+            note: valid
+              ? 'cookie OK — solve-captcha should skip image challenge when accepted'
+              : 'EXPIRED — challenge will appear; ask user for fresh cookie',
+          });
+        }
+
         case 'upload': {
           const p = await ensureBrowser();
           if (!target) return 'Error: upload requires target (file input element)';
@@ -1961,9 +2062,9 @@ except Exception as e:
               const url = frame.url();
               if (url.includes('/recaptcha/') && url.includes('/anchor')) recaptchaAnchor = frame;
               if (url.includes('/recaptcha/') && url.includes('/bframe')) recaptchaBframe = frame;
-              if (url.includes('newassets.hcaptcha.com') && !url.includes('challenge'))
-                hcaptchaCheckbox = frame;
-              if (url.includes('hcaptcha') && url.includes('challenge')) hcaptchaChallenge = frame;
+              const hcaptchaFrames = classifyHcaptchaFrames([frame]);
+              if (hcaptchaFrames.checkbox) hcaptchaCheckbox = hcaptchaFrames.checkbox;
+              if (hcaptchaFrames.challenge) hcaptchaChallenge = hcaptchaFrames.challenge;
               if (url.includes('funcaptcha') || url.includes('arkoselabs')) funcaptchaFrame = frame;
               if (url.includes('service.mtcaptcha')) mtcaptchaFrame = frame;
               if (
@@ -1975,7 +2076,7 @@ except Exception as e:
             }
 
             if (recaptchaAnchor) captchaType = 'recaptcha';
-            else if (hcaptchaCheckbox) captchaType = 'hcaptcha';
+            else if (hcaptchaCheckbox || hcaptchaChallenge) captchaType = 'hcaptcha';
             else if (funcaptchaFrame) captchaType = 'funcaptcha';
             else if (mtcaptchaFrame) captchaType = 'mtcaptcha';
             else if (geetestFrame) captchaType = 'geetest';
@@ -2217,136 +2318,11 @@ except Exception as e:
             }
 
             if (captchaType === 'hcaptcha') {
-              results.push('Attempting hCaptcha...');
-              try {
-                const checkboxFrame = hcaptchaCheckbox;
-                if (checkboxFrame) {
-                  const checkbox = checkboxFrame.locator('#checkbox, .check');
-                  if ((await checkbox.count()) > 0) {
-                    await p.waitForTimeout(800 + Math.random() * 1200);
-                    await humanClick(checkbox, p);
-                    await p.waitForTimeout(3000);
-
-                    const updatedFrames = p.frames();
-                    let challengeFrame = updatedFrames.find(
-                      (f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge')
-                    );
-                    if (challengeFrame) {
-                      results.push('Image challenge appeared. Auto-solving...');
-                      const maxRetries = 5;
-                      let solved = false;
-                      for (let attempt = 0; attempt < maxRetries; attempt++) {
-                        if (attempt > 0)
-                          results.push(`\nRetry attempt ${attempt}/${maxRetries - 1}...`);
-                        const solveResult = await solveCaptchaGrid(p, challengeFrame, 'hcaptcha');
-                        results.push(solveResult);
-
-                        if (solveResult.includes('CAPTCHA SOLVED')) {
-                          solved = true;
-                          break;
-                        }
-
-                        if (solveResult.includes('Falling back to manual mode')) {
-                          break;
-                        }
-
-                        await p.waitForTimeout(2000);
-                        const refreshedFrames = p.frames();
-                        const newChallenge = refreshedFrames.find(
-                          (f: any) => f.url().includes('hcaptcha') && f.url().includes('challenge')
-                        );
-                        if (!newChallenge) {
-                          results.push('Challenge frame disappeared, captcha may be solved');
-                          solved = true;
-                          break;
-                        }
-                        challengeFrame = newChallenge;
-                      }
-                      if (!solved && !results.some((r) => r.includes('Falling back'))) {
-                        results.push(
-                          `\nAuto-solve exhausted after ${maxRetries} attempts. Use "captcha-grid" and "click-tile" for manual solving.`
-                        );
-                      }
-                    } else {
-                      const checkmark = checkboxFrame.locator(
-                        '.check.solved, #checkbox[aria-checked="true"]'
-                      );
-                      if ((await checkmark.count()) > 0) {
-                        results.push(ok('hCaptcha solved', { status: 'verified' }));
-                      } else {
-                        results.push(
-                          warn('hCaptcha checkbox clicked, status unclear', {
-                            suggestion: 'Use "captcha-grid" to check for image challenge',
-                          })
-                        );
-                      }
-                    }
-                  } else {
-                    results.push(err('hCaptcha checkbox element not found in frame'));
-                  }
-                } else {
-                  results.push(
-                    err(
-                      'hCaptcha checkbox frame not found',
-                      'Use "detect-captcha" to scan for captcha type'
-                    )
-                  );
-                }
-              } catch (e: any) {
-                results.push(err(`hCaptcha click failed: ${e.message}`));
-              }
+              results.push(await solveHcaptcha(p, hcaptchaCheckbox, hcaptchaChallenge));
             }
 
             if (captchaType === 'turnstile') {
-              results.push('Attempting Cloudflare Turnstile...');
-              try {
-                // Managed challenge with auto-retry: clicks checkbox → waits → reloads if still blocked
-                // CloakBrowser's good fingerprinting means managed challenges often pass silently
-                const maxRetries = 3;
-                let resolved = false;
-                for (let attempt = 0; attempt < maxRetries; attempt++) {
-                  if (attempt > 0) results.push(`Turnstile retry ${attempt}/${maxRetries}...`);
-                  const tFrame = p.frames().find((f) => f.url().includes('challenges.cloudflare'));
-                  if (tFrame) {
-                    await p.waitForTimeout(1000 + Math.random() * 1000);
-                    const cb = tFrame.locator(
-                      'input[type="checkbox"], .cb-lb, #challenge-stage label'
-                    );
-                    if ((await cb.count()) > 0) {
-                      await humanClick(cb, p);
-                    } else {
-                      await tFrame
-                        .locator('body')
-                        .click({ timeout: 3000 })
-                        .catch(() => {});
-                    }
-                    await p.waitForTimeout(4000);
-                  }
-                  // Check if resolved
-                  const c = await p.content();
-                  if (!c.includes('cf-turnstile') && !c.includes('challenges.cloudflare')) {
-                    resolved = true;
-                    results.push(ok('Cloudflare Turnstile bypassed — page unlocked'));
-                    break;
-                  }
-                  // Reload to trigger fresh managed challenge
-                  if (attempt < maxRetries - 1) {
-                    await p
-                      .reload({ waitUntil: 'domcontentloaded', timeout: 15000 })
-                      .catch(() => {});
-                    await p.waitForTimeout(2000);
-                  }
-                }
-                if (!resolved) {
-                  results.push(
-                    warn('Turnstile still active after retries — try switching proxy or waiting')
-                  );
-                }
-              } catch (e: any) {
-                results.push(
-                  err(`Turnstile error: ${e.message}`, 'Try reloading the page or switching proxy')
-                );
-              }
+              results.push(await solveTurnstile(p));
             }
 
             if (captchaType === 'funcaptcha') {
@@ -3417,8 +3393,11 @@ except Exception as e:
             }
           }
 
+          const intelligentResult = await runFormAssist(p, 'signup', data);
+          if (intelligentResult.handled) return formatFormAssistResult(intelligentResult);
+
           const results: string[] = [];
-          results.push('=== SIGNUP ASSIST ===');
+          results.push('=== SIGNUP ASSIST (LEGACY FALLBACK) ===');
           results.push(`Provided: ${Object.keys(data).join(', ')}`);
           results.push('');
 
@@ -3919,8 +3898,11 @@ except Exception as e:
             }
           }
 
+          const intelligentResult = await runFormAssist(p, 'signin', data);
+          if (intelligentResult.handled) return formatFormAssistResult(intelligentResult);
+
           const results: string[] = [];
-          results.push('=== SIGNIN ASSIST ===');
+          results.push('=== SIGNIN ASSIST (LEGACY FALLBACK) ===');
 
           const cookieSelectors = [
             'button:has-text("Accept All")',
@@ -4318,7 +4300,7 @@ except Exception as e:
         default:
           return err(
             `Unknown action: "${action}"`,
-            `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, connect-cdp, disconnect-cdp, cdp-status, cdp-command, set-proxy, set-ui, detect-captcha, solve-captcha, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`
+            `Available: navigate, click, fill, type, screenshot, snapshot, text, html, url, title, scroll, back, forward, press-key, select, wait, evaluate, new-tab, switch-tab, close-tab, open-tabs, cookies, upload, signup-assist, signin-assist, get-temp-email, wait-email, connect-cdp, disconnect-cdp, cdp-status, cdp-command, set-proxy, set-ui, detect-captcha, solve-captcha, set-hcaptcha-a11y, hcaptcha-a11y-status, captcha-grid, click-tile, captcha-verify, slider-analyze, drag-to, hold-click, close, status, extract-cookies`
           );
       }
     } catch (e: any) {

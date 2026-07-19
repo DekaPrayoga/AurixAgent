@@ -35,10 +35,17 @@ export function isPasteKey(evt: {
   sequence?: string;
   ctrl?: boolean;
   meta?: boolean;
+  shift?: boolean;
 }): boolean {
   return (
-    evt.sequence === '\x16' || (!!(evt.ctrl || evt.meta) && (evt.name === 'v' || evt.name === 'V'))
+    evt.sequence === '\x16' ||
+    (!!(evt.ctrl || evt.meta) && (evt.name === 'v' || evt.name === 'V')) ||
+    (!!evt.shift && (evt.name === 'insert' || evt.name === 'Insert'))
   );
+}
+
+export function normalizeClipboardText(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
 let cachedDisplay: { display: string; xauth: string } | null | undefined;
@@ -107,7 +114,7 @@ async function readWindowsClipboard(): Promise<string | undefined> {
   for (const cmd of ['powershell.exe', 'powershell']) {
     try {
       const text = await runCmd(cmd, args, undefined, undefined, 4000);
-      if (text) return text.replace(/\r\n/g, '\n');
+      if (text) return normalizeClipboardText(text);
     } catch {}
   }
   return undefined;

@@ -237,13 +237,20 @@ function removeTrailingOffers(text: string): string {
   const lines = text.trim().split('\n');
   while (lines.length > 1) {
     const last = normalizeLine(lines[lines.length - 1]);
-    if (
-      /\?$/.test(lines[lines.length - 1].trim()) &&
-      /(mau|ingin|perlu|shall|should|want).*(kirim|buat|bikin|lanjut|ulang|continue|send|create|generate|retry|pdf|excel|file)/.test(
+    const continuationOffer =
+      /^(?:kalau|jika|if)\s+(?:kamu|anda|lu|lo|you\s+)?(?:mau|ingin|want).*\b(?:lanjut|continue|teruskan|proceed|retry|ulang|buat|bikin|kirim|send)\b/.test(
         last
-      )
-    ) {
+      ) ||
+      /^(?:balas|reply|kirim|send|ketik|type)\b.*\b(?:lanjut|continue|gas|yes|ok)\b/.test(last) ||
+      /^(?:mau|ingin|perlu|shall|should|want)\b.*\b(?:lanjut\w*|continu\w*|teruskan|proceed\w*|retry|ulang|buat|bikin|kirim|send|create|generate)\b/.test(
+        last
+      );
+    if (continuationOffer) {
       lines.pop();
+      while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
+      if (/^(?:next|selanjutnya|lanjut)\s*:??$/i.test(lines[lines.length - 1]?.trim() || '')) {
+        lines.pop();
+      }
       continue;
     }
     if (/(pdf|file|excel).*?(mau|ingin|perlu).*?(kirim|ulang|buat|bikin)/.test(last)) {

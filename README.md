@@ -280,8 +280,17 @@ aurix              # Launch full TUI
 aurix --lite       # Launch lite prompt mode
 aurix setup        # Configure provider/model/key
 aurix gateway      # Start Discord/Telegram/WhatsApp gateway
+aurix api          # Start local Reddit research API on :3001 (normal CLI/gateway auto-start it)
 aurix --continue   # Continue latest session
 aurix --resume ID  # Resume a specific session
+```
+
+### Deploy helpers
+
+```bash
+scripts/deploy.sh        # Linux / generic bash
+scripts/deploy-macos.sh  # macOS bash wrapper
+pwsh scripts/deploy.ps1  # Windows PowerShell
 ```
 
 ### In-app slash commands
@@ -364,6 +373,9 @@ Environment variables override config values.
 | `AURIX_MODEL` | No | Main model name. | `gpt-4o`, `your-model` |
 | `AURIX_VISION_MODEL` | No | Vision model for screenshots/browser tasks. | `your-vision-model` |
 | `SEARCH_API_KEY` | No | Optional external search provider key. | `...` |
+| `AURIX_REDDIT_RELAY_URL` | No | First-party Reddit relay/API base URL for `research_forums`. | `http://127.0.0.1:3001` |
+| `AURIX_REDDIT_BACKEND` | No | Reddit backend selection. | `auto`, `relay`, `keyless`, `scrapecreators`, `off` |
+| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | No | Optional OAuth credentials for the Reddit relay; otherwise it falls back to public RSS. | `...` |
 | `SPOTIFY_ACCESS_TOKEN` / `SPOTIFY_TOKEN` | No | Optional music-control credentials. | `...` |
 | `DISCORD_TOKEN` | No | Discord gateway token. | `...` |
 | `TELEGRAM_TOKEN` | No | Telegram gateway token. | `...` |

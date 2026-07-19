@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { TextAttributes, type ScrollAcceleration } from '@opentui/core';
+import { SyntaxStyle, TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { useThinkingAnimation } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
@@ -549,6 +549,36 @@ const UserMessage = React.memo(function UserMessage({
   );
 });
 
+let markdownSyntaxVersion = -1;
+let markdownSyntax: SyntaxStyle | undefined;
+
+function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
+  if (!markdownSyntax || markdownSyntaxVersion !== themeVersion) {
+    markdownSyntax?.destroy();
+    markdownSyntax = SyntaxStyle.fromStyles({
+      default: { fg: theme.text },
+      'markup.heading': { fg: theme.markdownHeading, bold: true },
+      'markup.heading.1': { fg: theme.primary, bold: true },
+      'markup.heading.2': { fg: theme.markdownHeading, bold: true },
+      'markup.bold': { fg: theme.markdownStrong, bold: true },
+      'markup.italic': { fg: theme.textSecondary, italic: true },
+      'markup.link': { fg: theme.markdownLink, underline: true },
+      'markup.raw': { fg: theme.markdownCode },
+      'markup.quote': { fg: theme.markdownQuote, italic: true },
+      comment: { fg: theme.textMuted, italic: true },
+      keyword: { fg: theme.accent },
+      string: { fg: theme.ok },
+      number: { fg: theme.warn },
+      function: { fg: theme.info },
+      type: { fg: theme.primary },
+      operator: { fg: theme.textSecondary },
+      punctuation: { fg: theme.textMuted },
+    });
+    markdownSyntaxVersion = themeVersion;
+  }
+  return markdownSyntax;
+}
+
 const AssistantMessage = React.memo(function AssistantMessage({
   msg,
   themeVersion,
@@ -558,27 +588,16 @@ const AssistantMessage = React.memo(function AssistantMessage({
 }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingX={2} flexShrink={0}>
-      {msg.model && (
-        <box paddingBottom={0} paddingLeft={1}>
-          <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
-            {msg.model}
-          </text>
-        </box>
-      )}
-      <box
-        border={['left']}
-        borderColor={theme.secondary}
-        backgroundColor={theme.bgPanel}
-        paddingTop={1}
-        paddingBottom={1}
-        paddingLeft={2}
-        paddingRight={2}
-        flexShrink={0}
-        minWidth={0}
-      >
-        <MarkdownText content={msg.content} themeVersion={themeVersion} />
-      </box>
+    <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
+      <markdown
+        content={msg.content}
+        syntaxStyle={getMarkdownSyntax(themeVersion)}
+        fg={theme.text}
+        streaming={true}
+        conceal={true}
+        concealCode={false}
+        tableOptions={{ style: 'columns', wrapMode: 'word', cellPaddingX: 1 }}
+      />
     </box>
   );
 });
@@ -628,10 +647,11 @@ const SystemMessage = React.memo(function SystemMessage({
   msg: ChatMessage;
   themeVersion: number;
 }) {
+  const completion = /^Model: .* · Duration: .* · Tools: \d+$/.test(msg.content);
   return (
-    <box paddingLeft={4} paddingRight={2} flexShrink={0}>
-      <text fg={theme.warn} wrapMode="word">
-        {safeDisplayText(msg.content)}
+    <box paddingLeft={completion ? 3 : 4} paddingRight={2} marginTop={completion ? 1 : 0} flexShrink={0}>
+      <text fg={completion ? theme.textMuted : theme.warn} wrapMode="word">
+        {completion ? `▣ ${safeDisplayText(msg.content)}` : safeDisplayText(msg.content)}
       </text>
     </box>
   );
@@ -669,7 +689,7 @@ export function ChatArea({
         verticalScrollbarOptions={{ visible: false }}
       >
         <box height={1} />
-        <box flexDirection="column" gap={1}>
+        <box flexDirection="column">
           {visible.length === 0 ? (
             <box justifyContent="center" paddingY={2}>
               <text fg={theme.textMuted}>no messages yet</text>
