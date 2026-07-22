@@ -12,7 +12,7 @@ import { writeClipboard } from './Clipboard.js';
 import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
 import { detectInstallMethod, terminalDiagnostics } from './InstallDiagnostics.js';
-import { buildResumedDisplayMessages } from './ResumeDisplay.js';
+import { acceptResumePageLoad, beginResumePageLoad, buildResumedDisplayMessages, createResumePageState, type ResumeDisplayPageState } from './ResumeDisplay.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
 import { LoginModal } from './LoginModal.js';
 import { VisionModal } from './VisionModal.js';
@@ -43,7 +43,8 @@ import {
 import { AgentLoop } from '../agent/AgentLoop.js';
 import { renderToolEnd } from '../agent/ToolEventRenderer.js';
 import type { AurixConfig } from '../agent/Config.js';
-import { CONFIG_PATH, saveConfig } from '../agent/Config.js';
+import { CONFIG_PATH, loadConfig, saveConfig } from '../agent/Config.js';
+import { editSoulFile, formatReloadReport, formatSoulShow, getAgentsStatus, getCanonicalSoulPath, getSoulStatus } from './SoulCommands.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
@@ -141,6 +142,7 @@ const HANDLED_COMMANDS = new Set([
   'rollback',
   'rules',
   'save',
+  'soul',
   'code-review',
   'security-review',
   'sessions',
@@ -237,6 +239,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   >();
   const [showBanner, setShowBanner] = useState(true);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const resumePageRef = React.useRef<ResumeDisplayPageState | null>(null);
   const [baseUrl, setBaseUrl] = useState<string>(config.baseUrl || '');
   const [permissionPrompt, setPermissionPrompt] = useState<{
     request: ToolPermissionRequest;
@@ -388,8 +391,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       const count = (await agentRef.current?.loadSessionAsync(resumeId)) || 0;
       if (count > 0) {
         resumeSessionIdRef.current = resumeId;
-        const loaded = agentRef.current?.getMessages() || [];
-        const display = buildResumedDisplayMessages(loaded, resumeId);
+        const store = await agentRef.current?.getSessionStore();
+        const page = store?.loadSessionPage(resumeId, { limit: 80 });
+        const pageMessages = page?.messages || (agentRef.current?.getMessages() || []).filter((m: any) => m.role !== 'system').slice(-80);
+        const display = buildResumedDisplayMessages(pageMessages, resumeId, { startIndex: count - pageMessages.length, maxMessages: 80 });
+        resumePageRef.current = createResumePageState(resumeId, page?.oldestCursor, Boolean(page?.hasMore));
         presentationStateRef.current = createPresentationState(display);
         setMessages(display);
         setShowBanner(false);
@@ -404,6 +410,36 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       }
     })();
   }, [resumeId]);
+
+  const loadOlderResumedMessages = useCallback(async () => {
+    const current = resumePageRef.current;
+    if (!current) return;
+    const begun = beginResumePageLoad(current);
+    resumePageRef.current = begun.state;
+    if (!begun.request) return;
+    try {
+      const store = await agent.getSessionStore();
+      const page = store.loadSessionPage(begun.request.sessionId, { beforeId: begun.request.beforeId, limit: 80 });
+      const latest = resumePageRef.current;
+      if (!latest || latest.sessionId !== begun.request.sessionId || latest.generation !== begun.request.generation) return;
+      const older = buildResumedDisplayMessages(page.messages, begun.request.sessionId, { maxMessages: 80 });
+      resumePageRef.current = acceptResumePageLoad(latest, {
+        sessionId: begun.request.sessionId,
+        generation: begun.request.generation,
+        oldestCursor: page.oldestCursor,
+        hasMore: page.hasMore,
+      });
+      if (older.length > 0) {
+        setMessages((prev) => [...older, ...prev]);
+        presentationStateRef.current = createPresentationState([...older, ...presentationStateRef.current.messages]);
+        setScrollOffset((prev) => prev + older.length);
+      }
+    } catch {
+      const latest = resumePageRef.current;
+      if (latest && latest.generation === begun.request.generation) resumePageRef.current = { ...latest, loading: false };
+    }
+  }, [agent]);
+
   useEffect(() => {
     const onStart = (data: any) => {
       setSubagents(new Array(data.total).fill({ status: 'queued' }));
@@ -553,7 +589,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (name === 'up' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset((prev) => Math.min(prev + 1, Math.max(0, messages.length - 1)));
+      setScrollOffset((prev) => { const next = Math.min(prev + 1, Math.max(0, messages.length - 1)); if (next >= Math.max(0, messages.length - 1)) void loadOlderResumedMessages(); return next; });
       return;
     }
 
@@ -565,7 +601,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (name === 'pageup' && !isProcessing) {
       evt.preventDefault();
-      setScrollOffset((prev) => Math.min(prev + 20, Math.max(0, messages.length - 5)));
+      setScrollOffset((prev) => { const next = Math.min(prev + 20, Math.max(0, messages.length - 5)); if (next >= Math.max(0, messages.length - 5)) void loadOlderResumedMessages(); return next; });
       return;
     }
 
@@ -935,9 +971,66 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         }
 
         if (commandName === 'context') {
-          const stats = agent.getContextStats();
+          const raw = slash.args.trim().toLowerCase();
+          if (raw === 'refresh') {
+            await agent.refreshContextMetadata();
+          } else if (raw === 'auto') {
+            delete config.contextLimit;
+            delete config.contextInputLimit;
+            delete config.contextOutputLimit;
+            delete config.contextCompactionBuffer;
+            saveConfig(config);
+            agent.setProvider({
+              ...config,
+              contextLimit: undefined,
+              contextInputLimit: undefined,
+              contextOutputLimit: undefined,
+              contextCompactionBuffer: undefined,
+            });
+            await agent.refreshContextMetadata();
+          } else if (raw.startsWith('set ')) {
+            const value = raw.slice(4).trim().replace(/[,_]/g, '');
+            const match = value.match(/^(\d+(?:\.\d+)?)(k|m)?$/i);
+            if (!match) {
+              addAssistant('Usage: /context set <tokens|500k|1m>');
+              return;
+            }
+            const base = Number(match[1]);
+            const multiplier = match[2]?.toLowerCase() === 'm' ? 1_000_000 : match[2] ? 1_000 : 1;
+            const limit = Math.round(base * multiplier);
+            if (!Number.isFinite(limit) || limit < 4_000 || limit > 2_000_000) {
+              addAssistant('Context limit must be between 4,000 and 2,000,000 tokens.');
+              return;
+            }
+            config.contextLimit = limit;
+            saveConfig(config);
+            agent.setProvider({ contextLimit: limit });
+            await agent.refreshContextMetadata();
+          } else if (raw) {
+            addAssistant('Usage: /context [refresh|set <tokens|500k|1m>|auto]');
+            return;
+          }
+
+          const info = agent.getContextDiagnostics();
+          const { metadata, budget, stats } = info;
+          const age = Math.max(0, Math.round((Date.now() - metadata.updatedAt) / 60_000));
+          const thresholdPct = Math.round((budget.autoCompactThreshold / budget.contextLimit) * 100);
           addAssistant(
-            `Context usage: ${stats.totalTokens.toLocaleString()} tokens (~${stats.estimatedPct}%)\nMessages: ${stats.messageCount} (${stats.compactedCount} compactions)\nAuto-compact triggers at 75% of context limit.`
+            `Context window\n` +
+              `  Model: ${info.model}\n` +
+              `  Router: ${info.baseUrl || info.provider}\n` +
+              `  Estimated active: ${stats.totalTokens.toLocaleString()} tokens\n` +
+              `  Total context: ${budget.contextLimit.toLocaleString()} tokens\n` +
+              `  Input limit: ${(budget.inputLimit || budget.contextLimit).toLocaleString()} tokens\n` +
+              `  Output reservation: ${budget.outputReservation.toLocaleString()} tokens\n` +
+              `  Safety buffer: ${budget.scalableBuffer.toLocaleString()} tokens\n` +
+              `  Auto-compact: ${budget.autoCompactThreshold.toLocaleString()} tokens (${thresholdPct}% of total)\n` +
+              `  Current pressure: ${stats.estimatedPct}% of auto-compact threshold\n` +
+              `  Source: ${metadata.source} (${metadata.confidence} confidence${age ? `, ${age}m old` : ''})\n` +
+              `${metadata.endpoint ? `  Metadata endpoint: ${metadata.endpoint}\n` : ''}` +
+              `  Messages: ${stats.messageCount} · Compactions: ${stats.compactedCount}\n` +
+              `  Last provider input: ${info.lastProviderInput ? info.lastProviderInput.toLocaleString() : 'not reported'}\n\n` +
+              `Commands: /context refresh · /context set 500k · /context auto`
           );
           return;
         }
@@ -1623,8 +1716,18 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             const count = await agent.loadSessionAsync(target);
             if (count > 0) {
               resumeSessionIdRef.current = target;
-              const loaded = agent.getMessages();
-              const display = buildResumedDisplayMessages(loaded, target);
+              let page: ReturnType<Awaited<ReturnType<typeof agent.getSessionStore>>['loadSessionPage']> | undefined;
+              try {
+                const store = await agent.getSessionStore();
+                page = store.loadSessionPage(target, { limit: 80 });
+              } catch {}
+              const fallbackLoaded = agent.getMessages().filter((m: any) => m.role !== 'system').slice(-80);
+              const pageMessages = page?.messages || fallbackLoaded;
+              const display = buildResumedDisplayMessages(pageMessages, target, {
+                startIndex: count - pageMessages.length,
+                maxMessages: 80,
+              });
+              resumePageRef.current = createResumePageState(target, page?.oldestCursor, Boolean(page?.hasMore));
               presentationStateRef.current = createPresentationState(display);
               setMessages(display);
               setShowBanner(false);
@@ -1818,7 +1921,29 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('Footer display toggled.');
           return;
         } else if (commandName === 'reload') {
-          addAssistant('.env variables reloaded.');
+          try {
+            const nextConfig = loadConfig();
+            Object.assign(config, nextConfig, { provider: config.provider, model: config.model });
+          } catch {}
+          agent.refreshSystemPrompt();
+          addAssistant(formatReloadReport(getSoulStatus(), getAgentsStatus(process.cwd())));
+          return;
+        } else if (commandName === 'soul') {
+          const subcmd = slash.args.trim().split(/\s+/, 1)[0]?.toLowerCase() || 'show';
+          if (subcmd === 'path') {
+            addAssistant(getCanonicalSoulPath());
+          } else if (subcmd === 'edit') {
+            try {
+              const code = await editSoulFile();
+              addAssistant(code === 0 ? 'SOUL.md editor closed. Use /reload to apply changes.' : `SOUL.md editor exited with code ${code}. Use /reload to apply changes.`);
+            } catch (error) {
+              addAssistant(`SOUL.md editor failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          } else if (subcmd === 'show' || !slash.args.trim()) {
+            addAssistant(formatSoulShow());
+          } else {
+            addAssistant('Usage: /soul [show|edit|path]');
+          }
           return;
         } else if (commandName === 'reload-mcp') {
           await mcpManager.stopAll();

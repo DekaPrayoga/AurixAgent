@@ -67,7 +67,8 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'context',
-    description: 'Show context usage and compaction stats',
+    argumentHint: '[refresh|set <tokens>|auto]',
+    description: 'Inspect or configure the effective model context window',
     group: 'session',
     source: 'claude-code',
   },
@@ -748,9 +749,16 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'reload',
-    description: 'Reload .env variables into running session',
+    description: 'Reload configuration, SOUL.md, AGENTS.md, and rebuild active system prompt',
     group: 'config',
     source: 'hermes',
+  },
+  {
+    name: 'soul',
+    argumentHint: '[show|edit|path]',
+    description: 'Show, edit, or print the canonical SOUL.md path',
+    group: 'config',
+    source: 'aurix',
   },
   {
     name: 'reload-mcp',

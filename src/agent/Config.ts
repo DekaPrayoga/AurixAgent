@@ -15,6 +15,10 @@ export interface AurixConfig {
   visionProvider?: 'anthropic' | 'openai' | 'custom' | 'custom-anthropic';
   visionApiStyle?: 'openai' | 'anthropic' | 'auto';
   maxTokens?: number;
+  contextLimit?: number;
+  contextInputLimit?: number;
+  contextOutputLimit?: number;
+  contextCompactionBuffer?: number;
   temperature?: number;
   systemPrompt?: string;
   apiStyle?: 'anthropic' | 'openai' | 'auto';
@@ -141,6 +145,11 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
       (process.env.AURIX_VISION_PROVIDER as AurixConfig['visionProvider']) || file.visionProvider,
     visionApiStyle: (process.env.AURIX_VISION_API_STYLE as any) || file.visionApiStyle,
     maxTokens: file.maxTokens || 4096,
+    contextLimit: parseNumberEnv(process.env.AURIX_CONTEXT_LIMIT) ?? file.contextLimit,
+    contextInputLimit: parseNumberEnv(process.env.AURIX_CONTEXT_INPUT_LIMIT) ?? file.contextInputLimit,
+    contextOutputLimit: parseNumberEnv(process.env.AURIX_CONTEXT_OUTPUT_LIMIT) ?? file.contextOutputLimit,
+    contextCompactionBuffer:
+      parseNumberEnv(process.env.AURIX_CONTEXT_COMPACTION_BUFFER) ?? file.contextCompactionBuffer,
     temperature: file.temperature ?? 0.7,
     systemPrompt: file.systemPrompt,
     apiStyle,

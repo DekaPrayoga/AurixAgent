@@ -55,8 +55,6 @@
   "scripts": {
     "build": "node scripts/build.cjs",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src",
-    "test:cli": "bun test src/cli",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
     "prepare": "node scripts/build.cjs",
