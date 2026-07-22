@@ -16,7 +16,7 @@ interface SpecialistDef {
   systemPrompt: string;
 }
 
-const SPECIALISTS: Record<string, SpecialistDef> = {
+export const SPECIALISTS: Record<string, SpecialistDef> = {
   'web-dev': {
     name: 'Web Developer',
     team: 'coding',
@@ -69,10 +69,10 @@ const SPECIALISTS: Record<string, SpecialistDef> = {
     name: 'Code Reviewer',
     team: 'coding',
     description:
-      'Senior code reviewer for bugs, performance, security, maintainability, and tests.',
-    tools: ['terminal', 'read_file', 'search_files'],
+      'Read-only code reviewer for explicit /review, /code-review, review/audit requests, or direct reviewer selection only.',
+    tools: ['read_file', 'search_files'],
     systemPrompt:
-      'You are a senior code reviewer. Find concrete bugs and risks, verify them where possible, and provide actionable fixes with file references.',
+      'You are a senior read-only code reviewer. Find concrete bugs and risks, verify them where possible, and report actionable findings with file references. Do not edit files, run mutating commands, or apply fixes by default. If the user explicitly asks to apply or fix review findings, state that implementation should be routed to a coding specialist instead of the default reviewer.',
   },
   cybersecurity: {
     name: 'Cybersecurity Expert',
@@ -147,6 +147,39 @@ export interface MultiAgentRunOptions {
 
 const MAX_SPECIALISTS = 3;
 const SUBAGENT_MAX_ITERATIONS = 40;
+const CODE_REVIEWER_ID = 'code-reviewer';
+
+export function hasExplicitCodeReviewIntent(message: string): boolean {
+  const trimmed = message.trim();
+  const text = trimmed.toLowerCase();
+  if (!text) return false;
+
+  // Slash-command review entrypoints are explicit by definition. /review stays read-only unless
+  // the user separately asks to apply/fix changes.
+  if (/^\/(review|code-review)(?:\s|$)/i.test(trimmed)) return true;
+
+  // Explicit multi-agent/specialist selection counts even without the word "review".
+  if (/(?:^|[\s,;])@?code[-_\s]?reviewer\b/i.test(message)) return true;
+  if (/\b(?:use|with|select|pick|route\s+to|delegate\s+to|ask|invoke|call|spawn)\s+(?:the\s+)?(?:code[-_\s]?reviewer|reviewer\s+agent|review\s+agent)\b/i.test(message)) return true;
+
+  // Direct review/audit requests. Keep this intentionally narrow so implementation requests like
+  // "implement security audit logging" do not select the reviewer.
+  if (/\b(?:review|audit)\s+(?:the\s+)?(?:code|diff|changes?|patch|pr|pull\s+request|repository|repo|codebase)\b/i.test(message)) return true;
+  if (/\b(?:review|audit)\b(?=.{0,80}\b(?:code|diff|changes?|patch|pr|pull\s+request|repository|repo|codebase)\b)/i.test(message)) return true;
+  if (/\b(?:code|diff|changes?|patch|pr|pull\s+request|repository|repo|codebase)\s+(?:review|audit)\b/i.test(message)) return true;
+  if (/\b(?:please\s+)?(?:review|audit)\s+(?:this|these|it)\b/i.test(message)) return true;
+
+  // Indonesian equivalents commonly used by this project owner.
+  if (/\b(?:audit|review|tinjau|cek|periksa)\s+(?:kode|code|diff|perubahan|repo|repository)\b/i.test(message)) return true;
+  if (/\b(?:kode|code|diff|perubahan|repo|repository)\s+(?:di)?(?:audit|review|tinjau|cek|periksa)\b/i.test(message)) return true;
+
+  return false;
+}
+
+function filterCodeReviewerSelection(message: string, agents: string[]): string[] {
+  if (hasExplicitCodeReviewIntent(message)) return agents;
+  return agents.filter((id) => id !== CODE_REVIEWER_ID);
+}
 
 async function runBounded<T, R>(
   items: T[],
@@ -280,8 +313,8 @@ SPECIALISTS:
 ${agentList}
 
 RULES:
-- For coding implementation: pick web-dev/frontend/backend as relevant plus code-reviewer.
-- For security: cybersecurity plus code-reviewer.
+- For coding implementation: pick web-dev/frontend/backend as relevant. Do not pick code-reviewer unless the user explicitly asks for code/diff review or explicitly selects code-reviewer.
+- For security implementation: pick cybersecurity only. Pick code-reviewer only for explicit security/code audit or review requests, not implementation.
 - For research/journal: researcher plus writer/editor/data-analyst if relevant.
 - For design: ui-designer plus frontend.
 - For simple questions: ROUTE: direct.
@@ -299,27 +332,29 @@ REASON: one line`,
     const content = response.text.trim();
     if (/route:\s*direct/i.test(content)) return { route: 'direct', agents: [] };
     const agentsMatch = content.match(/AGENTS:\s*(.+)/i);
-    const agents = agentsMatch
+    const rawAgents = agentsMatch
       ? agentsMatch[1]
           .split(',')
           .map((a) => a.trim().toLowerCase())
           .filter((id) => id && SPECIALISTS[id] && id !== 'judge')
       : [];
+    const agents = filterCodeReviewerSelection(message, rawAgents);
     return agents.length > 0 ? { route: 'multi-agent', agents } : this.fallbackPlan(message);
   }
 
   private fallbackPlan(message: string): { route: string; agents: string[] } {
     const lower = message.toLowerCase();
+    const explicitReview = hasExplicitCodeReviewIntent(message);
     if (/security|vulnerab|exploit|auth|secret/.test(lower))
-      return { route: 'multi-agent', agents: ['cybersecurity', 'code-reviewer'] };
+      return { route: 'multi-agent', agents: explicitReview ? ['cybersecurity', 'code-reviewer'] : ['cybersecurity'] };
     if (/frontend|react|ui|css|component/.test(lower))
-      return { route: 'multi-agent', agents: ['frontend', 'ui-designer', 'code-reviewer'] };
+      return { route: 'multi-agent', agents: explicitReview ? ['frontend', 'ui-designer', 'code-reviewer'] : ['frontend', 'ui-designer'] };
     if (/backend|api|database|server|auth/.test(lower))
-      return { route: 'multi-agent', agents: ['backend', 'code-reviewer'] };
+      return { route: 'multi-agent', agents: explicitReview ? ['backend', 'code-reviewer'] : ['backend'] };
     if (/research|source|citation|paper|journal|study/.test(lower))
       return { route: 'multi-agent', agents: ['researcher', 'editor'] };
     if (/code|bug|fix|implement|refactor|audit|repo/.test(lower))
-      return { route: 'multi-agent', agents: ['web-dev', 'code-reviewer'] };
+      return { route: 'multi-agent', agents: explicitReview ? ['web-dev', 'code-reviewer'] : ['web-dev'] };
     return { route: 'direct', agents: [] };
   }
 

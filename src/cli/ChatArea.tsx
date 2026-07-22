@@ -584,31 +584,16 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
 }
 
 const MARKDOWN_TABLE_OPTIONS = { style: 'columns' as const, wrapMode: 'word' as const, cellPaddingX: 1 };
-const MAX_RENDERED_MESSAGE_CHARS = 24_000;
-const MAX_VISIBLE_MESSAGE_CHARS = 96_000;
-const MAX_VISIBLE_MESSAGES = 40;
 
 export function selectVisibleMessages(
   messages: ChatMessage[],
   scrollOffset: number,
-  maxMessages = MAX_VISIBLE_MESSAGES,
-  maxChars = MAX_VISIBLE_MESSAGE_CHARS
+  maxMessages = messages.length,
+  _maxChars?: number
 ): { visible: ChatMessage[]; start: number } {
   const end = Math.max(0, messages.length - scrollOffset);
-  let start = end;
-  let chars = 0;
-  while (start > 0 && end - start < maxMessages) {
-    const nextLength = messages[start - 1]?.content.length || 0;
-    if (start < end && chars + nextLength > maxChars) break;
-    chars += nextLength;
-    start--;
-  }
+  const start = Math.max(0, end - maxMessages);
   return { visible: messages.slice(start, end), start };
-}
-
-function renderableMessageContent(content: string): string {
-  if (content.length <= MAX_RENDERED_MESSAGE_CHARS) return content;
-  return `${content.slice(0, MAX_RENDERED_MESSAGE_CHARS)}\n\n… ${content.length - MAX_RENDERED_MESSAGE_CHARS} more characters hidden from the TUI. Full content remains in the session.`;
 }
 
 const AssistantMessage = React.memo(function AssistantMessage({
@@ -624,7 +609,7 @@ const AssistantMessage = React.memo(function AssistantMessage({
   return (
     <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
       <markdown
-        content={renderableMessageContent(msg.content)}
+        content={msg.content}
         syntaxStyle={getMarkdownSyntax(themeVersion)}
         fg={theme.text}
         streaming={streaming}

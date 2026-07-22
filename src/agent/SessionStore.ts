@@ -45,6 +45,13 @@ export interface SessionSummary {
   snippet?: string;
 }
 
+
+export interface MessagePage {
+  messages: Message[];
+  oldestCursor?: number;
+  hasMore: boolean;
+}
+
 export interface StoredToolEvent {
   sessionId: string;
   turnId: string;
@@ -1312,7 +1319,7 @@ export class SessionStore {
 
   private readSession(sessionId: string): Message[] {
     const stmt = this.db.prepare(`
-      SELECT role, content, tool_call_id, tool_calls_json, images_json
+      SELECT id, role, content, tool_call_id, tool_calls_json, images_json
       FROM messages
       WHERE session_id = ?
       ORDER BY id ASC
@@ -1323,7 +1330,10 @@ export class SessionStore {
       const row = stmt.getAsObject();
       const role = String(row.role || 'user') as Message['role'];
       if (role !== 'user' && role !== 'assistant' && role !== 'tool' && role !== 'system') continue;
+      const dbId = Number(row.id || 0);
       messages.push({
+        dbId: dbId || undefined,
+        stableId: dbId ? `db:${dbId}` : undefined,
         role,
         content: String(row.content || ''),
         toolCallId: row.tool_call_id ? String(row.tool_call_id) : undefined,
@@ -1333,6 +1343,51 @@ export class SessionStore {
     }
     stmt.free();
     return messages;
+  }
+
+  loadSessionPage(sessionId: string, options: { beforeId?: number; limit?: number } = {}): MessagePage {
+    this.refreshForRead();
+    const limit = Math.max(1, Math.min(500, Math.floor(options.limit ?? 80)));
+    const params: unknown[] = [sessionId];
+    let cursorClause = '';
+    if (typeof options.beforeId === 'number' && Number.isFinite(options.beforeId)) {
+      cursorClause = 'AND id < ?';
+      params.push(options.beforeId);
+    }
+    params.push(limit + 1);
+    const stmt = this.db.prepare(`
+      SELECT id, role, content, tool_call_id, tool_calls_json, images_json
+      FROM messages
+      WHERE session_id = ? ${cursorClause}
+      ORDER BY id DESC
+      LIMIT ?
+    `);
+    stmt.bind(params as any[]);
+    const rows: Message[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      const role = String(row.role || 'user') as Message['role'];
+      if (role !== 'user' && role !== 'assistant' && role !== 'tool' && role !== 'system') continue;
+      const dbId = Number(row.id || 0);
+      rows.push({
+        dbId: dbId || undefined,
+        stableId: dbId ? `db:${dbId}` : undefined,
+        role,
+        content: String(row.content || ''),
+        toolCallId: row.tool_call_id ? String(row.tool_call_id) : undefined,
+        toolCalls: parseJson<ToolCall[] | undefined>(row.tool_calls_json, undefined),
+        images: parseJson<string[] | undefined>(row.images_json, undefined),
+      });
+    }
+    stmt.free();
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit).reverse();
+    const oldest = page.find((m) => typeof m.dbId === 'number');
+    return {
+      messages: page,
+      oldestCursor: oldest?.dbId,
+      hasMore,
+    };
   }
 
   saveSnapshot(sessionId: string, messages: Message[], meta: Partial<SessionMeta> = {}): void {

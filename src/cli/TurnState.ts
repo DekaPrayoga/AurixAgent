@@ -3,6 +3,7 @@ import type { AgentEvent } from '../agent/AgentLoop.js';
 export type PresentationRole = 'user' | 'assistant' | 'tool' | 'system';
 
 export interface FlatChatMessage {
+  id?: string;
   role: PresentationRole;
   content: string;
   toolName?: string;

@@ -15,7 +15,10 @@ export interface Message {
   toolCallId?: string;
   toolCalls?: ToolCall[];
   images?: string[];
+  dbId?: number;
+  stableId?: string;
 }
+
 
 export interface ToolCall {
   id: string;

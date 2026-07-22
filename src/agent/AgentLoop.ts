@@ -24,10 +24,11 @@ import { agentObserverBus, type AgentObserverSource } from './AgentObserverBus.j
 import { recordTrashUserTurn } from './TrashStore.js';
 import { AurixBrain } from '../brain/AurixBrain.js';
 import {
-  getCachedModelContextLimit,
-  parseProviderContextLimitFromError,
-  resolveModelContextLimit,
-  saveCachedModelContextLimit,
+  getCachedModelContextInfo,
+  parseContextErrorInfo,
+  resolveModelContextInfo,
+  saveCachedModelContextInfo,
+  type ModelContextInfo,
 } from './ModelContext.js';
 import type { BrainToolResult } from '../brain/types.js';
 import { setBrainInstance } from '../tools/Brain.js';
@@ -338,6 +339,7 @@ export class AgentLoop {
   private abortController = new AbortController();
   private brain: AurixBrain;
   private cachedContextStats?: { signature: string; stats: ContextStats };
+  private modelContextInfo: ModelContextInfo;
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     installObserverBusSessionSink();
@@ -356,11 +358,21 @@ export class AgentLoop {
         turnId: request.turnId,
       })
     );
-    this.contextManager = new ContextManager(
-      this.provider,
-      config.model,
-      getCachedModelContextLimit(config)
-    );
+    this.modelContextInfo =
+      getCachedModelContextInfo(config) || {
+        context: config.contextLimit || 256_000,
+        input: config.contextInputLimit,
+        output: config.contextOutputLimit,
+        source: config.contextLimit ? 'config' : 'fallback',
+        confidence: config.contextLimit ? 'explicit' : 'low',
+        updatedAt: Date.now(),
+      };
+    this.contextManager = new ContextManager(this.provider, config.model, {
+      contextLimit: this.modelContextInfo.context,
+      inputLimit: this.modelContextInfo.input,
+      outputReservation: config.maxTokens || this.modelContextInfo.output,
+      scalableBuffer: config.contextCompactionBuffer,
+    });
     this.memoryManager = new MemoryManager(this.provider);
     this.memoryEngine = this.memoryManager.getEngine();
     this.brain = new AurixBrain({ config, sessionId: this.sessionId, cwd: process.cwd() });
@@ -376,7 +388,26 @@ export class AgentLoop {
     this.messages.push({ role: 'system', content: systemPrompt });
   }
 
-  private async getSessionStore(): Promise<SessionStore> {
+  refreshSystemPrompt(configPatch?: Partial<AurixConfig>): void {
+    if (configPatch) this.config = { ...this.config, ...configPatch };
+    const systemPrompt = buildSystemPrompt(this.config, this.registry.list());
+    const systemMessage = { role: 'system' as const, content: systemPrompt };
+    const firstSystem = this.messages.findIndex((m) => m.role === 'system');
+    if (firstSystem >= 0) this.messages[firstSystem] = systemMessage;
+    else this.messages.unshift(systemMessage);
+    this.ledger.set('systemPrompt', countTokens(systemPrompt));
+    this.invalidateContextStats();
+  }
+
+  getSystemPromptForTest(): string {
+    return this.messages.find((m) => m.role === 'system')?.content || '';
+  }
+
+  getConversationMessageCountForTest(): number {
+    return this.messages.length;
+  }
+
+  async getSessionStore(): Promise<SessionStore> {
     if (!this.sessionStore) this.sessionStore = await getSessionStore();
     return this.sessionStore;
   }
@@ -807,9 +838,31 @@ export class AgentLoop {
 
   private async refreshModelContextLimit(): Promise<void> {
     try {
-      const limit = await resolveModelContextLimit(this.config);
-      this.contextManager.setContextLimit(limit);
+      this.modelContextInfo = await resolveModelContextInfo(this.config);
+      this.contextManager.updateBudget({
+        contextLimit: this.modelContextInfo.context,
+        inputLimit: this.modelContextInfo.input,
+        outputReservation: this.config.maxTokens || this.modelContextInfo.output,
+        scalableBuffer: this.config.contextCompactionBuffer,
+      });
+      this.invalidateContextStats();
     } catch {}
+  }
+
+  async refreshContextMetadata(): Promise<void> {
+    await this.refreshModelContextLimit();
+  }
+
+  getContextDiagnostics() {
+    return {
+      model: this.config.model,
+      provider: this.config.provider,
+      baseUrl: this.config.baseUrl,
+      metadata: { ...this.modelContextInfo },
+      budget: this.contextManager.getBudgetDiagnostics(),
+      stats: this.getContextStats(),
+      lastProviderInput: this.ledger.getLastTurnInput(),
+    };
   }
 
   async *run(userMessage: string, images?: string[]): AsyncGenerator<AgentEvent> {
@@ -1131,10 +1184,24 @@ export class AgentLoop {
         }
 
         if (errType === 'context_length') {
-          const learnedLimit = parseProviderContextLimitFromError(e);
-          if (learnedLimit) {
-            saveCachedModelContextLimit(this.config, learnedLimit);
-            this.contextManager.setContextLimit(learnedLimit);
+          const errorInfo = parseContextErrorInfo(e);
+          if (errorInfo.output && !errorInfo.context) {
+            yield {
+              type: 'error',
+              data: `Provider output-token limit is ${errorInfo.output.toLocaleString()}. Lower maxTokens in ~/.aurix/config.yaml; active context was not compacted.`,
+            };
+            return;
+          }
+          if (errorInfo.context && errorInfo.context < this.modelContextInfo.context) {
+            this.modelContextInfo = {
+              ...this.modelContextInfo,
+              context: errorInfo.context,
+              source: 'cache',
+              confidence: 'high',
+              updatedAt: Date.now(),
+            };
+            saveCachedModelContextInfo(this.config, this.modelContextInfo);
+            this.contextManager.updateBudget({ contextLimit: errorInfo.context });
           }
           yield { type: 'compact', data: 'Context too long — emergency compacting...' };
           this.messages = await this.contextManager.compact(this.messages);
@@ -2620,11 +2687,21 @@ export class AgentLoop {
   setProvider(config: Partial<AurixConfig>): void {
     this.config = { ...this.config, ...config };
     this.provider = createProvider(this.config);
-    this.contextManager = new ContextManager(
-      this.provider,
-      config.model || this.config.model,
-      getCachedModelContextLimit(this.config)
-    );
+    this.modelContextInfo =
+      getCachedModelContextInfo(this.config) || {
+        context: this.config.contextLimit || 256_000,
+        input: this.config.contextInputLimit,
+        output: this.config.contextOutputLimit,
+        source: this.config.contextLimit ? 'config' : 'fallback',
+        confidence: this.config.contextLimit ? 'explicit' : 'low',
+        updatedAt: Date.now(),
+      };
+    this.contextManager = new ContextManager(this.provider, config.model || this.config.model, {
+      contextLimit: this.modelContextInfo.context,
+      inputLimit: this.modelContextInfo.input,
+      outputReservation: this.config.maxTokens || this.modelContextInfo.output,
+      scalableBuffer: this.config.contextCompactionBuffer,
+    });
     this.memoryManager.setProvider(this.provider);
     this.refreshModelContextLimit().catch(() => {});
     this.resetBrain();
@@ -2643,9 +2720,7 @@ export class AgentLoop {
     if (this.multiAgent) {
       this.multiAgent = new MultiAgentSystem(this.config, this.registry);
     }
-    const systemPrompt = buildSystemPrompt(this.config, this.registry.list());
-    this.messages[0] = { role: 'system', content: systemPrompt };
-    this.invalidateContextStats();
+    this.refreshSystemPrompt();
   }
 
   getModel(): string {
