@@ -73,6 +73,28 @@ export function extractAtQuery(value: string): string | null {
   return match ? match[1] : null;
 }
 
+export function resolveCommandCompletion(
+  commands: SlashCommand[],
+  value: string,
+  selected = 0
+): string | null {
+  const query = extractCommandQuery(value);
+  if (query === null) return null;
+  const suggestions = filterSlashCommands(commands, query, commands.length);
+  const command = suggestions[selected];
+  return command ? completeCommand(command) : null;
+}
+
+export function resolveFileCompletion(
+  value: string,
+  suggestions: string[],
+  selected = 0
+): string | null {
+  if (extractAtQuery(value) === null) return null;
+  const file = suggestions[selected];
+  return file ? value.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `) : null;
+}
+
 function getEditorText(editor: TextareaRenderable | null): string {
   return editor?.editBuffer?.getText?.() ?? '';
 }
@@ -273,25 +295,43 @@ export function InputBox({
   useEffect(() => setSelectedCommand(0), [atQuery]);
 
   function applyFileCompletion(index = selectedCommand) {
-    const file = fileSuggestions[index];
-    if (!file) return;
-    const next = valueRef.current.replace(/(^|\s)@([^\s]*)$/, `$1@${file} `);
+    const currentValue = getEditorText(editorRef.current) || valueRef.current;
+    const currentQuery = extractAtQuery(currentValue);
+    const currentSuggestions = currentQuery === null ? [] : filterFiles(currentQuery, 12);
+    const next = resolveFileCompletion(currentValue, currentSuggestions, index);
+    if (!next) return;
     setInputState(next, next.length);
   }
 
   function applyCommandCompletion(index = selectedCommand) {
-    const command = suggestions[index];
-    if (!command) return;
-    const next = completeCommand(command);
+    const currentValue = getEditorText(editorRef.current) || valueRef.current;
+    const next = resolveCommandCompletion(commands, currentValue, index);
+    if (!next) return;
     setInputState(next, next.length);
   }
 
   const submitCurrent = React.useCallback(() => {
     lastPasteStart = -1;
     lastPasteLen = 0;
-    if (suggestionsVisible) return applyCommandCompletion();
-    if (fileSuggestionsVisible) return applyFileCompletion();
     const currentValue = getEditorText(editorRef.current) || valueRef.current;
+    const commandCompletion = resolveCommandCompletion(commands, currentValue, selectedCommand);
+    if (commandCompletion) {
+      setInputState(commandCompletion, commandCompletion.length);
+      return;
+    }
+    const currentAtQuery = extractAtQuery(currentValue);
+    if (currentAtQuery !== null) {
+      const currentFileSuggestions = filterFiles(currentAtQuery, 12);
+      const fileCompletion = resolveFileCompletion(
+        currentValue,
+        currentFileSuggestions,
+        selectedCommand
+      );
+      if (fileCompletion) {
+        setInputState(fileCompletion, fileCompletion.length);
+        return;
+      }
+    }
     const trimmed = currentValue.trim();
     if (!trimmed || submittingRef.current) return;
     submittingRef.current = true;
@@ -304,7 +344,7 @@ export function InputBox({
     setHistory((prev) => [...prev, trimmed]);
     setInputState('', 0);
     setHistoryIdx(-1);
-  }, [fileSuggestionsVisible, onSubmit, selectedCommand, suggestionsVisible]);
+  }, [commands, onSubmit, selectedCommand, setInputState]);
   submitCurrentRef.current = submitCurrent;
 
   useKeyboard((evt) => {

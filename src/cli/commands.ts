@@ -180,7 +180,8 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'setup',
-    description: 'Re-run interactive setup wizard',
+    argumentHint: '[--continue]',
+    description: 'Run the interactive setup wizard, optionally from the last checkpoint',
     group: 'config',
     source: 'aurix',
   },

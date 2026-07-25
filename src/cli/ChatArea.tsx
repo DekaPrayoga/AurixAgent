@@ -478,15 +478,98 @@ function outputLineColor(line: string, fallback: string): string {
   return fallback;
 }
 
-function ToolOutputText({ content, color }: { content: string; color: string }) {
-  const lines = useMemo(() => truncateOutput(content).split('\n'), [content]);
+function stripIncompleteControlTail(content: string): string {
+  const starts = [
+    content.lastIndexOf('\x1b]'),
+    content.lastIndexOf('\x1bP'),
+    content.lastIndexOf('\x1b^'),
+    content.lastIndexOf('\x1b_'),
+    content.lastIndexOf('\x1bX'),
+    content.lastIndexOf('\x9d'),
+  ];
+  const start = Math.max(...starts);
+  if (start >= 0) {
+    const introducerLength = content.charCodeAt(start) === 0x1b ? 2 : 1;
+    const rest = content.slice(start + introducerLength);
+    const terminated = rest.includes('\x07') || rest.includes('\x1b\\') || rest.includes('\x9c');
+    if (!terminated) return content.slice(0, start);
+  }
+  return content
+    .replace(/\x1b(?:\[[0-?]*[ -/]*)?$/g, '')
+    .replace(/\x9b[0-?]*[ -/]*$/g, '');
+}
+
+function truncateRawPreview(
+  content: string,
+  maxLines: number = 14,
+  maxChars: number = 8_000,
+): string {
+  let prefix = content;
+  let hiddenChars = 0;
+  if (content.length > maxChars) {
+    prefix = content.slice(0, maxChars);
+    const lastCodeUnit = prefix.charCodeAt(prefix.length - 1);
+    if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+      prefix = prefix.slice(0, -1);
+    }
+    prefix = stripIncompleteControlTail(prefix);
+    hiddenChars = content.length - prefix.length;
+  }
+
+  const lines = prefix.split('\n');
+  let bounded = lines.slice(0, maxLines).join('\n');
+  const hiddenLines = Math.max(0, lines.length - maxLines);
+  if (hiddenLines > 0) bounded += `\n  ... (${hiddenLines} more lines)`;
+  if (hiddenChars > 0) bounded += `\n  ... (${hiddenChars} more characters)`;
+  return bounded;
+}
+
+function sanitizeToolPreview(content: string): string {
+  return safeDisplayText(truncateOutput(content));
+}
+
+function previewToolArgs(
+  args?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (!args) return undefined;
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => {
+      if (typeof value === 'string') return [key, truncateRawPreview(value, 3, 600)];
+      if (Array.isArray(value)) {
+        return [
+          key,
+          value.slice(0, 12).map((item) =>
+            typeof item === 'string' ? truncateRawPreview(item, 1, 120) : item,
+          ),
+        ];
+      }
+      return [key, value];
+    }),
+  );
+}
+
+function ToolOutputText({
+  content,
+  color,
+  markdown = false,
+}: {
+  content: string;
+  color: string;
+  markdown?: boolean;
+}) {
+  const lines = useMemo(() => sanitizeToolPreview(content).split('\n'), [content]);
   return (
     <box flexDirection="column">
-      {lines.map((line, i) => (
-        <text key={i} fg={outputLineColor(line, i === 0 ? color : theme.textMuted)} wrapMode="word">
-          {line}
-        </text>
-      ))}
+      {lines.map((line, i) => {
+        const lineColor = outputLineColor(line, i === 0 ? color : theme.textMuted);
+        return markdown ? (
+          <InlineText key={i} text={line} baseFg={lineColor} />
+        ) : (
+          <text key={i} fg={lineColor} wrapMode="word">
+            {line}
+          </text>
+        );
+      })}
     </box>
   );
 }
@@ -502,28 +585,27 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
     return () => clearInterval(id);
   }, []);
 
-  const detail = renderToolSpinnerText({ toolName: name, args });
-  const color = toolColor(name);
+  const detail = useMemo(
+    () =>
+      safeDisplayText(
+        renderToolSpinnerText({ toolName: name, args: previewToolArgs(args) }),
+      ),
+    [name, args],
+  );
+  const color = useMemo(() => toolColor(name), [name]);
 
   return (
     <box paddingX={2} flexDirection="column">
       <box flexDirection="row">
         <text fg={color}>{frames[tick % frames.length]} </text>
-        <text fg={theme.textMuted}>{safeDisplayText(detail)}</text>
+        <text fg={theme.textMuted}>{detail}</text>
       </box>
     </box>
   );
 }
 
 function truncateOutput(content: string, maxLines: number = 14, maxChars: number = 8_000): string {
-  const bounded = content.length > maxChars
-    ? `${content.slice(0, maxChars)}\n  ... (${content.length - maxChars} more characters)`
-    : content;
-  const lines = bounded.split('\n');
-  if (lines.length > maxLines) {
-    return lines.slice(0, maxLines).join('\n') + `\n  ... (${lines.length - maxLines} more lines)`;
-  }
-  return content;
+  return truncateRawPreview(content, maxLines, maxChars);
 }
 
 const UserMessage = React.memo(function UserMessage({
@@ -627,11 +709,16 @@ const ToolMessage = React.memo(function ToolMessage({
   msg: ChatMessage;
   themeVersion: number;
 }) {
-  const content = safeDisplayText(msg.content);
   const color = toolColor(msg.toolName);
   const canRenderDiff = msg.toolName === 'file_edit' || msg.toolName === 'write_file';
-  const diff = canRenderDiff ? parseToolEditOutput(content) : null;
+  const diff = canRenderDiff ? parseToolEditOutput(msg.content) : null;
   if (diff) {
+    const safeDiff = {
+      filePath: safeDisplayText(diff.filePath),
+      oldLines: diff.oldLines.map((line) => safeDisplayText(line)),
+      newLines: diff.newLines.map((line) => safeDisplayText(line)),
+      lineStart: diff.lineStart,
+    };
     return (
       <box flexDirection="column" flexShrink={0}>
         <box paddingLeft={4} paddingRight={2}>
@@ -639,10 +726,10 @@ const ToolMessage = React.memo(function ToolMessage({
           <text fg={color}>{msg.toolName || 'tool'}</text>
         </box>
         <FileDiff
-          filePath={diff.filePath}
-          oldLines={diff.oldLines}
-          newLines={diff.newLines}
-          lineStart={diff.lineStart}
+          filePath={safeDiff.filePath}
+          oldLines={safeDiff.oldLines}
+          newLines={safeDiff.newLines}
+          lineStart={safeDiff.lineStart}
         />
       </box>
     );
@@ -654,7 +741,7 @@ const ToolMessage = React.memo(function ToolMessage({
         <text fg={color}>{msg.toolName || 'tool'}</text>
       </box>
       <box paddingLeft={2}>
-        <ToolOutputText content={content} color={color} />
+        <ToolOutputText content={msg.content} color={color} markdown={msg.toolName === 'memory'} />
       </box>
     </box>
   );

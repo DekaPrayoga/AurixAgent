@@ -749,7 +749,7 @@ function renderInlineTelegramHtml(text: string): string {
 function markdownToTelegramHtml(text: string): string {
   const blocks: string[] = [];
   const withBlocks = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, _lang, code) => {
-    const token = `@@AURIX_BLOCK_${blocks.length}@@`;
+    const token = `AURIXBLOCK${blocks.length}`;
     blocks.push(`<pre>${escapeTelegramHtml(String(code).trim())}</pre>`);
     return token;
   });
@@ -757,7 +757,7 @@ function markdownToTelegramHtml(text: string): string {
   const rendered = withBlocks
     .split('\n')
     .map((line) => {
-      const blockMatch = line.match(/^@@AURIX_BLOCK_(\d+)@@$/);
+      const blockMatch = line.match(/^AURIXBLOCK(\d+)$/);
       if (blockMatch) return blocks[Number(blockMatch[1])] || '';
       const heading = line.match(/^(#{1,6})\s+(.*)$/);
       if (heading) return `<b>${renderInlineTelegramHtml(heading[2])}</b>`;
@@ -767,7 +767,7 @@ function markdownToTelegramHtml(text: string): string {
     })
     .join('\n');
 
-  return rendered.replace(/@@AURIX_BLOCK_(\d+)@@/g, (_, idx) => blocks[Number(idx)] || '');
+  return rendered.replace(/AURIXBLOCK(\d+)/g, (_, idx) => blocks[Number(idx)] || '');
 }
 
 function stripTelegramHtml(text: string): string {

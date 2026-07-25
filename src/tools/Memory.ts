@@ -8,6 +8,18 @@ import type { Provider } from '../providers/index.js';
 
 const engine = new MemoryEngine();
 
+function isLowSignalMemory(content: string): boolean {
+  const normalized = content
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  return /^(hi|hii+|hello|hey|halo+|haloo+|hai+|yo|ok|okay|oke|sip|thanks|thank you|makasih|terima kasih|pagi|siang|sore|malam)(\s+(bro|bang|kak|gan|min))?$/.test(
+    normalized
+  );
+}
+
 function formatSessionHits(hits: SessionSummary[]): string {
   if (hits.length === 0) return '';
   return hits
@@ -42,7 +54,7 @@ export const memoryTool: Tool = {
     properties: {
       action: {
         type: 'string',
-        description: 'Action: remember, recall, search, forget, list, consolidate, stats',
+        description: 'Action: remember, recall, search, list, consolidate, stats',
       },
       content: {
         type: 'string',
@@ -70,7 +82,6 @@ export const memoryTool: Tool = {
       'remember',
       'recall',
       'search',
-      'forget',
       'list',
       'consolidate',
       'stats',
@@ -85,13 +96,11 @@ export const memoryTool: Tool = {
       case 'remember': {
         const rawContent = args.content as string;
         if (!rawContent) return 'Error: provide content to remember';
+        if (isLowSignalMemory(rawContent)) return 'Memory skipped: no durable information.';
         const skipRephrase = (args.raw as string) === 'true';
         const enriched = skipRephrase ? rawContent : await engine.rephraseForMemory(rawContent);
         engine.appendRaw(enriched);
-        const wasEnriched = enriched !== rawContent;
-        return wasEnriched
-          ? `Remembered (enriched):\n  Original: ${rawContent.slice(0, 100)}${rawContent.length > 100 ? '...' : ''}\n  Stored:   ${enriched.slice(0, 300)}${enriched.length > 300 ? '...' : ''}`
-          : `Remembered: ${rawContent.slice(0, 100)}${rawContent.length > 100 ? '...' : ''}`;
+        return 'Memory saved.';
       }
 
       case 'recall':

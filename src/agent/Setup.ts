@@ -57,39 +57,60 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     );
 
     // Step 0: Terminal theme
-    const themeChoice = state.themeChoice?.name
+    const themeChoice = hasSetupValue(state, 'themeChoice')
       ? state.themeChoice
       : await stepTheme(existingConfig.themeName, existingConfig.accentColor);
+    checkpointSetupState({ step: 'provider', themeChoice });
 
     // Step 1: Provider
-    const provider =
-      state.provider || (await stepProvider(existingSetupProvider));
+    const provider = hasSetupValue(state, 'provider')
+      ? state.provider
+      : await stepProvider(existingSetupProvider);
     if (provider === '__skip__' || provider === '__back__') {
-      saveSetupState({ step: 'provider' });
+      saveSetupState({ step: 'provider', themeChoice });
       return await loadConfigOrDefault();
     }
     const providerChanged = Boolean(
       existingSetupProvider && provider !== existingSetupProvider,
     );
+    checkpointSetupState({ step: 'baseUrl', themeChoice, provider });
 
     // Step 2: Base URL (custom providers)
-    let baseUrl: string | undefined =
-      state.baseUrl || (providerChanged ? undefined : existingConfig.baseUrl);
+    let baseUrl: string | undefined = hasSetupValue(state, 'baseUrl')
+      ? state.baseUrl || undefined
+      : providerChanged
+        ? undefined
+        : existingConfig.baseUrl;
     const isCustom =
       provider === 'custom-openai' ||
       provider === 'custom-anthropic' ||
       provider === 'custom-auto';
-    if (isCustom && !baseUrl) {
-      baseUrl = await stepBaseUrl(provider);
-      if (baseUrl === '__skip__' || baseUrl === '__back__') {
-        saveSetupState({ step: 'baseUrl', provider });
-        return await loadConfigOrDefault();
+    if (isCustom && !hasSetupValue(state, 'baseUrl')) {
+      const selectedBaseUrl = await stepBaseUrl(provider);
+      if (selectedBaseUrl === '__skip__' || selectedBaseUrl === '__back__') {
+        if (!baseUrl) {
+          saveSetupState({ step: 'baseUrl', themeChoice, provider });
+          return await loadConfigOrDefault();
+        }
+        drawInfo('Keeping existing base URL.\n');
+      } else {
+        baseUrl = selectedBaseUrl;
       }
     }
+    checkpointSetupState({
+      step: 'apiKey',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+    });
 
     // Step 3: API Key — always offer for custom providers and provider changes
-    let apiKey = state.apiKey || (providerChanged ? '' : existingConfig.apiKey);
-    if (!apiKey || isCustom || providerChanged) {
+    let apiKey = hasSetupValue(state, 'apiKey')
+      ? state.apiKey
+      : providerChanged
+        ? ''
+        : existingConfig.apiKey;
+    if (!hasSetupValue(state, 'apiKey') && (!apiKey || isCustom || providerChanged)) {
       const existingHint = apiKey
         ? `\nCurrent key: ${apiKey.slice(0, 8)}...${apiKey.slice(-4)}\nLeave blank to keep existing key.`
         : '';
@@ -98,46 +119,140 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
         if (apiKey) {
           drawInfo('Keeping existing API key.\n');
         } else {
-          saveSetupState({ step: 'apiKey', provider, baseUrl });
+          saveSetupState({
+            step: 'apiKey',
+            themeChoice,
+            provider,
+            baseUrl: baseUrl || null,
+          });
           return await loadConfigOrDefault();
         }
       } else if (key) {
         apiKey = key;
       }
     }
+    checkpointSetupState({
+      step: 'model',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+    });
 
     // Step 4: Model
-    const model =
-      state.model || (await stepModel(provider, existingConfig.model));
+    const model = hasSetupValue(state, 'model')
+      ? state.model
+      : await stepModel(
+          provider,
+          providerChanged ? undefined : existingConfig.model,
+        );
     if (model === '__skip__' || model === '__back__') {
-      saveSetupState({ step: 'model', provider, baseUrl, apiKey });
+      saveSetupState({
+        step: 'model',
+        themeChoice,
+        provider,
+        baseUrl: baseUrl || null,
+        apiKey,
+      });
       return await loadConfigOrDefault();
     }
+    checkpointSetupState({
+      step: 'gateway',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+    });
 
     // Step 5: Gateway — always offer to set/update tokens
-    const gateway = await stepGateway(state.gateway || existingConfig.gateway);
+    const gateway = hasSetupValue(state, 'gateway')
+      ? state.gateway || undefined
+      : await stepGateway(existingConfig.gateway);
+    checkpointSetupState({
+      step: 'features',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+      gateway: gateway || null,
+    });
 
-    // Step 7: Features
-    const features = await stepFeatures(existingConfig.features);
+    // Step 6: Features
+    const features = hasSetupValue(state, 'features')
+      ? state.features
+      : await stepFeatures(existingConfig.features);
+    checkpointSetupState({
+      step: 'integrations',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+      gateway: gateway || null,
+      features,
+    });
 
-    // Step 8: Account integrations
-    const integrations = await stepIntegrations(existingConfig.integrations);
+    // Step 7: Account integrations
+    const integrations = hasSetupValue(state, 'integrations')
+      ? state.integrations || undefined
+      : await stepIntegrations(existingConfig.integrations);
+    checkpointSetupState({
+      step: 'plugins',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+      gateway: gateway || null,
+      features,
+      integrations: integrations || null,
+    });
 
-    // Step 9: Plugin/skill loading
-    const plugins = await stepPlugins(existingConfig.plugins);
+    // Step 8: Plugin/skill loading
+    const plugins = hasSetupValue(state, 'plugins')
+      ? state.plugins
+      : await stepPlugins(existingConfig.plugins);
+    checkpointSetupState({
+      step: 'captcha',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+      gateway: gateway || null,
+      features,
+      integrations: integrations || null,
+      plugins,
+    });
 
-    // Step 10: Captcha solving method
-    const captchaAudio = await stepCaptcha(
-      existingConfig.captchaAudio,
-      existingConfig.groqApiKey,
-    );
+    // Step 9: Captcha solving method
+    const captchaAudio = hasSetupValue(state, 'captchaAudio')
+      ? state.captchaAudio
+      : await stepCaptcha(existingConfig.captchaAudio, existingConfig.groqApiKey);
+    checkpointSetupState({
+      step: 'searchEngine',
+      themeChoice,
+      provider,
+      baseUrl: baseUrl || null,
+      apiKey,
+      model,
+      gateway: gateway || null,
+      features,
+      integrations: integrations || null,
+      plugins,
+      captchaAudio,
+    });
 
-    // Step 11: Web search engine
-    const searchEngine = await stepSearchEngine(
-      existingConfig.searchEngine,
-      existingConfig.searchApiKey,
-      existingConfig.searchBaseUrl,
-    );
+    // Step 10: Web search engine
+    const searchEngine = hasSetupValue(state, 'searchEngine')
+      ? state.searchEngine
+      : await stepSearchEngine(
+          existingConfig.searchEngine,
+          existingConfig.searchApiKey,
+          existingConfig.searchBaseUrl,
+        );
 
     const resolvedProvider =
       provider === 'custom-openai' ||
@@ -483,11 +598,11 @@ async function stepModel(
       : undefined,
   });
 
+  const customProvider = provider.startsWith('custom-');
   if (choice === '__skip__' || choice === '__back__') {
-    return (
-      existingModel ||
-      (provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o')
-    );
+    if (existingModel) return existingModel;
+    if (customProvider) return '__skip__';
+    return provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o';
   }
 
   if (choice === 'custom') {
@@ -499,7 +614,8 @@ async function stepModel(
       label: 'Model ID:',
       masked: false,
     });
-    return !model || model === '__back__' ? existingModel || 'gpt-4o' : model;
+    if (model && model !== '__back__') return model;
+    return existingModel || (customProvider ? '__skip__' : 'gpt-4o');
   }
 
   return choice;
@@ -556,10 +672,11 @@ async function stepGateway(
       },
     ],
     allowSkip: true,
+    multi: true,
     extra,
   });
 
-  if (!selected || selected === '__skip__' || selected === '__back__') {
+  if (!Array.isArray(selected) || selected.length === 0) {
     drawInfo(
       existing
         ? 'Keeping existing gateway tokens.\n'
@@ -568,7 +685,7 @@ async function stepGateway(
     return existing || undefined;
   }
 
-  const platforms = Array.isArray(selected) ? selected : [selected];
+  const platforms = selected;
   const gateway: AurixConfig['gateway'] = existing ? { ...existing } : {};
 
   for (const platform of platforms) {
@@ -1049,6 +1166,10 @@ async function stepSearchEngine(
   return { engine: 'ddg' };
 }
 
+function hasSetupValue(state: Record<string, any>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(state, key);
+}
+
 function loadSetupState(): Record<string, any> {
   try {
     if (fs.existsSync(SETUP_STATE)) {
@@ -1056,6 +1177,11 @@ function loadSetupState(): Record<string, any> {
     }
   } catch {}
   return {};
+}
+
+function checkpointSetupState(state: Record<string, any>): void {
+  ensureConfigDir();
+  fs.writeFileSync(SETUP_STATE, JSON.stringify(state, null, 2));
 }
 
 function saveSetupState(state: Record<string, any>): void {

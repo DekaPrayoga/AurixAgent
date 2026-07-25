@@ -40,10 +40,11 @@ import {
   formatCommandHelp,
   parseSlash,
 } from './commands.js';
-import { AgentLoop } from '../agent/AgentLoop.js';
+import { AgentLoop, type AgentEvent } from '../agent/AgentLoop.js';
 import { renderToolEnd } from '../agent/ToolEventRenderer.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { CONFIG_PATH, loadConfig, saveConfig } from '../agent/Config.js';
+import { runSetup } from '../agent/Setup.js';
 import { editSoulFile, formatReloadReport, formatSoulShow, getAgentsStatus, getCanonicalSoulPath, getSoulStatus } from './SoulCommands.js';
 import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
@@ -283,6 +284,20 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     text: string;
     timer?: ReturnType<typeof setTimeout>;
   }>({ text: '' });
+  const streamBatchRef = React.useRef<{
+    runId?: string;
+    events: AgentEvent[];
+    timer?: ReturnType<typeof setTimeout>;
+    flush?: () => void;
+    cancel?: () => void;
+  }>({ events: [] });
+  const activeUiRunRef = React.useRef<string | undefined>();
+  const activeAgentRunRef = React.useRef<string | undefined>();
+  const cancelActiveUiRun = useCallback((flush = true) => {
+    if (flush) streamBatchRef.current.flush?.();
+    streamBatchRef.current.cancel?.();
+    activeUiRunRef.current = undefined;
+  }, []);
 
   useEffect(() => {
     setGlobalAskCallback((sessionKey, question, toolOptions) => {
@@ -340,6 +355,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
   const doExit = useCallback(async () => {
     // Cleanup: interrupt any running agent task, stop gateway, stop MCP
+    cancelActiveUiRun();
+    activeAgentRunRef.current = undefined;
     try {
       agentRef.current?.interrupt();
     } catch {}
@@ -369,7 +386,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     process.stdout.write('\x1b[?25h\x1b[0m');
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.exit(0);
-  }, [renderer]);
+  }, [cancelActiveUiRun, renderer]);
 
   if (!agentRef.current) {
     agentRef.current = new AgentLoop(config, registry);
@@ -502,6 +519,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (name === 'escape' && isProcessing) {
       evt.preventDefault();
+      cancelActiveUiRun();
+      setIsProcessing(false);
       if (activeTool) {
         agent.interrupt();
         setActiveTool(undefined);
@@ -529,8 +548,12 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (evt.ctrl && name === 'l') {
       evt.preventDefault();
+      if (activeAgentRunRef.current) return;
       agentRef.current?.clearHistory();
+      cancelActiveUiRun(false);
       clearLiveToolOutput();
+      const cleared = createPresentationState();
+      presentationStateRef.current = cleared;
       setMessages([]);
       setShowBanner(true);
       setScrollOffset(0);
@@ -684,7 +707,17 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     live.toolName = undefined;
   }, []);
 
-  useEffect(() => clearLiveToolOutput, [clearLiveToolOutput]);
+  useEffect(
+    () => () => {
+      try {
+        agentRef.current?.interrupt();
+      } catch {}
+      activeAgentRunRef.current = undefined;
+      cancelActiveUiRun(false);
+      clearLiveToolOutput();
+    },
+    [cancelActiveUiRun, clearLiveToolOutput],
+  );
 
   const queueLiveToolOutput = useCallback(
     (toolName: string | undefined, chunk: string) => {
@@ -709,10 +742,12 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         return;
       }
 
-      // During processing, only allow slash commands (e.g. /btw, /help, /model)
-      if (isProcessing) {
+      // While an agent run is active, only commands that are handled inline may proceed.
+      // Commands that produce a new prompt must wait to avoid sharing one AgentLoop concurrently.
+      if (activeAgentRunRef.current) {
         const preSlash = parseSlash(text);
-        if (!preSlash) return; // block plain text while agent is working
+        const allowedWhileRunning = new Set(['btw', 'exit', 'help', 'status', 'stop']);
+        if (!preSlash || !allowedWhileRunning.has(preSlash.name)) return;
       }
 
       let outboundText = text;
@@ -756,7 +791,37 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           return;
         }
 
+        if (commandName === 'setup') {
+          if (isProcessing) {
+            agent.interrupt();
+            cancelActiveUiRun();
+            setIsProcessing(false);
+            clearLiveToolOutput();
+          }
+          try {
+            await agent.saveSessionAsync(
+              sessionNameRef.current !== 'New session'
+                ? sessionNameRef.current
+                : undefined,
+            );
+          } catch {}
+          try {
+            renderer.destroy();
+          } catch {}
+          process.stdout.write(
+            '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l\x1b[?25h\x1b[0m',
+          );
+          if (process.stdin.isTTY) process.stdin.setRawMode(false);
+          await runSetup(slash.args.trim() === '--continue');
+          process.stdout.write('\nSetup complete. Restart Aurix to apply the new provider configuration.\n');
+          process.exit(0);
+        }
+
         if (commandName === 'clear') {
+          if (activeAgentRunRef.current) agent.interrupt();
+          cancelActiveUiRun();
+          setIsProcessing(false);
+          setActiveTool(undefined);
           agentRef.current?.clearHistory();
           clearLiveToolOutput();
           setMessages([]);
@@ -1046,6 +1111,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         }
 
         if (commandName === 'reset') {
+          cancelActiveUiRun();
           try {
             agentRef.current?.interrupt();
           } catch {}
@@ -1347,6 +1413,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             return;
           }
           outboundText = '';
+          const researchRunId = `research_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          activeAgentRunRef.current = researchRunId;
           setIsProcessing(true);
           addAssistant(
             `Starting deep research: "${researchQuery}"\nDepth: ${researchMode}\n\nThis may take a moment as multiple specialist agents analyze the topic...`
@@ -1399,7 +1467,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             } catch (e: any) {
               addAssistant(`Deep research failed: ${e.message}`);
             } finally {
-              setIsProcessing(false);
+              if (activeAgentRunRef.current === researchRunId) {
+                activeAgentRunRef.current = undefined;
+                setIsProcessing(false);
+              }
             }
           })();
           return;
@@ -1430,11 +1501,35 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         }
 
         if (commandName === 'memory') {
+          const raw = slash.args.trim();
+          if (raw) {
+            const [action, ...rest] = raw.split(/\s+/);
+            const knownActions = new Set([
+              'remember',
+              'recall',
+              'search',
+              'list',
+              'consolidate',
+              'stats',
+            ]);
+            if (!knownActions.has(action)) {
+              addAssistant('Usage: /memory [remember <text>|recall <query>|search <query>|list|consolidate|stats]');
+              return;
+            }
+            const value = rest.join(' ').trim();
+            const result = await registry.execute('memory', {
+              action,
+              ...(action === 'remember' ? { content: value } : {}),
+              ...((action === 'recall' || action === 'search') ? { query: value } : {}),
+            });
+            addAssistant(result);
+            return;
+          }
           const { MemoryEngine } = await import('../agent/MemoryEngine.js');
           const mem = new MemoryEngine();
           const summary = mem.loadSummary();
           addAssistant(
-            `Memory system\n  Summary: ${summary.length > 0 ? `${summary.length} chars loaded` : '(empty)'}\n  Storage: ~/.aurix/memories/\n  Auto-consolidation: every 10 minutes\n\nRun: aurix memory to inspect outside the TUI.`
+            `Memory system\n  Summary: ${summary.length > 0 ? `${summary.length} chars loaded` : '(empty)'}\n  Storage: ~/.aurix/memories/\n  Auto-consolidation: every 10 minutes\n\nUsage: /memory [remember <text>|recall <query>|search <query>|list|consolidate|stats]`
           );
           return;
         }
@@ -1697,6 +1792,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             outboundText = `(Side question, no tools) ${btwText}`;
           }
         } else if (commandName === 'resume') {
+          if (isProcessing) agent.interrupt();
+          cancelActiveUiRun();
+          setIsProcessing(false);
+          setActiveTool(undefined);
           const raw = slash.args.trim();
           if (!raw) {
             setSessionList(await agent.listDurableSessions(30));
@@ -1744,6 +1843,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('Configuration snapshot saved. Use /snapshot restore <name> to restore.');
           return;
         } else if (commandName === 'new') {
+          if (isProcessing) agent.interrupt();
+          cancelActiveUiRun();
+          setIsProcessing(false);
+          setActiveTool(undefined);
           clearLiveToolOutput();
           agentRef.current = new AgentLoop(config, registry);
           setMessages([
@@ -1754,6 +1857,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           return;
         } else if (commandName === 'stop') {
           agent.interrupt();
+          cancelActiveUiRun();
+          setIsProcessing(false);
+          setActiveTool(undefined);
+          clearLiveToolOutput();
           addAssistant('All background processes killed.');
           return;
         } else if (commandName === 'compress') {
@@ -2705,6 +2812,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         return;
       }
 
+      if (activeAgentRunRef.current) return;
+
       const sessionDirectives = [
         sessionGoal ? `[Session goal: ${sessionGoal}]` : '',
         sessionRules.length > 0
@@ -2718,6 +2827,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       const turnStartedAt = Date.now();
       const checkpointId = `cp_${turnStartedAt}_${Math.random().toString(36).slice(2, 8)}`;
       const turnId = checkpointId;
+      activeAgentRunRef.current = turnId;
       const startedTurn = startUserTurn(createPresentationState(messages), outboundText, {
         now: new Date(),
         turnId,
@@ -2740,48 +2850,125 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       try {
         const currentAgent = agentRef.current;
         if (!currentAgent) {
+          if (activeAgentRunRef.current === turnId) activeAgentRunRef.current = undefined;
           setIsProcessing(false);
           return;
         }
+
+        const runId = turnId;
+        const applyPresentationEvent = (event: AgentEvent): boolean => {
+          if (streamBatchRef.current.runId !== runId) return false;
+          setPresentationState(
+            applyAgentEvent(presentationStateRef.current, event, {
+              model: agent.getModel(),
+              renderToolEnd: (event) => renderToolEnd(event, { markdown: false }),
+            }),
+          );
+          return true;
+        };
+        const flushStreamBatch = () => {
+          const batch = streamBatchRef.current;
+          if (batch.runId !== runId || batch.events.length === 0) return;
+          if (batch.timer) clearTimeout(batch.timer);
+          batch.timer = undefined;
+          const events = batch.events.splice(0);
+          const coalesced: AgentEvent[] = [];
+          for (const event of events) {
+            const previous = coalesced[coalesced.length - 1];
+            const sameText = previous?.type === 'text' && event.type === 'text';
+            const sameToolChunk =
+              previous?.type === 'tool_chunk' &&
+              event.type === 'tool_chunk' &&
+              previous.toolCallId === event.toolCallId &&
+              previous.toolName === event.toolName;
+            if (previous && (sameText || sameToolChunk)) {
+              previous.data += event.data;
+            } else {
+              coalesced.push({ ...event });
+            }
+          }
+          for (const event of coalesced) applyPresentationEvent(event);
+        };
+        const cancelStreamBatch = () => {
+          const batch = streamBatchRef.current;
+          if (batch.timer) clearTimeout(batch.timer);
+          batch.timer = undefined;
+          batch.events = [];
+          batch.runId = undefined;
+          batch.flush = undefined;
+          batch.cancel = undefined;
+        };
+        activeUiRunRef.current = runId;
+        streamBatchRef.current = {
+          runId,
+          events: [],
+          flush: flushStreamBatch,
+          cancel: cancelStreamBatch,
+        };
+        const queuePresentationEvent = (event: AgentEvent) => {
+          const batch = streamBatchRef.current;
+          if (batch.runId !== runId) return;
+          batch.events.push(event);
+          if (!batch.timer) {
+            batch.timer = setTimeout(flushStreamBatch, 64);
+          }
+        };
 
         const images =
           pendingImagesRef.current.length > 0 ? [...pendingImagesRef.current] : undefined;
         pendingImagesRef.current = [];
 
         for await (const rawEvent of currentAgent.run(outboundText, images)) {
-          const event = { ...rawEvent, turnId: rawEvent.turnId || turnId };
+          const event: AgentEvent = { ...rawEvent, turnId };
+          if (event.type === 'text' || event.type === 'tool_chunk') {
+            queuePresentationEvent(event);
+            continue;
+          }
+          flushStreamBatch();
+          if (streamBatchRef.current.runId !== runId) continue;
           if (event.type === 'tool_start') {
             setActiveTool({ name: event.toolName || '', args: event.toolArgs });
           } else if (event.type === 'tool_end') {
             setActiveTool(undefined);
           }
-          setPresentationState(
-            applyAgentEvent(presentationStateRef.current, event, {
-              model: agent.getModel(),
-              renderToolEnd,
-            })
-          );
+          applyPresentationEvent(event);
         }
-        setPresentationState(
-          applyAgentEvent(
-            presentationStateRef.current,
-            { type: 'done', data: '', turnId, durationMs: Date.now() - turnStartedAt },
-            { model: agent.getModel(), renderToolEnd }
-          )
-        );
+        flushStreamBatch();
+        if (streamBatchRef.current.runId === runId) {
+          const currentTurn = presentationStateRef.current.currentTurn;
+          if (!currentTurn?.completed) {
+            applyPresentationEvent({
+              type: 'done',
+              data: '',
+              turnId,
+              durationMs: Date.now() - turnStartedAt,
+            });
+          }
+          cancelStreamBatch();
+        }
       } catch (e: any) {
-        setPresentationState(
-          applyAgentEvent(
-            presentationStateRef.current,
-            { type: 'error', data: `Fatal error: ${e.message}`, turnId },
-            { model: agent.getModel(), renderToolEnd }
-          )
-        );
+        if (streamBatchRef.current.runId === turnId) {
+          streamBatchRef.current.flush?.();
+          setPresentationState(
+            applyAgentEvent(
+              presentationStateRef.current,
+              { type: 'error', data: `Fatal error: ${e.message}`, turnId },
+              { model: agent.getModel(), renderToolEnd },
+            ),
+          );
+          streamBatchRef.current.cancel?.();
+        }
       }
 
-      clearLiveToolOutput();
-      setIsProcessing(false);
-      setActiveTool(undefined);
+      if (activeAgentRunRef.current === turnId) {
+        activeAgentRunRef.current = undefined;
+        setIsProcessing(false);
+      }
+      if (activeUiRunRef.current === turnId) {
+        activeUiRunRef.current = undefined;
+        clearLiveToolOutput();
+        setActiveTool(undefined);
+      }
     },
     [
       isProcessing,

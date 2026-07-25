@@ -797,10 +797,17 @@ export class AgentLoop {
     return this.looksLikeComplexTask(userMessage);
   }
 
-  private looksLikeSimpleNoToolTurn(userMessage: string): boolean {
-    if (!this.config.execution?.simpleTurnsWithoutTools) return false;
+  private looksLikeExplicitMemoryRequest(userMessage: string): boolean {
     const text = userMessage.replace(/^\[sent from [^\]]+\]\s*/i, '').trim();
-    if (!text || text.length > 260) return false;
+    return /\b(remember (?:that|this)|recall (?:my|what|the)|forget (?:that|this|my)|keep in mind|catat(?:lah)?\b|ingat(?:lah)? bahwa|inget bahwa|lupakan (?:bahwa|ini|preferensi)|hapus dari ingatan|simpan (?:ini|ke (?:memory|memori)))\b/i.test(
+      text
+    );
+  }
+
+  private looksLikeSimpleNoToolTurn(userMessage: string): boolean {
+    if (this.config.execution?.simpleTurnsWithoutTools === false) return false;
+    const text = userMessage.replace(/^\[sent from [^\]]+\]\s*/i, '').trim();
+    if (!text || text.length > 260 || this.looksLikeExplicitMemoryRequest(text)) return false;
     if (this.looksLikeComplexTask(text) || this.looksLikeResearchTask(text)) return false;
     if (
       /\b(read|edit|write|fix|run|test|build|search|browse|open|create|delete|install|deploy|file|repo|folder|terminal|command|curl|api)\b/i.test(
@@ -1127,11 +1134,17 @@ export class AgentLoop {
         const messagesForModel = recoveryMessages(baseMessagesForModel, consecutiveEmpty);
         const simpleTurn = this.looksLikeSimpleNoToolTurn(userMessage);
         const recoveryNames = recoveryToolNames(userMessage, consecutiveEmpty);
+        const explicitMemoryRequest = this.looksLikeExplicitMemoryRequest(userMessage);
         const toolDefs = simpleTurn
           ? undefined
           : recoveryNames.length > 0
             ? this.registry.getToolDefs(recoveryNames)
-            : this.registry.getToolDefs();
+            : this.registry.getToolDefs(
+                this.registry
+                  .list()
+                  .map((tool) => tool.name)
+                  .filter((name) => explicitMemoryRequest || name !== 'memory')
+              );
         response = await this.provider.chat(
           messagesForModel,
           toolDefs,
@@ -1143,11 +1156,15 @@ export class AgentLoop {
           TEXT_TOOL_CALL_PATTERN.test(response.text)
         ) {
           const parsedCalls = parseTextToolCalls(response.text);
-          if (parsedCalls.length > 0) {
+          const allowedToolNames = new Set(
+            (toolDefs || []).map((tool) => tool.function.name)
+          );
+          const allowedCalls = parsedCalls.filter((call) => allowedToolNames.has(call.name));
+          if (allowedCalls.length > 0) {
             response = {
               ...response,
               text: stripTextToolCallMarkup(response.text),
-              toolCalls: parsedCalls.map((p) => ({
+              toolCalls: allowedCalls.map((p) => ({
                 id: randomUUID(),
                 name: p.name,
                 arguments: p.arguments,

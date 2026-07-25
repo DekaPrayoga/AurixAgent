@@ -275,7 +275,13 @@ export function flattenPresentationState(
         errorType: part.errorType,
       };
       const header = part.status === 'running' ? `${part.toolName || 'tool'} running` : renderToolEnd(endEvent);
-      const body = part.content ? `\n\n${part.content}` : '';
+      const memoryBody = part.content.startsWith('Memory saved.')
+        ? 'Memory saved.'
+        : part.content.startsWith('Memory skipped:')
+          ? part.content
+          : 'Memory checked.';
+      const visibleContent = part.toolName === 'memory' ? memoryBody : part.content;
+      const body = visibleContent ? `\n\n${visibleContent}` : '';
       messages.push({ role: 'tool', content: `${header}${body}`, toolName: part.toolName, timestamp: part.startedAt });
     } else {
       messages.push({ role: part.kind === 'error' ? 'assistant' : 'tool', content: part.content, toolName: part.toolName, timestamp: part.timestamp });
