@@ -5,7 +5,7 @@ Set up and optimize continuous integration and deployment workflows.
 ## Tools
 
 - `setup_ci` - Configure CI/CD pipelines and workflows
-- `gh_repo_info` - Get repository information and existing workflows
+- `github_search` - Find repository and workflow context
 
 ## Instructions
 

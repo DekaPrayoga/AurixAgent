@@ -136,28 +136,37 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async edit(content: string, channelId: string, messageId: string, options?: any): Promise<void> {
+  async edit(
+    content: string,
+    channelId: string,
+    messageId: string,
+    options?: any
+  ): Promise<boolean> {
     const params: Record<string, any> = {
       chat_id: channelId,
       message_id: messageId,
       text: content,
     };
+    if (options?.reply_markup !== undefined) params.reply_markup = options.reply_markup;
     if (options?.parse_mode) params.parse_mode = options.parse_mode;
     if (options?.disable_web_page_preview !== undefined) {
       params.disable_web_page_preview = options.disable_web_page_preview;
     }
     try {
       await this.api('editMessageText', params);
+      return true;
     } catch (e: any) {
       const msg = String(e.message || '').toLowerCase();
-      if (msg.includes('not modified')) return;
+      if (msg.includes('not modified')) return true;
       if (msg.includes('parse')) {
         delete params.parse_mode;
         params.text = stripTelegramHtml(content);
         try {
           await this.api('editMessageText', params);
+          return true;
         } catch {}
       }
+      return false;
     }
   }
 
@@ -331,7 +340,8 @@ export class TelegramPlatform extends EventEmitter implements Platform {
           { command: 'resume', description: '📂 Load saved session' },
           { command: 'proxy', description: '🌐 Add proxy to browser pool' },
           { command: 'save', description: '💾 Save session' },
-          { command: 'model', description: '🤖 Switch AI model' },
+          { command: 'model', description: '🤖 Browse or switch AI model' },
+          { command: 'models', description: '🔎 Search provider models' },
           { command: 'baseurl', description: '🔌 Change API base URL' },
           { command: 'apikey', description: '🔑 Set API key' },
           { command: 'depth', description: '📊 Research depth (low/medium/high/xhigh/max/ultra)' },
@@ -403,7 +413,6 @@ export class TelegramPlatform extends EventEmitter implements Platform {
             try {
               await this.api('answerCallbackQuery', { callback_query_id: cb.id });
             } catch (e) {}
-            await this.clearInlineKeyboard(cb.message?.chat?.id, cb.message?.message_id);
 
             const chatType =
               cb.message?.chat?.type === 'private'

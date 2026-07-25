@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import {
   drawInputScreen,
   drawSelector,
+  drawSearchableSelector,
   drawBox,
   drawSuccess,
   drawInfo,
@@ -21,6 +22,8 @@ import {
 } from './Config.js';
 import { banner } from '../utils/ascii-logo.js';
 import { normalizeBaseUrl } from '../utils/base-url.js';
+import { fetchConfiguredModels, type ModelFetchAttempt } from './ModelDiscovery.js';
+import { toModelPickerItems } from './ModelSelection.js';
 
 const teal = chalk.hex('#fab283');
 const dim = chalk.hex('#808080');
@@ -38,6 +41,26 @@ function setupProviderFromConfig(config: AurixConfig): string | undefined {
     return 'custom-auto';
   }
   return config.provider;
+}
+
+function resolveSetupProvider(provider: string): {
+  provider: AurixConfig['provider'];
+  apiStyle: AurixConfig['apiStyle'];
+} {
+  return {
+    provider:
+      provider === 'custom-openai' || provider === 'custom-anthropic' || provider === 'custom-auto'
+        ? 'custom'
+        : (provider as AurixConfig['provider']),
+    apiStyle:
+      provider === 'custom-openai'
+        ? 'openai'
+        : provider === 'custom-anthropic'
+          ? 'anthropic'
+          : provider === 'custom-auto'
+            ? 'auto'
+            : undefined,
+  };
 }
 
 export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
@@ -139,12 +162,24 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
       apiKey,
     });
 
+    const resolved = resolveSetupProvider(provider);
+    const finalBaseUrl = isCustom ? baseUrl : providerChanged ? undefined : baseUrl;
+    const provisionalConfig: AurixConfig = {
+      ...existingConfig,
+      provider: resolved.provider,
+      apiStyle: resolved.apiStyle,
+      apiKey,
+      baseUrl: finalBaseUrl,
+      model: providerChanged ? '' : existingConfig.model,
+    };
+
     // Step 4: Model
     const model = hasSetupValue(state, 'model')
       ? state.model
       : await stepModel(
           provider,
           providerChanged ? undefined : existingConfig.model,
+          provisionalConfig,
         );
     if (model === '__skip__' || model === '__back__') {
       saveSetupState({
@@ -254,37 +289,15 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
           existingConfig.searchBaseUrl,
         );
 
-    const resolvedProvider =
-      provider === 'custom-openai' ||
-      provider === 'custom-anthropic' ||
-      provider === 'custom-auto'
-        ? 'custom'
-        : provider;
-
-    const resolvedApiStyle: AurixConfig['apiStyle'] =
-      provider === 'custom-openai'
-        ? 'openai'
-        : provider === 'custom-anthropic'
-          ? 'anthropic'
-          : provider === 'custom-auto'
-            ? 'auto'
-            : undefined;
-
-    const finalBaseUrl = isCustom
-      ? baseUrl
-      : providerChanged
-        ? undefined
-        : baseUrl;
-
     const config: AurixConfig = {
       ...existingConfig,
-      provider: resolvedProvider as AurixConfig['provider'],
+      provider: resolved.provider,
       apiKey,
       baseUrl: finalBaseUrl,
       model,
       maxTokens: existingConfig.maxTokens || 4096,
       temperature: existingConfig.temperature ?? 0.7,
-      apiStyle: resolvedApiStyle,
+      apiStyle: resolved.apiStyle,
       researchMode: existingConfig.researchMode || 'low',
       themeName: themeChoice.name,
       accentColor: themeChoice.accent,
@@ -536,89 +549,120 @@ async function stepBaseUrl(provider: string): Promise<string | undefined> {
   return normalizeBaseUrl(choice, apiStyle);
 }
 
+function formatModelAttempt(attempt: ModelFetchAttempt): string {
+  const status = attempt.status ? `HTTP ${attempt.status}` : attempt.ok ? 'OK' : 'failed';
+  return `${attempt.style} ${attempt.url} — ${status}${attempt.error ? `: ${attempt.error}` : ''}`.slice(0, 150);
+}
+
 async function stepModel(
   provider: string,
   existingModel?: string,
+  discoveryConfig?: AurixConfig,
 ): Promise<string> {
-  const models: Record<string, { id: string; label: string; desc?: string }[]> =
-    {
-      openai: [
-        {
-          id: 'gpt-4o',
-          label: 'GPT-4o',
-          desc: 'Best balance of speed and capability',
-        },
-        { id: 'gpt-4o-mini', label: 'GPT-4o Mini', desc: 'Fast and cheap' },
-        {
-          id: 'gpt-4-turbo',
-          label: 'GPT-4 Turbo',
-          desc: 'Most capable, slower',
-        },
-        { id: 'o1-preview', label: 'o1 Preview', desc: 'Advanced reasoning' },
-        { id: 'custom', label: 'Custom model', desc: 'Type your own model ID' },
-      ],
-      anthropic: [
-        {
-          id: 'claude-sonnet-4-20250514',
-          label: 'Claude Sonnet 4',
-          desc: 'Best balance',
-        },
-        {
-          id: 'claude-opus-4-20250514',
-          label: 'Claude Opus 4',
-          desc: 'Most capable',
-        },
-        {
-          id: 'claude-3-5-haiku-20241022',
-          label: 'Claude 3.5 Haiku',
-          desc: 'Fast and efficient',
-        },
-        { id: 'custom', label: 'Custom model', desc: 'Type your own model ID' },
-      ],
-      'custom-openai': [
-        { id: 'llama3', label: 'Llama 3', desc: 'Meta open-source' },
-        { id: 'mistral', label: 'Mistral', desc: 'Mistral AI' },
-        { id: 'custom', label: 'Custom model', desc: 'Type your own model ID' },
-      ],
-      'custom-anthropic': [
-        { id: 'custom', label: 'Custom model', desc: 'Type your own model ID' },
-      ],
-      'custom-auto': [
-        { id: 'custom', label: 'Custom model', desc: 'Type your own model ID' },
-      ],
-    };
-
-  const items = models[provider] || models['custom-auto']!;
-  const choice = await drawSelector({
-    title: 'Model',
-    items,
-    allowSkip: true,
-    extra: existingModel
-      ? [`Current model: ${existingModel}`, 'Skip keeps the current model.']
-      : undefined,
-  });
-
   const customProvider = provider.startsWith('custom-');
-  if (choice === '__skip__' || choice === '__back__') {
-    if (existingModel) return existingModel;
-    if (customProvider) return '__skip__';
-    return provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o';
-  }
+  const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o';
+  const fallbackModels: Record<string, { id: string; label: string; desc?: string }[]> = {
+    openai: [
+      { id: 'gpt-4o', label: 'GPT-4o', desc: 'Provider fallback' },
+      { id: 'gpt-4o-mini', label: 'GPT-4o Mini', desc: 'Provider fallback' },
+    ],
+    anthropic: [
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', desc: 'Provider fallback' },
+      { id: 'claude-opus-4-20250514', label: 'Claude Opus 4', desc: 'Provider fallback' },
+    ],
+    'custom-openai': [],
+    'custom-anthropic': [],
+    'custom-auto': [],
+  };
+  const CUSTOM = '__custom_model__';
+  const IMPORT = '__import_models__';
+  const KEEP = '__keep_model__';
+  const RETRY = '__retry_models__';
 
-  if (choice === 'custom') {
-    const model = await drawInputScreen({
-      title: 'Custom Model',
-      hint: existingModel
-        ? `Enter the exact model ID your provider supports\nCurrent: ${existingModel}`
-        : 'Enter the exact model ID your provider supports',
-      label: 'Model ID:',
-      masked: false,
+  while (true) {
+    const sourceChoice = await drawSelector({
+      title: 'Model source',
+      items: [
+        { id: IMPORT, label: 'Import all from /models', desc: 'Fetch the configured provider catalog' },
+        { id: CUSTOM, label: 'Enter custom model ID', desc: 'Use an exact provider model ID' },
+        ...(existingModel ? [{ id: KEEP, label: 'Keep current model', desc: existingModel }] : []),
+        ...(fallbackModels[provider] || []).map((item) => ({ ...item, id: `__fallback__${item.id}` })),
+      ],
+      allowSkip: true,
+      extra: existingModel ? [`Current model: ${existingModel}`] : undefined,
     });
-    if (model && model !== '__back__') return model;
-    return existingModel || (customProvider ? '__skip__' : 'gpt-4o');
-  }
 
-  return choice;
+    if (sourceChoice === '__skip__' || sourceChoice === '__back__' || sourceChoice === KEEP) {
+      if (existingModel) return existingModel;
+      return customProvider ? '__skip__' : defaultModel;
+    }
+    if (sourceChoice.startsWith('__fallback__')) return sourceChoice.slice('__fallback__'.length);
+    if (sourceChoice === CUSTOM) {
+      const model = await drawInputScreen({
+        title: 'Custom Model',
+        hint: existingModel
+          ? `Enter the exact model ID your provider supports\nCurrent: ${existingModel}`
+          : 'Enter the exact model ID your provider supports',
+        label: 'Model ID:',
+        masked: false,
+      });
+      const trimmedModel = model.trim();
+      if (trimmedModel && trimmedModel !== '__back__') return trimmedModel;
+      continue;
+    }
+    if (sourceChoice !== IMPORT || !discoveryConfig) continue;
+
+    while (true) {
+      drawInfo('Loading the complete provider model catalog from /models…');
+      const result = await fetchConfiguredModels(discoveryConfig);
+      if (result.models.length > 0) {
+        const items = toModelPickerItems(result.models, existingModel).map((item) => ({
+          id: item.id,
+          label: item.current ? `● ${item.label}` : item.label,
+          desc: item.description || item.category,
+        }));
+        const choice = await drawSearchableSelector({
+          title: 'Select model',
+          items,
+          extra: [
+            `Imported ${items.length} models from ${result.sourceUrl || '/models'}`,
+            ...(existingModel ? [`Current model: ${existingModel}`] : []),
+          ],
+        });
+        if (choice === '__back__') break;
+        return choice;
+      }
+
+      drawWarning('No models could be imported from /models.');
+      const failureChoice = await drawSelector({
+        title: 'Model import failed',
+        items: [
+          { id: RETRY, label: 'Retry /models', desc: 'Try the provider catalog again' },
+          { id: CUSTOM, label: 'Enter custom model ID', desc: 'Continue without discovery' },
+          ...(existingModel ? [{ id: KEEP, label: 'Keep current model', desc: existingModel }] : []),
+        ],
+        allowSkip: true,
+        extra: result.attempts.slice(-3).map(formatModelAttempt),
+      });
+      if (failureChoice === RETRY) continue;
+      if (failureChoice === CUSTOM) {
+        const model = await drawInputScreen({
+          title: 'Custom Model',
+          hint: 'Enter the exact model ID your provider supports',
+          label: 'Model ID:',
+          masked: false,
+        });
+        const trimmedModel = model.trim();
+        if (trimmedModel && trimmedModel !== '__back__') return trimmedModel;
+        continue;
+      }
+      if (failureChoice === KEEP || failureChoice === '__skip__') {
+        if (existingModel) return existingModel;
+        return customProvider ? '__skip__' : defaultModel;
+      }
+      break;
+    }
+  }
 }
 
 async function stepGateway(

@@ -13,7 +13,6 @@ const DISCORD_COMMANDS = [
   { name: 'resume', description: 'Load a saved session' },
   { name: 'proxy', description: 'Add proxy IPs to browser pool' },
   { name: 'save', description: 'Save session for later resume' },
-  { name: 'model', description: 'Switch AI model' },
   { name: 'baseurl', description: 'Change API base URL' },
   { name: 'apikey', description: 'Set API key' },
   { name: 'depth', description: 'Set research depth (low/medium/high/xhigh/max/ultra)' },
@@ -27,6 +26,23 @@ const DISCORD_COMMANDS = [
   { name: 'history', description: 'Show message count' },
   { name: 'compress', description: 'Compress context' },
   { name: 'agents', description: 'Show active agents' },
+];
+
+const DISCORD_MODEL_COMMANDS = [
+  {
+    name: 'model',
+    description: 'Browse models or switch directly',
+    options: [
+      { type: 3, name: 'id', description: 'Exact model ID (leave empty to browse)', required: false },
+    ],
+  },
+  {
+    name: 'models',
+    description: 'Browse and search provider models',
+    options: [
+      { type: 3, name: 'query', description: 'Initial model search', required: false },
+    ],
+  },
 ];
 
 const DISCORD_IMAGE_COMMAND = {
@@ -111,6 +127,27 @@ export class DiscordPlatform extends EventEmitter implements Platform {
           await this.handleChatInput(interaction);
           return;
         }
+        if (interaction.isStringSelectMenu?.() && String(interaction.customId || '').startsWith('aurix_model:')) {
+          const value = String(interaction.values?.[0] || '');
+          if (!interaction.replied && !interaction.deferred) await interaction.deferUpdate();
+          this.emit('message', { ...this.interactionMessage(interaction, value), isCallback: true });
+          return;
+        }
+        if (interaction.isButton?.() && String(interaction.customId || '').startsWith('aurix_model:')) {
+          const customId = String(interaction.customId || '');
+          const action = customId.split(':').slice(3).join(':');
+          if (action === 'search' || action === 'custom') {
+            await this.showModelInputModal(interaction, action as 'search' | 'custom');
+          } else {
+            if (!interaction.replied && !interaction.deferred) await interaction.deferUpdate();
+            this.emit('message', { ...this.interactionMessage(interaction, customId), isCallback: true });
+          }
+          return;
+        }
+        if (interaction.isModalSubmit?.() && String(interaction.customId || '').startsWith('aurix_model_input:')) {
+          await this.handleModelInputSubmit(interaction);
+          return;
+        }
         if (
           interaction.isModalSubmit?.() &&
           String(interaction.customId || '').startsWith('aurix_image_config:')
@@ -134,6 +171,7 @@ export class DiscordPlatform extends EventEmitter implements Platform {
         await rest.put(Routes.applicationCommands(this.client.user.id), {
           body: [
             ...DISCORD_COMMANDS.map((c) => ({ name: c.name, description: c.description })),
+            ...DISCORD_MODEL_COMMANDS,
             DISCORD_IMAGE_COMMAND,
           ],
         });
@@ -152,7 +190,12 @@ export class DiscordPlatform extends EventEmitter implements Platform {
     }
   }
 
-  async send(content: string, channelId: string, replyTo?: string, options?: any): Promise<void> {
+  async send(
+    content: string,
+    channelId: string,
+    replyTo?: string,
+    options?: any
+  ): Promise<{ messageId?: string } | void> {
     if (!this.client) return;
 
     try {
@@ -164,9 +207,29 @@ export class DiscordPlatform extends EventEmitter implements Platform {
         sendOptions.messageReference = { messageId: replyTo };
       }
 
-      await channel.send(sendOptions);
+      const sent = await channel.send(sendOptions);
+      return { messageId: sent?.id ? String(sent.id) : undefined };
     } catch (e: any) {
       console.error(`  Discord send error: ${e.message}`);
+    }
+  }
+
+  async edit(
+    content: string,
+    channelId: string,
+    messageId: string,
+    options?: any
+  ): Promise<boolean> {
+    if (!this.client) return false;
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased() || !channel.messages?.fetch) return false;
+      const message = await channel.messages.fetch(messageId);
+      await message.edit({ ...(options || {}), content });
+      return true;
+    } catch (e: any) {
+      console.error(`  Discord edit error: ${e.message}`);
+      return false;
     }
   }
 
@@ -241,12 +304,58 @@ export class DiscordPlatform extends EventEmitter implements Platform {
       }
     }
 
+    if (command === 'model' || command === 'models') {
+      const argument = String(
+        interaction.options?.getString?.(command === 'model' ? 'id' : 'query') || ''
+      ).trim();
+      this.emit('message', this.interactionMessage(interaction, `/${command}${argument ? ` ${argument}` : ''}`));
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: 'Opening model picker…', ephemeral: true });
+      }
+      return;
+    }
+
     if (DISCORD_COMMANDS.some((c) => c.name === command)) {
       this.emit('message', this.interactionMessage(interaction, `/${command}`));
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: 'Command received.', ephemeral: true });
       }
     }
+  }
+
+  private async showModelInputModal(
+    interaction: any,
+    mode: 'search' | 'custom'
+  ): Promise<void> {
+    const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = this.discord;
+    const sourceId = String(interaction.customId || '');
+    const parts = sourceId.split(':');
+    const token = parts[1] || '';
+    const version = parts[2] || '0';
+    const modal = new ModalBuilder()
+      .setCustomId(`aurix_model_input:${token}:${version}:${mode}`)
+      .setTitle(mode === 'search' ? 'Search Models' : 'Custom Model ID');
+    const input = new TextInputBuilder()
+      .setCustomId('value')
+      .setLabel(mode === 'search' ? 'Search query' : 'Exact model ID')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    await interaction.showModal(modal);
+  }
+
+  private async handleModelInputSubmit(interaction: any): Promise<void> {
+    const customId = String(interaction.customId || '');
+    const [, token, version, mode] = customId.split(':');
+    const value = String(interaction.fields.getTextInputValue('value') || '').trim();
+    await interaction.reply({ content: mode === 'search' ? 'Searching models…' : 'Switching model…', ephemeral: true });
+    this.emit('message', {
+      ...this.interactionMessage(
+        interaction,
+        `aurix_model:${token}:${version}:${mode}-value:${encodeURIComponent(value)}`
+      ),
+      isCallback: true,
+    } as IncomingMessage);
   }
 
   private async showImageConfigModal(interaction: any, description?: string): Promise<void> {

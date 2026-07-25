@@ -86,8 +86,9 @@ const baseCommands: SlashCommand[] = [
   },
   {
     name: 'model',
-    argumentHint: '<model-id>',
-    description: 'Switch model for this session',
+    aliases: ['models'],
+    argumentHint: '[model-id]',
+    description: 'Browse provider models or switch directly',
     group: 'model',
     source: 'claude-code',
   },
@@ -996,7 +997,34 @@ export function filterSlashCommands(
 }
 
 export function completeCommand(command: SlashCommand): string {
-  return `/${command.name}${command.argumentHint ? ' ' : ' '}`;
+  return `/${command.name} `;
+}
+
+export type CommandAction =
+  | { type: 'submit'; value: string }
+  | { type: 'complete'; value: string };
+
+function commandRequiresArgument(command: SlashCommand): boolean {
+  return command.argumentHint?.trim().startsWith('<') ?? false;
+}
+
+export function resolveCommandAction(
+  commands: SlashCommand[],
+  value: string,
+  selected = 0
+): CommandAction | null {
+  if (!value.startsWith('/') || /\s/.test(value.slice(1))) return null;
+  const query = value.slice(1).toLowerCase();
+  const suggestions = filterSlashCommands(commands, query, commands.length);
+  const command = suggestions[selected];
+  if (!command) return null;
+
+  const names = [command.name, ...(command.aliases || [])];
+  const exact = names.some((name) => name.toLowerCase() === query);
+  if (exact && !commandRequiresArgument(command)) {
+    return { type: 'submit', value };
+  }
+  return { type: 'complete', value: completeCommand(command) };
 }
 
 export interface CommandAuditResult {

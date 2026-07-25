@@ -5,7 +5,7 @@ Configure and maintain continuous integration and deployment pipelines for relia
 ## Tools
 
 - `setup_ci` — Configure CI/CD workflows for GitHub Actions and other providers.
-- `gh_pr_create` — Create pull requests with proper descriptions and labels.
+- `github_pr` with `action: create` — Create pull requests with proper descriptions and labels.
 - `deploy_vercel` — Deploy frontend applications to Vercel.
 
 ## Instructions

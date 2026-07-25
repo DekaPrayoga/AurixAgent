@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import chalk from 'chalk';
+import { getAurixVersion } from './utils/RuntimeInfo.js';
 
 // --- CRITICAL FIX FOR 9ROUTER / LOCALHOST PROXY ISSUES ---
 // Node.js/Bun fetch aggressively uses these env vars, causing local requests (127.0.0.1:20128)
@@ -279,7 +280,7 @@ async function main() {
     return;
   }
   if (args.some((arg) => arg === '-v' || arg === '--version' || arg === 'version')) {
-    process.stdout.write(`aurix v${process.env.AURIX_VERSION || 'dev'}\n`);
+    process.stdout.write(`aurix v${getAurixVersion()}\n`);
     return;
   }
 

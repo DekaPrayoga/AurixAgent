@@ -10,13 +10,14 @@ import {
   writeClipboard,
 } from './Clipboard.js';
 import type { SlashCommand } from './commands.js';
-import { completeCommand, filterSlashCommands } from './commands.js';
+import { filterSlashCommands, resolveCommandAction } from './commands.js';
 import { filterFiles } from './fileList.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 interface InputBoxProps {
   onSubmit: (value: string) => void;
   disabled: boolean;
+  blocked?: boolean;
   commands?: SlashCommand[];
   home?: boolean;
   model?: string;
@@ -78,11 +79,8 @@ export function resolveCommandCompletion(
   value: string,
   selected = 0
 ): string | null {
-  const query = extractCommandQuery(value);
-  if (query === null) return null;
-  const suggestions = filterSlashCommands(commands, query, commands.length);
-  const command = suggestions[selected];
-  return command ? completeCommand(command) : null;
+  const action = resolveCommandAction(commands, value, selected);
+  return action?.type === 'complete' ? action.value : null;
 }
 
 export function resolveFileCompletion(
@@ -158,6 +156,7 @@ function NativePromptEditor({
 export function InputBox({
   onSubmit,
   disabled,
+  blocked = false,
   commands = [],
   home = false,
   model,
@@ -250,7 +249,7 @@ export function InputBox({
   }, []);
 
   usePaste((event) => {
-    if (disabled) return;
+    if (disabled || blocked) return;
     const pasteEvent = event as typeof event & { preventDefault?: () => void; stopPropagation?: () => void };
     pasteEvent.preventDefault?.();
     pasteEvent.stopPropagation?.();
@@ -350,7 +349,7 @@ export function InputBox({
   useKeyboard((evt) => {
     const name = evt.name;
     if (name === 'escape') return;
-    if (disabled || pasteInProgress) return;
+    if (disabled || blocked || pasteInProgress) return;
 
     if (name === 'return') {
       evt.preventDefault();
@@ -506,7 +505,7 @@ export function InputBox({
     <NativePromptEditor
       editorRef={editorRef}
       value={value}
-      disabled={disabled}
+      disabled={disabled || blocked}
       onChange={syncValue}
       onNativeSubmit={() => submitCurrentRef.current()}
     />
@@ -517,7 +516,22 @@ export function InputBox({
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
         <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
-          {suggestionsVisible && <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />}
+          {suggestionsVisible && (
+            <CommandSuggestions
+              suggestions={suggestions}
+              selected={selectedCommand}
+              onSelect={(index) => {
+                const action = resolveCommandAction(commands, valueRef.current, index);
+                if (!action) return;
+                if (action.type === 'submit') {
+                  setInputState(action.value, action.value.length);
+                  queueMicrotask(() => submitCurrentRef.current());
+                  return;
+                }
+                setInputState(action.value, action.value.length);
+              }}
+            />
+          )}
           {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
           <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
           <box paddingX={2} paddingBottom={1} flexDirection="row" justifyContent="flex-end">
@@ -531,7 +545,22 @@ export function InputBox({
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
       <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
-        {suggestionsVisible && <CommandSuggestions suggestions={suggestions} selected={selectedCommand} />}
+        {suggestionsVisible && (
+          <CommandSuggestions
+            suggestions={suggestions}
+            selected={selectedCommand}
+            onSelect={(index) => {
+              const action = resolveCommandAction(commands, valueRef.current, index);
+              if (!action) return;
+              if (action.type === 'submit') {
+                setInputState(action.value, action.value.length);
+                queueMicrotask(() => submitCurrentRef.current());
+                return;
+              }
+              setInputState(action.value, action.value.length);
+            }}
+          />
+        )}
         {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
         <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
       </box>
@@ -581,9 +610,11 @@ function FileSuggestions({ files, selected }: { files: string[]; selected: numbe
 function CommandSuggestions({
   suggestions,
   selected,
+  onSelect,
 }: {
   suggestions: SlashCommand[];
   selected: number;
+  onSelect: (index: number) => void;
 }) {
   const start = Math.max(
     0,
@@ -600,7 +631,15 @@ function CommandSuggestions({
         const index = start + offset;
         const isSelected = index === selected;
         return (
-          <box key={command.name}>
+          <box
+            key={command.name}
+            onMouseDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onSelect(index);
+            }}
+          >
             <text
               fg={isSelected ? theme.bg : theme.primary}
               bg={isSelected ? theme.primary : undefined}

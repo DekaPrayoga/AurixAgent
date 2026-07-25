@@ -198,10 +198,6 @@ export function renderToolStart(
   if (lower.startsWith('git_') || lower.startsWith('gh_') || lower.includes('github')) {
     const gitLabels: Record<string, string> = {
       git_advanced: 'Advanced Git',
-      gh_pr_create: 'Creating GitHub PR',
-      gh_issue_create: 'Creating GitHub Issue',
-      gh_pr_list: 'Listing GitHub PRs',
-      gh_repo_info: 'Reading GitHub Repo',
       github_connect: 'Connecting GitHub',
       github_pr: 'Working GitHub PR',
       github_issue: 'Working GitHub Issue',

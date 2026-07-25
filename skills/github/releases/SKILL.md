@@ -4,8 +4,8 @@ Create and manage releases with proper versioning and documentation.
 
 ## Tools
 
-- `gh_pr_create` - Create pull requests for release branches
-- `gh_repo_info` - Get repository information and release history
+- `github_pr` with `action: create` - Create pull requests for release branches
+- `github_search` - Find repository and release context
 
 ## Instructions
 

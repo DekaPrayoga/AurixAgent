@@ -1,4 +1,5 @@
 import React from 'react';
+import { getAurixVersion } from '../utils/RuntimeInfo.js';
 import { theme } from './theme.js';
 
 interface StatusBarProps {
@@ -10,7 +11,12 @@ interface StatusBarProps {
   cwd?: string;
 }
 
-export function StatusBar({ model, provider, version = '0.1.0', cwd }: StatusBarProps) {
+export function StatusBar({
+  model,
+  provider,
+  version = getAurixVersion(),
+  cwd,
+}: StatusBarProps) {
   const home = (cwd || process.cwd()).replace(/^\/root\//, '~/');
   return (
     <box paddingX={2} paddingY={0} flexShrink={0} backgroundColor={theme.bg} flexDirection="row" justifyContent="space-between">

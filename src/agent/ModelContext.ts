@@ -1,8 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createHash } from 'crypto';
 import type { AurixConfig } from './Config.js';
-import { anthropicBaseUrl, openAIBaseUrl } from '../utils/base-url.js';
+import {
+  fetchModelPayload,
+  modelEndpointCandidates,
+  modelListFromPayload,
+} from './ModelDiscovery.js';
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const FALLBACK_CONTEXT_LIMIT = 256_000;
@@ -70,7 +75,13 @@ function cachePath(): string {
 }
 
 function cacheKey(config: AurixConfig): string {
-  return `${config.model}@${config.baseUrl || config.provider || 'default'}`;
+  const endpoint = config.baseUrl || 'default';
+  const provider = config.provider || 'default';
+  const style = config.apiStyle || 'auto';
+  const credential = config.apiKey
+    ? createHash('sha256').update(config.apiKey).digest('hex').slice(0, 12)
+    : 'anonymous';
+  return `${config.model}@${endpoint}@${provider}:${style}:${credential}`;
 }
 
 function readCache(): Record<string, ContextCacheEntry> {
@@ -261,13 +272,6 @@ function infoFromObject(value: unknown, source: ModelContextSource, endpoint?: s
   };
 }
 
-function modelListFromPayload(payload: any): any[] {
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.models)) return payload.models;
-  if (Array.isArray(payload)) return payload;
-  return [];
-}
-
 export function resolveFromModelsPayload(payload: any, model: string, endpoint?: string): ModelContextInfo | undefined {
   const models = modelListFromPayload(payload);
   if (models.length === 0) return infoFromObject(payload, 'models', endpoint);
@@ -275,68 +279,55 @@ export function resolveFromModelsPayload(payload: any, model: string, endpoint?:
   if (models.length === 1) fallbackSingle = models[0];
   for (const candidate of models) {
     if (!candidate || typeof candidate !== 'object') continue;
-    const ids = [candidate.id, candidate.model, candidate.name, candidate.slug, candidate.key, candidate.canonical_slug].filter((id): id is string => typeof id === 'string');
+    const record = candidate as Record<string, unknown>;
+    const ids = [record.id, record.model, record.name, record.slug, record.key, record.canonical_slug].filter((id): id is string => typeof id === 'string');
     if (ids.some((id) => modelMatches(id, model))) return infoFromObject(candidate, 'models', endpoint);
   }
   return fallbackSingle ? infoFromObject(fallbackSingle, 'models', endpoint) : undefined;
 }
 
-type MetadataStyle = 'openai' | 'anthropic';
-interface MetadataEndpoint { base: string; style: MetadataStyle }
-
-function normalizeMetadataBase(rawBase: string): string {
-  return rawBase.replace(/\/chat\/completions\/?$/, '').replace(/\/messages\/?$/, '').replace(/\/$/, '');
+export interface ModelContextResolveOptions {
+  preferFreshModels?: boolean;
+  timeoutMs?: number;
 }
 
-function addEndpointVariants(out: MetadataEndpoint[], rawBase: string, style: MetadataStyle): void {
-  const base = normalizeMetadataBase(rawBase);
-  const variants = new Set<string>([base]);
-  if (base.endsWith('/v1')) variants.add(base.slice(0, -3)); else variants.add(`${base}/v1`);
-  for (const variant of variants) out.push({ base: variant, style });
-}
-
-function endpointCandidates(config: AurixConfig): MetadataEndpoint[] {
-  const candidates: MetadataEndpoint[] = [];
-  if (config.provider === 'anthropic' || config.apiStyle === 'anthropic') addEndpointVariants(candidates, anthropicBaseUrl(config.baseUrl), 'anthropic');
-  else if (config.apiStyle === 'auto') { addEndpointVariants(candidates, openAIBaseUrl(config.baseUrl), 'openai'); addEndpointVariants(candidates, anthropicBaseUrl(config.baseUrl), 'anthropic'); }
-  else addEndpointVariants(candidates, openAIBaseUrl(config.baseUrl), 'openai');
-  const seen = new Set<string>();
-  return candidates.filter((candidate) => { const key = `${candidate.style}:${candidate.base}`; if (seen.has(key)) return false; seen.add(key); return true; });
-}
-
-function bypassProxyIfLocal(url: string): void {
-  if (!url.includes('localhost') && !url.includes('127.0.0.1')) return;
-  const parts = (process.env.NO_PROXY || process.env.no_proxy || '').split(',').map((p) => p.trim()).filter(Boolean);
-  for (const local of ['127.0.0.1', 'localhost']) if (!parts.includes(local)) parts.push(local);
-  process.env.NO_PROXY = parts.join(',');
-  process.env.no_proxy = process.env.NO_PROXY;
-}
-
-async function fetchJson(endpoint: MetadataEndpoint, config: AurixConfig): Promise<any | undefined> {
-  const headers: Record<string, string> = {};
-  if (config.apiKey) {
-    if (endpoint.style === 'anthropic') { headers['x-api-key'] = config.apiKey; headers['anthropic-version'] = '2023-06-01'; }
-    else headers.Authorization = `Bearer ${config.apiKey}`;
+async function resolveFreshModelsContext(
+  config: AurixConfig,
+  timeoutMs = METADATA_TIMEOUT_MS
+): Promise<ModelContextInfo | undefined> {
+  for (const endpoint of modelEndpointCandidates(config)) {
+    const info = resolveFromModelsPayload(
+      await fetchModelPayload(endpoint, config, timeoutMs),
+      config.model,
+      endpoint.url
+    );
+    if (!info) continue;
+    saveCachedModelContextInfo(config, info);
+    return info;
   }
-  const url = `${endpoint.base}/models`;
-  bypassProxyIfLocal(url);
-  const fetchOpts: RequestInit = { headers, signal: AbortSignal.timeout(METADATA_TIMEOUT_MS) };
-  if (url.includes('localhost') || url.includes('127.0.0.1')) {
-    try { const { Agent } = await import('undici'); (fetchOpts as any).dispatcher = new Agent({ connect: { rejectUnauthorized: false } }); } catch {}
-  }
-  try { const res = await fetch(url, fetchOpts as any); if (!res.ok) return undefined; return await res.json(); } catch { return undefined; }
+  return undefined;
 }
 
-export async function resolveModelContextInfo(config: AurixConfig): Promise<ModelContextInfo> {
+export async function resolveModelContextInfo(
+  config: AurixConfig,
+  options: ModelContextResolveOptions = {}
+): Promise<ModelContextInfo> {
   const explicit = configInfo(config);
   if (explicit) return explicit;
+
+  if (options.preferFreshModels) {
+    const fresh = await resolveFreshModelsContext(config, options.timeoutMs);
+    if (fresh) return fresh;
+  }
+
   const cached = getCachedModelContextInfo(config);
   if (cached) return cached;
-  for (const endpoint of endpointCandidates(config)) {
-    const endpointUrl = `${endpoint.base}/models`;
-    const info = resolveFromModelsPayload(await fetchJson(endpoint, config), config.model, endpointUrl);
-    if (info) { saveCachedModelContextInfo(config, info); return info; }
+
+  if (!options.preferFreshModels) {
+    const fresh = await resolveFreshModelsContext(config, options.timeoutMs);
+    if (fresh) return fresh;
   }
+
   const marker = parseContextMarker(config.model);
   if (marker) return { context: marker, source: 'marker', confidence: 'medium', updatedAt: Date.now() };
   const catalog = familyCatalogContext(config.model);
@@ -344,8 +335,11 @@ export async function resolveModelContextInfo(config: AurixConfig): Promise<Mode
   return { context: FALLBACK_CONTEXT_LIMIT, source: 'fallback', confidence: 'low', updatedAt: Date.now() };
 }
 
-export async function resolveModelContextLimit(config: AurixConfig): Promise<number> {
-  return (await resolveModelContextInfo(config)).context;
+export async function resolveModelContextLimit(
+  config: AurixConfig,
+  options: ModelContextResolveOptions = {}
+): Promise<number> {
+  return (await resolveModelContextInfo(config, options)).context;
 }
 
 export function modelContextDiagnostic(info: ModelContextInfo): string {

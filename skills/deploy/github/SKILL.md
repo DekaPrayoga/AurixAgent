@@ -6,7 +6,7 @@ Skill for deploying static sites and automating workflows via GitHub Pages and A
 
 - `deploy_github_pages` — Deploy a static site or built output to GitHub Pages.
 - `setup_ci` — Generate and configure GitHub Actions workflow files for CI/CD.
-- `gh_pr_create` — Create a pull request to trigger CI and peer review before merging.
+- `github_pr` with `action: create` — Create a pull request to trigger CI and peer review before merging.
 
 ## Instructions
 

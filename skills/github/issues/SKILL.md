@@ -4,8 +4,8 @@ Create and manage GitHub issues effectively for bug reports and feature requests
 
 ## Tools
 
-- `gh_issue_create` - Create new issues with structured information
-- `gh_repo_info` - Get repository information and existing labels
+- `github_issue` with `action: create` - Create new issues with structured information
+- `github_issue` with `action: list` or `view` - Inspect existing issues and labels
 
 ## Instructions
 

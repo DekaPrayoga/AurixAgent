@@ -689,6 +689,142 @@ export function drawSelector(opts: {
   });
 }
 
+export function drawSearchableSelector(opts: {
+  title: string;
+  items: SelectorItem[];
+  extra?: string[];
+  maxVisible?: number;
+}): Promise<string> {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    let query = '';
+    let active = 0;
+    const maxVisible = Math.max(5, opts.maxVisible || Math.min(16, Math.max(7, (process.stdout.rows || 24) - 12)));
+
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding('utf8');
+    readline.emitKeypressEvents(stdin);
+
+    const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const score = (item: SelectorItem): number => {
+      const needle = normalize(query);
+      const haystack = normalize(`${item.id} ${item.label} ${item.desc || ''}`);
+      if (!needle) return 0;
+      if (haystack.startsWith(needle)) return -200;
+      const direct = haystack.indexOf(needle);
+      if (direct >= 0) return -100 + direct;
+      let cursor = 0;
+      let gaps = 0;
+      for (const char of needle) {
+        const found = haystack.indexOf(char, cursor);
+        if (found < 0) return Number.POSITIVE_INFINITY;
+        gaps += found - cursor;
+        cursor = found + 1;
+      }
+      return gaps + 100;
+    };
+    const filtered = () => opts.items
+      .map((item) => ({ item, score: score(item) }))
+      .filter((entry) => Number.isFinite(entry.score))
+      .sort((a, b) => a.score - b.score)
+      .map((entry) => entry.item);
+
+    const cleanup = () => {
+      stdin.removeListener('keypress', onKeypress as any);
+      if (stdin.isTTY && !wasRaw) stdin.setRawMode(false);
+      process.stdout.write('\n');
+    };
+    const finish = (value: string) => {
+      cleanup();
+      resolve(value);
+    };
+    const repaint = () => {
+      const items = filtered();
+      active = Math.max(0, Math.min(active, Math.max(0, items.length - 1)));
+      const start = Math.max(0, Math.min(active - Math.floor(maxVisible / 2), Math.max(0, items.length - maxVisible)));
+      const visible = items.slice(start, start + maxVisible);
+      clearSetupScreen();
+      const lines = [teal.bold(opts.title), ''];
+      opts.extra?.forEach((line) => lines.push(dim('  ' + line)));
+      if (opts.extra?.length) lines.push('');
+      lines.push(`  ${dim('Search:')} ${bright(query)}${teal('█')}  ${dim(`${items.length}/${opts.items.length}`)}`);
+      lines.push('');
+      if (visible.length === 0) lines.push(dim('  No matching models.'));
+      visible.forEach((item, index) => {
+        const itemIndex = start + index;
+        const isActive = itemIndex === active;
+        const pointer = isActive ? teal('›') : dim(' ');
+        const label = isActive ? bright.bold(item.label) : bright(item.label);
+        const desc = item.desc ? dim(' -- ' + item.desc) : '';
+        lines.push(`  ${pointer} ${label}${desc}`);
+      });
+      lines.push('');
+      lines.push(dim('  type to search · ↑/↓ navigate · PgUp/PgDn · Home/End · enter select · esc back'));
+      drawBox(lines, 76);
+    };
+    const move = (delta: number) => {
+      const length = filtered().length;
+      if (!length) return;
+      active = (active + delta + length) % length;
+      repaint();
+    };
+    function onKeypress(ch: string | undefined, key: readline.Key | undefined) {
+      if (!key) return;
+      if (key.ctrl && key.name === 'c') process.exit(0);
+      if (key.name === 'escape') {
+        if (query) {
+          query = '';
+          active = 0;
+          repaint();
+        } else finish('__back__');
+        return;
+      }
+      if (key.name === 'up' || (key.ctrl && key.name === 'p')) return move(-1);
+      if (key.name === 'down' || (key.ctrl && key.name === 'n')) return move(1);
+      if (key.name === 'pageup') return move(-maxVisible);
+      if (key.name === 'pagedown') return move(maxVisible);
+      if (key.name === 'home') {
+        active = 0;
+        repaint();
+        return;
+      }
+      if (key.name === 'end') {
+        active = Math.max(0, filtered().length - 1);
+        repaint();
+        return;
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        const item = filtered()[active];
+        if (item) finish(item.id);
+        return;
+      }
+      if (key.name === 'backspace') {
+        query = query.slice(0, -1);
+        active = 0;
+        repaint();
+        return;
+      }
+      if (key.ctrl && key.name === 'u') {
+        query = '';
+        active = 0;
+        repaint();
+        return;
+      }
+      const sequence = key.sequence || ch || '';
+      if (sequence.length === 1 && !key.ctrl && !key.meta && sequence >= ' ' && sequence !== '\x7f') {
+        query += sequence;
+        active = 0;
+        repaint();
+      }
+    }
+
+    repaint();
+    stdin.on('keypress', onKeypress);
+  });
+}
+
 function enableMouse(): void {
   if (!process.stdout.isTTY) return;
   process.stdout.write('\x1b[?1000h\x1b[?1006h');

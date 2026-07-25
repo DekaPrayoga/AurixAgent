@@ -11,6 +11,7 @@ import type { PresentationState } from './TurnState.js';
 import { writeClipboard } from './Clipboard.js';
 import { InputBox } from './InputBox.js';
 import { StatusBar } from './StatusBar.js';
+import { Banner } from './Banner.js';
 import { detectInstallMethod, terminalDiagnostics } from './InstallDiagnostics.js';
 import { acceptResumePageLoad, beginResumePageLoad, buildResumedDisplayMessages, createResumePageState, type ResumeDisplayPageState } from './ResumeDisplay.js';
 import { PermissionPrompt } from './PermissionPrompt.js';
@@ -19,6 +20,7 @@ import { VisionModal } from './VisionModal.js';
 import { ConnectModal } from './ConnectModal.js';
 import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { CommandPalette } from './CommandPalette.js';
+import { ModelPicker } from './ModelPicker.js';
 import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
 import { WhatsAppModal } from './WhatsAppModal.js';
 import { OutputPanel } from './OutputPanel.js';
@@ -41,6 +43,9 @@ import {
   parseSlash,
 } from './commands.js';
 import { AgentLoop, type AgentEvent } from '../agent/AgentLoop.js';
+import { fetchConfiguredModels } from '../agent/ModelDiscovery.js';
+import { modelContextDiagnostic } from '../agent/ModelContext.js';
+import { applyModelSelection, toModelPickerItems, type ModelPickerItem } from '../agent/ModelSelection.js';
 import { renderToolEnd } from '../agent/ToolEventRenderer.js';
 import type { AurixConfig } from '../agent/Config.js';
 import { CONFIG_PATH, loadConfig, saveConfig } from '../agent/Config.js';
@@ -49,7 +54,7 @@ import { editSoulFile, formatReloadReport, formatSoulShow, getAgentsStatus, getC
 import type { ToolRegistry } from '../tools/Registry.js';
 import type { PermissionReply, ToolPermissionRequest } from '../tools/Registry.js';
 import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
-import { logoLines } from '../utils/ascii-logo.js';
+import { getAurixVersion, getRuntimeInfo } from '../utils/RuntimeInfo.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import { mcpManager } from '../mcp/McpRegistry.js';
 import {
@@ -267,6 +272,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const [toast, setToast] = useState<string | null>(null);
   const [showRewind, setShowRewind] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  const [modelPicker, setModelPicker] = useState<{
+    items: ModelPickerItem[];
+    loading: boolean;
+    error?: string;
+    initialQuery?: string;
+  } | null>(null);
+  const modelPickerRequestRef = React.useRef(0);
+  const modelPickerOpenRef = React.useRef(false);
   const [subagents, setSubagents] = useState<{ status: string }[] | null>(null);
   const [showVisionConfig, setShowVisionConfig] = useState(false);
   const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
@@ -490,6 +503,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     return loadSkillsFromDir(path.join(root, 'skills'));
   }, []);
   const skillCount = skills.length;
+  const runtimeInfo = getRuntimeInfo();
+  const aurixVersion = getAurixVersion();
   const commands = useMemo(
     () => createSlashCommands({ toolCount, skillCount, registry }),
     [toolCount, skillCount, registry]
@@ -510,6 +525,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
   useKeyboard((evt) => {
     const name = evt.name;
+
+    if (modelPickerOpenRef.current) return;
 
     if (evt.ctrl && name === 'o') {
       evt.preventDefault();
@@ -731,6 +748,25 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       if (!live.timer) live.timer = setTimeout(flushLiveToolOutput, 180);
     },
     [flushLiveToolOutput]
+  );
+
+  const openModelPicker = useCallback(
+    async (initialQuery = '') => {
+      const requestId = ++modelPickerRequestRef.current;
+      modelPickerOpenRef.current = true;
+      setModelPicker({ items: [], loading: true, initialQuery });
+      const result = await fetchConfiguredModels(config);
+      if (requestId !== modelPickerRequestRef.current) return;
+      const items = toModelPickerItems(result.models, agentRef.current?.getModel() || config.model);
+      const lastFailure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
+      const error = items.length
+        ? undefined
+        : lastFailure
+          ? `Could not load /models: ${lastFailure.status ? `HTTP ${lastFailure.status} ` : ''}${lastFailure.error || lastFailure.url}`
+          : 'No models returned by the configured provider.';
+      setModelPicker({ items, loading: false, error, initialQuery });
+    },
+    [config]
   );
 
   const handleSubmit = useCallback(
@@ -1038,21 +1074,33 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         if (commandName === 'context') {
           const raw = slash.args.trim().toLowerCase();
           if (raw === 'refresh') {
-            await agent.refreshContextMetadata();
+            await agent.refreshContextMetadata({ preferFreshModels: true });
           } else if (raw === 'auto') {
+            const previous = {
+              contextLimit: config.contextLimit,
+              contextInputLimit: config.contextInputLimit,
+              contextOutputLimit: config.contextOutputLimit,
+              contextCompactionBuffer: config.contextCompactionBuffer,
+            };
             delete config.contextLimit;
             delete config.contextInputLimit;
             delete config.contextOutputLimit;
             delete config.contextCompactionBuffer;
-            saveConfig(config);
-            agent.setProvider({
-              ...config,
-              contextLimit: undefined,
-              contextInputLimit: undefined,
-              contextOutputLimit: undefined,
-              contextCompactionBuffer: undefined,
-            });
-            await agent.refreshContextMetadata();
+            try {
+              await agent.applyProviderConfig(
+                {
+                  contextLimit: undefined,
+                  contextInputLimit: undefined,
+                  contextOutputLimit: undefined,
+                  contextCompactionBuffer: undefined,
+                },
+                { preferFreshModels: true }
+              );
+              saveConfig(config);
+            } catch (error) {
+              Object.assign(config, previous);
+              throw error;
+            }
           } else if (raw.startsWith('set ')) {
             const value = raw.slice(4).trim().replace(/[,_]/g, '');
             const match = value.match(/^(\d+(?:\.\d+)?)(k|m)?$/i);
@@ -1067,10 +1115,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               addAssistant('Context limit must be between 4,000 and 2,000,000 tokens.');
               return;
             }
+            await agent.applyProviderConfig({ contextLimit: limit });
             config.contextLimit = limit;
             saveConfig(config);
-            agent.setProvider({ contextLimit: limit });
-            await agent.refreshContextMetadata();
           } else if (raw) {
             addAssistant('Usage: /context [refresh|set <tokens|500k|1m>|auto]');
             return;
@@ -1129,17 +1176,18 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         }
 
         if (commandName === 'model') {
-          if (!slash.args) {
-            addAssistant(
-              `Current model: ${agent.getModel()}\nProvider: ${agent.getProviderName()}\nBase URL: ${baseUrl || '(default)'}\n\nUsage: /model <model-id>\nSwitch provider with: /baseurl <url>`
-            );
+          if (slash.name === 'models') {
+            await openModelPicker(slash.args.trim());
             return;
           }
-          const newModel = slash.args.trim();
-          agent.setProvider({ model: newModel });
-          config.model = newModel;
-          saveConfig(config);
-          addAssistant(`Model switched to: ${newModel}`);
+          if (!slash.args) {
+            await openModelPicker();
+            return;
+          }
+          const selected = await applyModelSelection(agent, config, slash.args);
+          addAssistant(
+            `Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`
+          );
           return;
         }
 
@@ -1216,7 +1264,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
         if (commandName === 'doctor') {
           const checks = [
-            `Node.js: ${process.version}`,
+            `Runtime: ${runtimeInfo.label}`,
             `Platform: ${process.platform} ${process.arch}`,
             `Uptime: ${Math.round(process.uptime())}s`,
             `Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB / ${Math.round(process.memoryUsage().heapTotal / 1024 / 1024)}MB`,
@@ -2343,7 +2391,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             status = e.stdout || e.stderr || e.message;
           }
           addAssistant(
-            `GitHub connection\n${status.trim()}\n\nSetup: gh auth login\nTools: gh_pr_create, gh_issue_create, gh_pr_list, gh_repo_info`
+            `GitHub connection\n${status.trim()}\n\nSetup: gh auth login\nTools: github_connect, github_pr, github_issue, github_search`
           );
           return;
         }
@@ -2919,7 +2967,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         pendingImagesRef.current = [];
 
         for await (const rawEvent of currentAgent.run(outboundText, images)) {
-          const event: AgentEvent = { ...rawEvent, turnId };
+          const event: AgentEvent = {
+            ...rawEvent,
+            turnId,
+            durationMs:
+              rawEvent.type === 'done' && typeof rawEvent.durationMs !== 'number'
+                ? Date.now() - turnStartedAt
+                : rawEvent.durationMs,
+          };
           if (event.type === 'text' || event.type === 'tool_chunk') {
             queuePresentationEvent(event);
             continue;
@@ -2975,6 +3030,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       commands,
       allCommands,
       doExit,
+      openModelPicker,
       flushLiveToolOutput,
       queueLiveToolOutput,
       clearLiveToolOutput,
@@ -3051,14 +3107,13 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             flexDirection="column"
           >
             <box flexGrow={1} minHeight={0} />
-            <box flexShrink={0} flexDirection="column" alignItems="center">
-              <text fg={theme.primary}>{logoLines().join('\n')}</text>
-            </box>
+            <Banner />
             <box height={1} minHeight={0} flexShrink={1} />
             <box width="100%" maxWidth={promptW} paddingTop={1} flexShrink={0}>
               <InputBox
                 onSubmit={handleSubmit}
                 disabled={false}
+                blocked={!!modelPicker}
                 commands={commands}
                 home
                 model={agent.getModel()}
@@ -3079,7 +3134,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             <box flexGrow={1} minHeight={0} />
             <box width="100%" flexShrink={0} justifyContent="space-between" paddingX={2}>
               <text fg={theme.textMuted}>{process.cwd().replace(/^\/root\//, '~/')}</text>
-              <text fg={theme.textMuted}>v{require('../../package.json').version}</text>
+              <text fg={theme.textMuted}>v{aurixVersion}</text>
             </box>
           </box>
         ) : (
@@ -3138,36 +3193,40 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                     currentModel={config.model}
                     currentApiStyle={config.apiStyle}
                     onSubmit={(newBaseUrl, newApiKey, newModel, newApiStyle) => {
-                      const patch: Partial<AurixConfig> = {};
-                      const apiStyle = normalizeApiStyleInput(newApiStyle);
-                      if (newBaseUrl) {
-                        config.baseUrl = newBaseUrl;
-                        patch.baseUrl = newBaseUrl;
-                        setBaseUrl(newBaseUrl);
-                      }
-                      if (newApiKey) {
-                        config.apiKey = newApiKey;
-                        patch.apiKey = newApiKey;
-                      }
-                      if (newModel) {
-                        config.model = newModel;
-                        patch.model = newModel;
-                      }
-                      if (apiStyle) {
-                        config.apiStyle = apiStyle;
-                        patch.apiStyle = apiStyle;
-                      }
-                      if (Object.keys(patch).length > 0) agent.setProvider(patch);
-                      saveConfig(config);
-                      setShowLogin(false);
-                      setMessages((prev) => [
-                        ...prev,
-                        {
-                          role: 'assistant',
-                          content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? 'updated' : '(unchanged)'}\n  API Style: ${apiStyle || config.apiStyle || '(unchanged)'}\n  Model: ${newModel || agent.getModel()}`,
-                          timestamp: new Date(),
-                        },
-                      ]);
+                      void (async () => {
+                        const patch: Partial<AurixConfig> = {};
+                        const apiStyle = normalizeApiStyleInput(newApiStyle);
+                        if (newBaseUrl) patch.baseUrl = newBaseUrl;
+                        if (newApiKey) patch.apiKey = newApiKey;
+                        if (newModel) patch.model = newModel;
+                        if (apiStyle) patch.apiStyle = apiStyle;
+                        try {
+                          const context = Object.keys(patch).length
+                            ? await agent.applyProviderConfig(patch, { preferFreshModels: true })
+                            : agent.getContextDiagnostics().metadata;
+                          Object.assign(config, patch);
+                          saveConfig(config);
+                          if (newBaseUrl) setBaseUrl(newBaseUrl);
+                          setShowLogin(false);
+                          setMessages((prev) => [
+                            ...prev,
+                            {
+                              role: 'assistant',
+                              content: `Login updated.\n  Base URL: ${newBaseUrl || '(unchanged)'}\n  API Key: ${newApiKey ? 'updated' : '(unchanged)'}\n  API Style: ${apiStyle || config.apiStyle || '(unchanged)'}\n  Model: ${newModel || agent.getModel()}\n  Context: ${modelContextDiagnostic(context)}`,
+                              timestamp: new Date(),
+                            },
+                          ]);
+                        } catch (error) {
+                          setMessages((prev) => [
+                            ...prev,
+                            {
+                              role: 'assistant',
+                              content: `Login update failed: ${error instanceof Error ? error.message : String(error)}`,
+                              timestamp: new Date(),
+                            },
+                          ]);
+                        }
+                      })();
                     }}
                     onCancel={() => setShowLogin(false)}
                   />
@@ -3320,6 +3379,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 <InputBox
                   onSubmit={handleSubmit}
                   disabled={!!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
+                  blocked={!!modelPicker}
                   commands={commands}
                   model={agent.getModel()}
                   contextPct={ctxStats.estimatedPct}
@@ -3341,6 +3401,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   model={agent.getModel()}
                   provider={agent.getProviderName()}
                   researchMode={researchMode}
+                  version={aurixVersion}
                   cwd={process.cwd()}
                 />
               </box>
@@ -3422,6 +3483,61 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           </box>
         )}
       </box>
+      {modelPicker && (
+        <ModelPicker
+          items={modelPicker.items}
+          currentModel={agent.getModel()}
+          loading={modelPicker.loading}
+          error={modelPicker.error}
+          initialQuery={modelPicker.initialQuery}
+          onSelect={(modelId) => {
+            void (async () => {
+              try {
+                const selected = await applyModelSelection(agent, config, modelId);
+                modelPickerRequestRef.current++;
+                modelPickerOpenRef.current = false;
+                setModelPicker(null);
+                setMessages((previous) => [
+                  ...previous,
+                  {
+                    role: 'assistant',
+                    content: `Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`,
+                    timestamp: new Date(),
+                  },
+                ]);
+              } catch (error) {
+                setModelPicker((current) => current ? { ...current, error: `Model switch failed: ${error instanceof Error ? error.message : String(error)}` } : current);
+              }
+            })();
+          }}
+          onRefresh={() => void openModelPicker(modelPicker.initialQuery || '')}
+          onCustom={(modelId) => {
+            void (async () => {
+              try {
+                const selected = await applyModelSelection(agent, config, modelId);
+                modelPickerRequestRef.current++;
+                modelPickerOpenRef.current = false;
+                setModelPicker(null);
+                setMessages((previous) => [
+                  ...previous,
+                  {
+                    role: 'assistant',
+                    content: `Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`,
+                    timestamp: new Date(),
+                  },
+                ]);
+              } catch (error) {
+                setModelPicker((current) => current ? { ...current, error: `Model switch failed: ${error instanceof Error ? error.message : String(error)}` } : current);
+              }
+            })();
+          }}
+          onCancel={() => {
+            modelPickerRequestRef.current++;
+            modelPickerOpenRef.current = false;
+            setModelPicker(null);
+          }}
+        />
+      )}
       {toast && (
         <box
           position="absolute"

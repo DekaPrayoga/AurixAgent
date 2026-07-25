@@ -311,7 +311,20 @@ function nodeArgsFor(bin) {
 }
 
 const runtime = resolveRuntime();
-const env = { ...process.env, AURIX_HOME: rootDir };
+const runtimeVersionResult = spawnSync(runtime.bin, ['--version'], {
+  encoding: 'utf8',
+  shell: false,
+});
+const runtimeVersion = String(
+  runtimeVersionResult.stdout || runtimeVersionResult.stderr || '',
+).trim().replace(/^v/, '');
+const env = {
+  ...process.env,
+  AURIX_HOME: rootDir,
+  AURIX_RUNTIME_KIND: runtime.kind,
+  AURIX_RUNTIME_VERSION: runtimeVersion,
+  AURIX_RUNTIME_MANAGED: runtime.managed ? '1' : '0',
+};
 if (runtime.kind === 'node' && runtime.args.length > 0)
   env.AURIX_RELAUNCHED = '1';
 if (runtime.managed)

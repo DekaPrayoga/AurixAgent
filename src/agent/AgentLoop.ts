@@ -29,6 +29,7 @@ import {
   resolveModelContextInfo,
   saveCachedModelContextInfo,
   type ModelContextInfo,
+  type ModelContextResolveOptions,
 } from './ModelContext.js';
 import type { BrainToolResult } from '../brain/types.js';
 import { setBrainInstance } from '../tools/Brain.js';
@@ -340,6 +341,7 @@ export class AgentLoop {
   private brain: AurixBrain;
   private cachedContextStats?: { signature: string; stats: ContextStats };
   private modelContextInfo: ModelContextInfo;
+  private providerGeneration = 0;
 
   constructor(config: AurixConfig, registry: ToolRegistry) {
     installObserverBusSessionSink();
@@ -843,21 +845,27 @@ export class AgentLoop {
     return this.brain.getCapabilities().vision;
   }
 
-  private async refreshModelContextLimit(): Promise<void> {
+  private async refreshModelContextLimit(
+    options: ModelContextResolveOptions = {},
+    expectedGeneration = this.providerGeneration
+  ): Promise<void> {
+    const configSnapshot = this.config;
     try {
-      this.modelContextInfo = await resolveModelContextInfo(this.config);
+      const info = await resolveModelContextInfo(configSnapshot, options);
+      if (expectedGeneration !== this.providerGeneration || configSnapshot !== this.config) return;
+      this.modelContextInfo = info;
       this.contextManager.updateBudget({
-        contextLimit: this.modelContextInfo.context,
-        inputLimit: this.modelContextInfo.input,
-        outputReservation: this.config.maxTokens || this.modelContextInfo.output,
+        contextLimit: info.context,
+        inputLimit: info.input,
+        outputReservation: this.config.maxTokens || info.output,
         scalableBuffer: this.config.contextCompactionBuffer,
       });
       this.invalidateContextStats();
     } catch {}
   }
 
-  async refreshContextMetadata(): Promise<void> {
-    await this.refreshModelContextLimit();
+  async refreshContextMetadata(options: ModelContextResolveOptions = {}): Promise<void> {
+    await this.refreshModelContextLimit(options, this.providerGeneration);
   }
 
   getContextDiagnostics() {
@@ -1477,30 +1485,7 @@ export class AgentLoop {
           'i cannot assist with this request',
           "i can't comply with this request",
           'i must refuse this request',
-          // Automation-task refusal phrases — only appear when declining the task,
-          // not when the model narrates progress ("I'll register the account now").
-          'automatically register',
-          'automate registration',
-          'automate account',
-          'mass register',
-          'bulk register',
-          'automated signup',
-          'automated registration',
-          'harvest proxies',
-          'harvest proxy',
-          'harvest resources',
-          'scrape the website',
-          'scrape data from',
-          'scrape this site',
-          'bypass security',
-          'bypass the security',
-          'bypass captcha',
-          'circumvent security',
-          'circumvent captcha',
           // Harm-related task words (keep for OSINT/abuse refusals)
-          'mass registration',
-          'account generation',
-          'account creation',
           'doxing',
           'doxxing',
           'stalking',
@@ -1511,19 +1496,6 @@ export class AgentLoop {
           'melanggar ketentuan',
           'tidak etis',
           'tanpa izin',
-          // Indonesian automation-task refusal (only appear when declining)
-          'pendaftaran otomatis',
-          'mendaftar secara otomatis',
-          'mendaftar otomatis',
-          'mengambil proxy',
-          'mengambil proksi',
-          'mengambil sumber daya',
-          'email sementara',
-          'layanan email sementara',
-          'surat elektronik sementara',
-          'scrape situs',
-          'scrape website',
-          'scrape data secara otomatis',
           'tidak dapat memenuhi permintaan',
           'tidak bisa memenuhi permintaan',
           'tidak dapat melakukan pendaftaran',
@@ -1534,155 +1506,10 @@ export class AgentLoop {
         if (hasRefusal && hasObjection) return true;
         if (!hasRefusal) return false;
 
-        // Tier 3 — Language-agnostic reflection check.
-        // If the model's response echoes 2+ task-keywords from the user's last
-        // message (matched against a multilingual bank), treat as task-refusal.
-        // Catches refusals in any language without explicit phrase lists.
-        const taskKeywords = [
-          // English
-          'signup',
-          'sign up',
-          'register',
-          'registration',
-          'account',
-          'accounts',
-          'proxy',
-          'proxies',
-          'tempmail',
-          'temporary email',
-          'temp email',
-          'scrape',
-          'scraping',
-          'harvest',
-          'captcha',
-          'recaptcha',
-          'hcaptcha',
-          'otp',
-          'verification code',
-          'bot',
-          'automation',
-          'automate',
-          'email',
-          'password',
-          'login',
-          'credential',
-          'credentials',
-          // Indonesian / Malay
-          'daftar',
-          'pendaftaran',
-          'mendaftar',
-          'akun',
-          'proksi',
-          'email sementara',
-          'kata sandi',
-          'masuk',
-          'login',
-          'otp',
-          'kode verifikasi',
-          'otomatisasi',
-          // Spanish
-          'registro',
-          'registrarse',
-          'cuenta',
-          'contraseña',
-          'correo temporal',
-          'verificación',
-          'captcha',
-          // French
-          'inscription',
-          'enregistrer',
-          'compte',
-          'mot de passe',
-          'email temporaire',
-          // German
-          'registrieren',
-          'anmeldung',
-          'konto',
-          'passwort',
-          'temporäre email',
-          // Russian
-          'регистрация',
-          'зарегистрировать',
-          'аккаунт',
-          'пароль',
-          'прокси',
-          'временный email',
-          'автоматически',
-          // Chinese
-          '注册',
-          '账号',
-          '密码',
-          '代理',
-          '临时邮箱',
-          '验证码',
-          '自动',
-          // Japanese
-          '登録',
-          'アカウント',
-          'パスワード',
-          'プロキシ',
-          '認証コード',
-          // Arabic
-          'تسجيل',
-          'حساب',
-          'كلمة مرور',
-          'بروكسي',
-          'تسجيل دخول',
-          // Portuguese
-          'registro',
-          'registrar',
-          'conta',
-          'senha',
-          'email temporário',
-          // Italian
-          'registrazione',
-          'registrare',
-          'account',
-          'password',
-          // Dutch
-          'registratie',
-          'registreren',
-          'account',
-          'wachtwoord',
-          // Turkish
-          'kayıt',
-          'hesap',
-          'şifre',
-          'vekil',
-          // Korean
-          '등록',
-          '계정',
-          '비밀번호',
-          '프록시',
-          // Vietnamese
-          'đăng ký',
-          'tài khoản',
-          'mật khẩu',
-          // Hindi
-          'पंजीकरण',
-          'खाता',
-          'पासवर्ड',
-          // Thai
-          'ลงทะเบียน',
-          'บัญชี',
-          'รหัสผ่าน',
-        ];
-        const lastUserMsg = this.messages.filter((m) => m.role === 'user').pop();
-        if (lastUserMsg) {
-          const userLower = (
-            typeof lastUserMsg.content === 'string' ? lastUserMsg.content : ''
-          ).toLowerCase();
-          const userKeywords = new Set(
-            taskKeywords.filter((kw) => userLower.includes(kw.toLowerCase()))
-          );
-          if (userKeywords.size >= 2) {
-            let echoes = 0;
-            for (const kw of userKeywords) {
-              if (lower.includes(kw.toLowerCase())) echoes++;
-              if (echoes >= 2) return true;
-            }
-          }
-        }
+        // Tier 3 — keyword echo detection DISABLED.
+        // Reason: cooperative responses echo task keywords ("account", "register", "automation")
+        // which caused false-positive refusal detection. Refusal is now detected only by
+        // explicit refusal phrases + objection signals (Tier 1-2).
         return false;
       };
 
@@ -2701,26 +2528,17 @@ export class AgentLoop {
     this.resetBrain();
   }
 
-  setProvider(config: Partial<AurixConfig>): void {
-    this.config = { ...this.config, ...config };
-    this.provider = createProvider(this.config);
-    this.modelContextInfo =
-      getCachedModelContextInfo(this.config) || {
-        context: this.config.contextLimit || 256_000,
-        input: this.config.contextInputLimit,
-        output: this.config.contextOutputLimit,
-        source: this.config.contextLimit ? 'config' : 'fallback',
-        confidence: this.config.contextLimit ? 'explicit' : 'low',
-        updatedAt: Date.now(),
-      };
-    this.contextManager = new ContextManager(this.provider, config.model || this.config.model, {
-      contextLimit: this.modelContextInfo.context,
-      inputLimit: this.modelContextInfo.input,
-      outputReservation: this.config.maxTokens || this.modelContextInfo.output,
-      scalableBuffer: this.config.contextCompactionBuffer,
+  private commitProviderConfig(nextConfig: AurixConfig, contextInfo: ModelContextInfo): void {
+    this.config = nextConfig;
+    this.provider = createProvider(nextConfig);
+    this.modelContextInfo = contextInfo;
+    this.contextManager = new ContextManager(this.provider, nextConfig.model, {
+      contextLimit: contextInfo.context,
+      inputLimit: contextInfo.input,
+      outputReservation: nextConfig.maxTokens || contextInfo.output,
+      scalableBuffer: nextConfig.contextCompactionBuffer,
     });
     this.memoryManager.setProvider(this.provider);
-    this.refreshModelContextLimit().catch(() => {});
     this.resetBrain();
     this.registry.setHookHandler((request) =>
       runToolHook(this.config, {
@@ -2734,10 +2552,39 @@ export class AgentLoop {
         turnId: request.turnId,
       })
     );
-    if (this.multiAgent) {
-      this.multiAgent = new MultiAgentSystem(this.config, this.registry);
-    }
+    if (this.multiAgent) this.multiAgent = new MultiAgentSystem(this.config, this.registry);
     this.refreshSystemPrompt();
+    this.invalidateContextStats();
+  }
+
+  async applyProviderConfig(
+    patch: Partial<AurixConfig>,
+    options: ModelContextResolveOptions = {}
+  ): Promise<ModelContextInfo> {
+    const generation = ++this.providerGeneration;
+    const nextConfig = { ...this.config, ...patch };
+    const contextInfo = await resolveModelContextInfo(nextConfig, options);
+    if (generation !== this.providerGeneration) {
+      throw new Error('A newer provider/model selection replaced this request.');
+    }
+    this.commitProviderConfig(nextConfig, contextInfo);
+    return contextInfo;
+  }
+
+  setProvider(config: Partial<AurixConfig>): void {
+    const generation = ++this.providerGeneration;
+    const nextConfig = { ...this.config, ...config };
+    const contextInfo =
+      getCachedModelContextInfo(nextConfig) || {
+        context: nextConfig.contextLimit || 256_000,
+        input: nextConfig.contextInputLimit,
+        output: nextConfig.contextOutputLimit,
+        source: nextConfig.contextLimit ? 'config' as const : 'fallback' as const,
+        confidence: nextConfig.contextLimit ? 'explicit' as const : 'low' as const,
+        updatedAt: Date.now(),
+      };
+    this.commitProviderConfig(nextConfig, contextInfo);
+    this.refreshModelContextLimit({}, generation).catch(() => {});
   }
 
   getModel(): string {

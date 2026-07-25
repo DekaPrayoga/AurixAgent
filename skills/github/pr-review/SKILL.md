@@ -4,9 +4,9 @@ Review pull requests for code quality, functionality, and best practices.
 
 ## Tools
 
-- `gh_pr_list` - List pull requests in a repository
-- `gh_pr_create` - Create new pull requests
-- `gh_repo_info` - Get repository information and context
+- `github_pr` with `action: list`, `view`, or `diff` - Inspect pull requests
+- `github_pr` with `action: create` - Create new pull requests
+- `github_search` - Find repository context
 
 ## Instructions
 

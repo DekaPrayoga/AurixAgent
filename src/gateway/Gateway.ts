@@ -5,6 +5,15 @@ import crypto from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
 import { loadConfig, saveConfig } from '../agent/Config.js';
 import { AgentLoop } from '../agent/AgentLoop.js';
+import { fetchConfiguredModels } from '../agent/ModelDiscovery.js';
+import { modelContextDiagnostic } from '../agent/ModelContext.js';
+import {
+  applyModelSelection,
+  paginateModelItems,
+  searchModelItems,
+  toModelPickerItems,
+  type ModelPickerItem,
+} from '../agent/ModelSelection.js';
 import { MemoryEngine } from '../agent/MemoryEngine.js';
 import { renderToolActivityLine, renderToolStart } from '../agent/ToolEventRenderer.js';
 import { CronDaemon } from '../agent/CronDaemon.js';
@@ -13,6 +22,12 @@ import type { ToolRegistry } from '../tools/Registry.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import { formatStructuredOutput } from '../utils/StructuredOutputFormat.js';
 import { generateImageToFile, hasImageGenerationConfig } from '../tools/ImageGenerator.js';
+import {
+  MODEL_PICKER_PAGE_SIZE,
+  chunkNumberButtons,
+  createModelPickerView,
+  modelAtAbsoluteIndex,
+} from './ModelPickerView.js';
 
 function cryptoRandomId(): string {
   return crypto.randomBytes(6).toString('hex');
@@ -87,7 +102,12 @@ export interface Platform {
     options?: any
   ): Promise<void | { messageId?: string }>;
   sendFile?(filePath: string, channelId: string, caption?: string, replyTo?: string): Promise<void>;
-  edit?(content: string, channelId: string, messageId: string, options?: any): Promise<void>;
+  edit?(
+    content: string,
+    channelId: string,
+    messageId: string,
+    options?: any
+  ): Promise<void | boolean>;
   react?(channelId: string, messageId: string, emoji: string): Promise<void>;
   typing?(channelId: string): Promise<void>;
   requestImageConfigModal?(channelId: string, userId: string, description?: string): Promise<void>;
@@ -112,7 +132,8 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   /history — Message count
 
 *Configuration:*
-  /model <name> — Switch AI model
+  /model [name] — Browse models or switch directly
+  /models [query] — Browse/search provider models
   /baseurl <url> — Change API base URL
   /apikey <key> — Set API key
   /depth <level> — Research depth (low/medium/high/xhigh/max/ultra)
@@ -214,6 +235,7 @@ const KNOWN_COMMANDS = new Set([
   'history',
   'history-search',
   'model',
+  'models',
   'baseurl',
   'apikey',
   'depth',
@@ -466,6 +488,20 @@ export class Gateway extends EventEmitter {
       step: 'baseUrl' | 'apiKey';
       draft: { baseUrl?: string; apiKey?: string; format?: 'openai' | 'anthropic' };
       description?: string;
+    }
+  >();
+  private pendingModelInteractions = new Map<
+    string,
+    {
+      token: string;
+      expiresAt: number;
+      mode: 'browse' | 'awaiting-search' | 'awaiting-custom';
+      query: string;
+      page: number;
+      version: number;
+      messageId?: string;
+      channelId: string;
+      items: ModelPickerItem[];
     }
   >();
   private cronDaemon: CronDaemon;
@@ -782,6 +818,256 @@ export class Gateway extends EventEmitter {
     );
   }
 
+  private async renderModelInteraction(
+    agentKey: string,
+    platform: Platform,
+    msg: IncomingMessage
+  ): Promise<boolean> {
+    const state = this.pendingModelInteractions.get(agentKey);
+    if (!state || state.expiresAt <= Date.now()) {
+      this.pendingModelInteractions.delete(agentKey);
+      await platform.send('Model picker expired. Run /model again.', msg.channelId, msg.replyTo);
+      return false;
+    }
+    const view = createModelPickerView(state.items, state.query, state.page);
+    state.page = view.page;
+    const previousVersion = state.version;
+    const nextVersion = previousVersion + 1;
+    const rows = view.rows;
+    const title = `🤖 Models${state.query ? ` — search: ${state.query}` : ''}\nModels ${view.start}-${view.end} of ${view.total} · Page ${view.page + 1}/${view.totalPages}`;
+    const lines = rows.map(({ item, absoluteIndex }) =>
+      `[${absoluteIndex}] ${item.label}${item.current ? ' (current)' : ''}`
+    );
+    const callback = (action: string) =>
+      `aurix_model:${state.token}:${nextVersion}:${action}`;
+    let content = `${title}\n\n${lines.join('\n')}`;
+    let options: any;
+
+    if (platform.name === 'telegram') {
+      const numberButtons = rows.map(({ absoluteIndex }) => ({
+        text: String(absoluteIndex),
+        callback_data: callback(`pick:${absoluteIndex}`),
+      }));
+      const keyboard = [
+        ...chunkNumberButtons(numberButtons, 5),
+        [
+          ...(view.page > 0 ? [{ text: '◀ Previous', callback_data: callback('prev') }] : []),
+          ...(view.page < view.totalPages - 1
+            ? [{ text: 'Next ▶', callback_data: callback('next') }]
+            : []),
+        ],
+        [
+          { text: '🔎 Search', callback_data: callback('search') },
+          { text: '✍ Custom', callback_data: callback('custom') },
+          { text: '✕ Cancel', callback_data: callback('cancel') },
+        ],
+      ].filter((row) => row.length > 0);
+      options = { reply_markup: { inline_keyboard: keyboard } };
+    } else if (platform.name === 'discord') {
+      content = content.slice(0, 1900);
+      const selectOptions = rows.map(({ item, absoluteIndex }) => ({
+        label: `${absoluteIndex}. ${item.label}`.slice(0, 100),
+        value: callback(`pick:${absoluteIndex}`),
+        description: item.id === item.label ? undefined : item.id.slice(0, 100),
+      }));
+      options = {
+        components: [
+          ...(selectOptions.length
+            ? [{
+                type: 1,
+                components: [{
+                  type: 3,
+                  custom_id: callback('select'),
+                  placeholder: 'Select a model',
+                  options: selectOptions,
+                }],
+              }]
+            : []),
+          {
+            type: 1,
+            components: [
+              ...(view.page > 0
+                ? [{ type: 2, style: 2, label: 'Previous', custom_id: callback('prev') }]
+                : []),
+              ...(view.page < view.totalPages - 1
+                ? [{ type: 2, style: 2, label: 'Next', custom_id: callback('next') }]
+                : []),
+              { type: 2, style: 1, label: 'Search', custom_id: callback('search') },
+              { type: 2, style: 2, label: 'Custom', custom_id: callback('custom') },
+              { type: 2, style: 4, label: 'Cancel', custom_id: callback('cancel') },
+            ],
+          },
+        ],
+      };
+    } else {
+      content += '\n\nReply with an absolute number, exact model ID, or /model <id>.';
+    }
+
+    if (state.messageId && platform.edit) {
+      const edited = await platform.edit(content, state.channelId, state.messageId, options);
+      if (edited === false) {
+        state.version = previousVersion;
+        this.pendingModelInteractions.set(agentKey, state);
+        return false;
+      }
+      state.version = nextVersion;
+      this.pendingModelInteractions.set(agentKey, state);
+      return true;
+    }
+    const sent = await platform.send(content, msg.channelId, msg.replyTo, options);
+    if (sent && typeof sent === 'object' && sent.messageId) {
+      state.messageId = sent.messageId;
+      state.channelId = msg.channelId;
+    }
+    state.version = nextVersion;
+    this.pendingModelInteractions.set(agentKey, state);
+    return true;
+  }
+
+  private async startModelInteraction(
+    agentKey: string,
+    platform: Platform,
+    msg: IncomingMessage,
+    query = ''
+  ): Promise<void> {
+    const result = await fetchConfiguredModels(this.config);
+    if (!result.models.length) {
+      const failure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
+      await platform.send(
+        `Could not load /models${failure ? `: ${failure.status ? `HTTP ${failure.status} ` : ''}${failure.error || failure.url}` : '.'}\nUse /model <exact-id> to switch manually.`,
+        msg.channelId,
+        msg.replyTo
+      );
+      return;
+    }
+    this.pendingModelInteractions.set(agentKey, {
+      token: cryptoRandomId().slice(0, 10),
+      expiresAt: Date.now() + 10 * 60_000,
+      mode: 'browse',
+      query,
+      page: 0,
+      version: 0,
+      channelId: msg.channelId,
+      items: toModelPickerItems(result.models, this.getAgent(agentKey).getModel()),
+    });
+    await this.renderModelInteraction(agentKey, platform, msg);
+  }
+
+  private async finishModelSelection(
+    agentKey: string,
+    platform: Platform,
+    msg: IncomingMessage,
+    modelId: string
+  ): Promise<void> {
+    const state = this.pendingModelInteractions.get(agentKey);
+    const selected = await applyModelSelection(this.getAgent(agentKey), this.config, modelId);
+    this.pendingModelInteractions.delete(agentKey);
+    const content = `✅ Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`;
+    if (state?.messageId && platform.edit) {
+      await platform.edit(content, state.channelId, state.messageId, {
+        ...(platform.name === 'telegram'
+          ? { reply_markup: { inline_keyboard: [] } }
+          : { components: [] }),
+      });
+      return;
+    }
+    await platform.send(content, msg.channelId, msg.replyTo);
+  }
+
+  private async consumeModelInteraction(
+    agentKey: string,
+    platform: Platform,
+    msg: IncomingMessage
+  ): Promise<boolean> {
+    const state = this.pendingModelInteractions.get(agentKey);
+    if (!state) return false;
+    if (state.expiresAt <= Date.now()) {
+      this.pendingModelInteractions.delete(agentKey);
+      if (msg.isCallback) await platform.send('Model picker expired. Run /model again.', msg.channelId, msg.replyTo);
+      return Boolean(msg.isCallback);
+    }
+    const raw = msg.content.trim();
+    if (state.mode === 'awaiting-search' && !msg.isCallback) {
+      state.mode = 'browse';
+      state.query = raw;
+      state.page = 0;
+      await this.renderModelInteraction(agentKey, platform, msg);
+      return true;
+    }
+    if (state.mode === 'awaiting-custom' && !msg.isCallback) {
+      await this.finishModelSelection(agentKey, platform, msg, raw);
+      return true;
+    }
+    if (msg.isCallback && raw.startsWith('aurix_model:')) {
+      const [, token, versionRaw, ...actionParts] = raw.split(':');
+      const action = actionParts.join(':');
+      const version = Number(versionRaw);
+      if (token !== state.token || version !== state.version) {
+        await platform.send('Model picker expired. Run /model again.', msg.channelId, msg.replyTo);
+        return true;
+      }
+      if (action === 'next' || action === 'prev') {
+        state.page += action === 'next' ? 1 : -1;
+        await this.renderModelInteraction(agentKey, platform, msg);
+        return true;
+      }
+      if (action.startsWith('search-value:') || action.startsWith('custom-value:')) {
+        const custom = action.startsWith('custom-value:');
+        const encoded = action.slice(custom ? 'custom-value:'.length : 'search-value:'.length);
+        const value = decodeURIComponent(encoded);
+        if (custom) {
+          await this.finishModelSelection(agentKey, platform, msg, value);
+        } else {
+          state.mode = 'browse';
+          state.query = value;
+          state.page = 0;
+          await this.renderModelInteraction(agentKey, platform, msg);
+        }
+        return true;
+      }
+      if (action === 'search' || action === 'custom') {
+        state.mode = action === 'search' ? 'awaiting-search' : 'awaiting-custom';
+        await platform.send(action === 'search' ? 'Type your model search query.' : 'Type the exact custom model ID.', msg.channelId, msg.replyTo);
+        return true;
+      }
+      if (action === 'cancel') {
+        this.pendingModelInteractions.delete(agentKey);
+        if (state.messageId && platform.edit) {
+          await platform.edit('Model picker cancelled.', state.channelId, state.messageId, {
+            ...(platform.name === 'telegram'
+              ? { reply_markup: { inline_keyboard: [] } }
+              : { components: [] }),
+          });
+        } else {
+          await platform.send('Model picker cancelled.', msg.channelId, msg.replyTo);
+        }
+        return true;
+      }
+      if (action.startsWith('pick:')) {
+        const absoluteIndex = Number(action.slice(5));
+        const model = modelAtAbsoluteIndex(state.items, state.query, absoluteIndex)?.id;
+        if (!model) {
+          await platform.send('That model choice expired. Run /model again.', msg.channelId, msg.replyTo);
+          return true;
+        }
+        await this.finishModelSelection(agentKey, platform, msg, model);
+        return true;
+      }
+      return true;
+    }
+    if (!msg.isCallback && state.mode === 'browse') {
+      const numeric = raw.match(/^\[?(\d+)\]?[.]?$/)?.[1];
+      const model = numeric
+        ? modelAtAbsoluteIndex(state.items, state.query, Number(numeric))?.id
+        : state.items.find((item) => item.id.toLowerCase() === raw.toLowerCase())?.id;
+      if (model) {
+        await this.finishModelSelection(agentKey, platform, msg, model);
+        return true;
+      }
+    }
+    return false;
+  }
+
   private async consumePendingImageConfig(
     agentKey: string,
     platform: Platform,
@@ -880,25 +1166,29 @@ export class Gateway extends EventEmitter {
       msg.isCallback &&
       !AskUserManager.isWaiting(agentKey) &&
       !this.pendingImageConfig.has(agentKey) &&
+      !this.pendingModelInteractions.has(agentKey) &&
       !/^image_fmt_/i.test(msg.content.trim())
     )
       return;
 
-    // Allow /btw, /cancel, and pending approval/ask replies through while agent is processing.
-    if (cmd !== 'btw' && cmd !== 'cancel' && !AskUserManager.isWaiting(agentKey)) {
-      if (this.processing.has(agentKey) || this.activeProcessing.has(agentKey)) {
-        const queue = this.messageQueue.get(agentKey) || [];
-        queue.push(msg);
-        this.messageQueue.set(agentKey, queue.slice(-10));
-        await platform.send(
-          stripMarkdown(
-            `📋 Task queued (${this.messageQueue.get(agentKey)?.length || 1}). Current task still running — your message will be processed after it finishes.\nUse /cancel to stop the current task.`
-          ),
-          msg.channelId,
-          msg.replyTo
-        );
-        return;
-      }
+    // Never mutate the provider/model while an AgentLoop turn is still active.
+    if (
+      cmd !== 'btw' &&
+      cmd !== 'cancel' &&
+      !AskUserManager.isWaiting(agentKey) &&
+      (this.processing.has(agentKey) || this.activeProcessing.has(agentKey))
+    ) {
+      const queue = this.messageQueue.get(agentKey) || [];
+      queue.push(msg);
+      this.messageQueue.set(agentKey, queue.slice(-10));
+      await platform.send(
+        stripMarkdown(
+          `📋 Task queued (${this.messageQueue.get(agentKey)?.length || 1}). Current task still running — your message will be processed after it finishes.\nUse /cancel to stop the current task.`
+        ),
+        msg.channelId,
+        msg.replyTo
+      );
+      return;
     }
 
     // Guard: prevent concurrent processing for the same user
@@ -951,6 +1241,7 @@ export class Gateway extends EventEmitter {
       }
 
       if (await this.consumePendingImageConfig(agentKey, platform, msg)) return;
+      if (await this.consumeModelInteraction(agentKey, platform, msg)) return;
 
       if (cmd === 'cancel') {
         const runId = this.activeRuns.get(agentKey);
@@ -1163,34 +1454,53 @@ export class Gateway extends EventEmitter {
         return;
       }
 
+      if ((cmd === 'model' || cmd === 'models') && (cmd === 'models' || !args)) {
+        await this.startModelInteraction(agentKey, platform, msg, cmd === 'models' ? args : '');
+        return;
+      }
+
       if (cmd === 'model' && args) {
-        const agent = this.getAgent(agentKey);
-        agent.setProvider({ model: args });
-        // Persist to config file
-        this.config.model = args;
-        saveConfig(this.config);
-        console.log(`[Gateway] Model changed to: ${args}`);
-        await platform.send(`✅ Model switched to: ${args}`, msg.channelId, msg.replyTo);
+        const selected = await applyModelSelection(this.getAgent(agentKey), this.config, args);
+        console.log(`[Gateway] Model changed to: ${selected.model}`);
+        await platform.send(
+          `✅ Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`,
+          msg.channelId,
+          msg.replyTo
+        );
         return;
       }
 
       if (cmd === 'baseurl' && args) {
         const agent = this.getAgent(agentKey);
-        agent.setProvider({ baseUrl: args });
+        const context = await agent.applyProviderConfig(
+          { baseUrl: args },
+          { preferFreshModels: true }
+        );
         this.config.baseUrl = args;
         saveConfig(this.config);
         console.log(`[Gateway] Base URL changed to: ${args}`);
-        await platform.send(`✅ Base URL switched to: ${args}`, msg.channelId, msg.replyTo);
+        await platform.send(
+          `✅ Base URL switched to: ${args}\nContext: ${modelContextDiagnostic(context)}`,
+          msg.channelId,
+          msg.replyTo
+        );
         return;
       }
 
       if (cmd === 'apikey' && args) {
         const agent = this.getAgent(agentKey);
-        agent.setProvider({ apiKey: args });
+        const context = await agent.applyProviderConfig(
+          { apiKey: args },
+          { preferFreshModels: true }
+        );
         this.config.apiKey = args;
         saveConfig(this.config);
         console.log(`[Gateway] API key updated`);
-        await platform.send(`✅ API key updated.`, msg.channelId, msg.replyTo);
+        await platform.send(
+          `✅ API key updated.\nContext: ${modelContextDiagnostic(context)}`,
+          msg.channelId,
+          msg.replyTo
+        );
         return;
       }
 
