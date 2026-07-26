@@ -9,6 +9,17 @@ import {
   modelListFromPayload,
 } from './ModelDiscovery.js';
 
+import MODEL_REGISTRY from './model-registry.json' with { type: 'json' };
+
+/**
+ * Shape of model-registry.json: id -> [maxInputTokens, maxOutputTokens?].
+ * Typed as number[] because a JSON import widens tuples to arrays; index 0 is always
+ * present (the generator drops entries without a positive input window).
+ */
+interface ModelRegistryFile {
+  models: Record<string, number[]>;
+}
+
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const FALLBACK_CONTEXT_LIMIT = 256_000;
 const METADATA_TIMEOUT_MS = 3000;
@@ -47,7 +58,15 @@ const OUTPUT_KEYS = [
   'availableOutputTokens',
 ];
 
-export type ModelContextSource = 'config' | 'env' | 'cache' | 'models' | 'marker' | 'catalog' | 'fallback';
+export type ModelContextSource =
+  | 'config'
+  | 'env'
+  | 'cache'
+  | 'models'
+  | 'marker'
+  | 'catalog'
+  | 'registry'
+  | 'fallback';
 
 export interface ModelContextInfo {
   context: number;
@@ -219,7 +238,12 @@ export function parseContextMarker(model: string): number | undefined {
 }
 
 export function fallbackModelContextLimit(model: string): number {
-  return parseContextMarker(model) || familyCatalogContext(model) || FALLBACK_CONTEXT_LIMIT;
+  return (
+    parseContextMarker(model) ||
+    familyCatalogContext(model) ||
+    registryModelLimits(model)?.input ||
+    FALLBACK_CONTEXT_LIMIT
+  );
 }
 
 /**
@@ -252,6 +276,37 @@ function familyCatalogContext(model: string): number | undefined {
   // Fold separators so "claude-opus-4.7", "claude-opus-4_7" and "claude-opus-4-7" all match.
   const normalized = model.toLowerCase().replace(/[._]/g, '-');
   return CONTEXT_CATALOG.find((entry) => entry.match.test(normalized))?.context;
+}
+
+/**
+ * Candidate keys for the vendored registry, most specific first. Router ids carry a prefix
+ * the registry does not know ("cc/claude-opus-4-7", "ih/free/grok/grok-4.5"), and providers
+ * disagree on '.' vs '-', so try the whole id, then progressively shorter tails.
+ */
+function registryLookupKeys(model: string): string[] {
+  const lower = model.trim().toLowerCase();
+  const segments = lower.split('/').filter(Boolean);
+  const candidates = new Set<string>();
+  for (let i = 0; i < segments.length; i++) {
+    const tail = segments.slice(i).join('/');
+    candidates.add(tail);
+    candidates.add(tail.replace(/[._]/g, '-'));
+  }
+  return [...candidates];
+}
+
+/**
+ * Looks the model up in the LiteLLM-derived registry vendored at model-registry.json.
+ * Sits below the curated catalog: the catalog is tiny and can be hotfixed the day a model
+ * ships, while the registry covers the long tail we would otherwise have to guess at.
+ */
+export function registryModelLimits(model: string): { input: number; output?: number } | undefined {
+  const table = (MODEL_REGISTRY as ModelRegistryFile).models;
+  for (const key of registryLookupKeys(model)) {
+    const hit = table[key];
+    if (hit && hit[0] > 0) return { input: hit[0], output: hit[1] };
+  }
+  return undefined;
 }
 
 function normalizeModelId(model: string): string {
@@ -356,6 +411,16 @@ export async function resolveModelContextInfo(
   if (marker) return { context: marker, source: 'marker', confidence: 'medium', updatedAt: Date.now() };
   const catalog = familyCatalogContext(config.model);
   if (catalog) return { context: catalog, source: 'catalog', confidence: 'medium', updatedAt: Date.now() };
+  const registry = registryModelLimits(config.model);
+  if (registry)
+    return {
+      context: registry.input,
+      input: registry.input,
+      output: registry.output,
+      source: 'registry',
+      confidence: 'medium',
+      updatedAt: Date.now(),
+    };
   return { context: FALLBACK_CONTEXT_LIMIT, source: 'fallback', confidence: 'low', updatedAt: Date.now() };
 }
 

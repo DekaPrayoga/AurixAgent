@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test';
-import { fallbackModelContextLimit, parseContextMarker } from '../src/agent/ModelContext.js';
+import {
+  fallbackModelContextLimit,
+  parseContextMarker,
+  registryModelLimits,
+} from '../src/agent/ModelContext.js';
 
 const M = 1_000_000;
 const K200 = 200_000;
@@ -44,8 +48,46 @@ describe('context catalog', () => {
   test('an unknown model falls back rather than guessing', () => {
     // Guessing high makes the agent compact too late and the provider rejects the request.
     // Unknown ids stay on the conservative default; `contextLimit` in config pins the truth.
+    // grok-4.5 and glm-5.2 are absent from the vendored registry too, so they land here.
     expect(fallbackModelContextLimit('ih/free/grok/grok-4.5')).toBe(256_000);
     expect(fallbackModelContextLimit('some/unheard-of-model')).toBe(256_000);
+  });
+});
+
+describe('vendored model registry', () => {
+  test('covers the long tail the curated catalog deliberately skips', () => {
+    expect(registryModelLimits('deepseek-chat')?.input).toBe(131_072);
+    expect(registryModelLimits('gemini-2.5-pro')?.input).toBe(1_048_576);
+    expect(registryModelLimits('mistral/mistral-large-latest')?.input).toBe(262_144);
+  });
+
+  test('strips router prefixes to find the bare model id', () => {
+    // Config ids look like "cc/claude-opus-4-7"; the registry keys are bare.
+    expect(registryModelLimits('cc/claude-opus-4-7')?.input).toBe(1_000_000);
+    expect(registryModelLimits('kr/claude-opus-4.8')?.input).toBe(1_000_000);
+  });
+
+  test('carries output limits, which the curated catalog does not', () => {
+    expect(registryModelLimits('claude-opus-4-7')?.output).toBe(128_000);
+    expect(registryModelLimits('gpt-4o')?.output).toBe(16_384);
+  });
+
+  test('independently agrees with every curated catalog value', () => {
+    // If these ever diverge, one of the two is wrong and the mismatch should be looked at.
+    for (const [id, expected] of [
+      ['claude-opus-4-7', 1_000_000],
+      ['claude-opus-4-8', 1_000_000],
+      ['claude-sonnet-5', 1_000_000],
+      ['claude-haiku-4-5', 200_000],
+      ['gpt-4o', 128_000],
+    ] as [string, number][]) {
+      expect(registryModelLimits(id)?.input).toBe(expected);
+      expect(fallbackModelContextLimit(id)).toBe(expected);
+    }
+  });
+
+  test('reports nothing for a model it has never heard of', () => {
+    expect(registryModelLimits('totally/made/up-model-xyz')).toBeUndefined();
   });
 
   test('an explicit marker in the id still wins', () => {

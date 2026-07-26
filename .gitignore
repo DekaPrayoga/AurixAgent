@@ -63,6 +63,9 @@ test-*.ts
 
 # AI session junk (debug/patch scripts)
 *.cjs
+# ...but scripts/ holds real, maintained build tooling (build.cjs was already tracked
+# despite the blanket rule above, which made the rule quietly inconsistent).
+!scripts/*.cjs
 *.cmd
 test-run.mjs
 test-*.js
