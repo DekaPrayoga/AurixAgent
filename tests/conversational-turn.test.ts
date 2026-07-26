@@ -48,6 +48,11 @@ describe('conversational turn detection', () => {
       'paham',
       'wkwkwk',
       'hahaha',
+      // intensified thanks — flagged by review as misses that cost tokens
+      'terima kasih banyak',
+      'makasih banyak ya',
+      'thanks so much',
+      'makasih banget',
       'siapa kamu',
       'what can you do',
     ]) {

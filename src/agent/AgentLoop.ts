@@ -124,7 +124,7 @@ export const CONVERSATIONAL_TURN = new RegExp(
     ].join('|') +
     ')' +
     // an optional vocative tail — "makasih bro", "oke bang", "halo min"
-    '(?:[\\s,]+(?:bro|bang|bre|cuy|min|gan|dong|deh|ya|nih|sih|man|dude|there|all))*' +
+    '(?:[\\s,]+(?:bro|bang|bre|cuy|min|gan|dong|deh|ya|nih|sih|man|dude|there|all|banyak|banget|bgt|so much|a lot))*' +
     '[\\s.!?,~]*$',
   'i'
 );

@@ -65,11 +65,18 @@ export function useElapsedSeconds(active: boolean): number {
   const [, setTick] = useState(0);
   const startedAt = useRef(0);
 
-  if (active && startedAt.current === 0) startedAt.current = Date.now();
-  if (!active && startedAt.current !== 0) startedAt.current = 0;
-
+  // Both the stamp and the reset live in the effect. Writing a ref from the render body is a
+  // React purity violation: a speculative render that never commits would still move the
+  // clock. It happens to be inert under @opentui/react today (synchronous reconciler, no
+  // StrictMode, no concurrent scheduling), but it would turn into a real bug the day that
+  // changes, and reading the ref during render is safe either way.
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      startedAt.current = 0;
+      return;
+    }
+    startedAt.current = Date.now();
+    setTick((t) => t + 1);
     return subscribe(1000, () => setTick((t) => t + 1));
   }, [active]);
 
