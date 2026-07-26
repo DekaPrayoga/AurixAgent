@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { SyntaxStyle, TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
-import { useThinkingAnimation } from './animation/useThinking.js';
+import { toolColor, toolIcon } from './visual.js';
+import { useThinkingAnimation, useScanner, useAnimationTick } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import {
-  parseMarkdownTableBlock,
-  renderMarkdownTableAsBlocks,
 } from '../utils/StructuredOutputFormat.js';
 
 class CustomSpeedScroll implements ScrollAcceleration {
@@ -143,288 +142,7 @@ function displayWidth(text: string): number {
   return Array.from(text).reduce((sum, char) => sum + charWidth(char), 0);
 }
 
-function isRuleLine(line: string): boolean {
-  return /^[\s|:─━═—\-]+$/.test(line.trim()) && displayWidth(line.trim()) >= 3;
-}
 
-function parseLabelValue(line: string): { label: string; value: string } | null {
-  const match = line.match(/^\s*([A-Za-z][A-Za-z0-9 /()._$-]{0,32})\s*:\s*(.*)$/);
-  if (!match) return null;
-  return { label: match[1].trim(), value: match[2].trim() };
-}
-
-function collectLabeledTable(
-  lines: string[],
-  start: number
-): { headers: string[]; rows: string[][]; nextIndex: number } | null {
-  const first = parseLabelValue(lines[start] || '');
-  if (!first || first.label.toLowerCase() !== 'provider') return null;
-
-  const blocks: Record<string, string>[] = [];
-  let current: Record<string, string> = {};
-  const headers: string[] = [];
-  let i = start;
-
-  const addHeader = (label: string) => {
-    if (!headers.includes(label)) headers.push(label);
-  };
-
-  const flush = () => {
-    if (Object.keys(current).length > 0) {
-      blocks.push(current);
-      current = {};
-    }
-  };
-
-  while (i < lines.length) {
-    const raw = lines[i];
-    if (raw.trim() === '') break;
-    if (isRuleLine(raw)) {
-      flush();
-      i++;
-      continue;
-    }
-
-    const pair = parseLabelValue(raw);
-    if (!pair) break;
-
-    if (pair.label === first.label && Object.keys(current).length > 0) flush();
-    addHeader(pair.label);
-    current[pair.label] = pair.value || '—';
-    i++;
-  }
-  flush();
-
-  if (blocks.length < 2 || headers.length < 2) return null;
-  const rows = blocks.map((block) => headers.map((header) => block[header] || ''));
-  return { headers, rows, nextIndex: i };
-}
-
-function renderTable(headers: string[], rows: string[][], key: string): React.ReactNode {
-  const tableText = renderMarkdownTableAsBlocks(headers, rows);
-  return (
-    <box key={key} flexDirection="column" marginTop={1} marginBottom={1} flexShrink={0}>
-      {tableText.split('\n').map((line, idx) => (
-        <text
-          key={idx}
-          fg={idx === 0 ? theme.primary : isRuleLine(line) ? theme.border : theme.text}
-          attributes={idx === 0 ? TextAttributes.BOLD : TextAttributes.NONE}
-        >
-          {line}
-        </text>
-      ))}
-    </box>
-  );
-}
-
-function MarkdownText({ content, themeVersion }: { content: string; themeVersion: number }) {
-  const elements = useMemo(() => {
-    const lines = safeDisplayText(content).split('\n');
-    const elements: React.ReactNode[] = [];
-    let i = 0;
-
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Fenced code block: ```
-      if (line.trimStart().startsWith('```')) {
-        const lang = line.trimStart().slice(3).trim();
-        const codeLines: string[] = [];
-        i++;
-        while (i < lines.length && !lines[i].trimStart().startsWith('```')) {
-          codeLines.push(lines[i]);
-          i++;
-        }
-        i++; // skip closing ```
-        elements.push(
-          <box
-            key={`code-${i}`}
-            flexDirection="column"
-            backgroundColor={theme.bgElement}
-            border={['left']}
-            borderColor={theme.accent}
-            paddingLeft={2}
-            paddingRight={2}
-            paddingTop={1}
-            paddingBottom={1}
-            marginTop={1}
-            marginBottom={1}
-            flexShrink={0}
-            minWidth={0}
-          >
-            {lang && (
-              <text fg={theme.textMuted} attributes={TextAttributes.DIM}>
-                {lang}
-              </text>
-            )}
-            {codeLines.map((cl, j) => (
-              <text key={j} fg={theme.info} wrapMode="word" minWidth={0}>
-                {cl}
-              </text>
-            ))}
-          </box>
-        );
-        continue;
-      }
-
-      // Table: | col1 | col2 | col3 |
-      if (line.trimStart().startsWith('|') && line.includes('|', 1)) {
-        const tableLines: string[] = [];
-        while (i < lines.length && lines[i].trimStart().startsWith('|')) {
-          tableLines.push(lines[i]);
-          i++;
-        }
-        const table = parseMarkdownTableBlock(tableLines, 0);
-        if (table) {
-          const blockText = renderMarkdownTableAsBlocks(table.headers, table.rows);
-          elements.push(
-            <box key={`table-${i}`} flexDirection="column" marginTop={1} marginBottom={1}>
-              {blockText.split('\n').map((blockLine: string, j: number) =>
-                isRuleLine(blockLine) ? (
-                  <text key={j} fg={theme.border}>
-                    {blockLine}
-                  </text>
-                ) : (
-                  <box key={j} flexShrink={0}>
-                    <InlineText text={blockLine} />
-                  </box>
-                )
-              )}
-            </box>
-          );
-        }
-        continue;
-      }
-
-      const labeledTable = collectLabeledTable(lines, i);
-      if (labeledTable) {
-        elements.push(renderTable(labeledTable.headers, labeledTable.rows, `kv-table-${i}`));
-        i = labeledTable.nextIndex;
-        continue;
-      }
-
-      // Headers: # ## ###
-      const headerMatch = line.match(/^(#{1,6})\s+(.*)/);
-      if (headerMatch) {
-        const level = headerMatch[1].length;
-        const text = headerMatch[2];
-        const color = level <= 2 ? theme.primary : level <= 4 ? theme.secondary : theme.text;
-        const size = level === 1 ? `━━ ${text} ━━` : level === 2 ? `── ${text} ──` : text;
-        elements.push(
-          <box key={`h-${i}`} paddingTop={level <= 2 ? 1 : 0}>
-            <text fg={color} attributes={TextAttributes.BOLD} wrapMode="word">
-              {size}
-            </text>
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Horizontal rule: ---, ***, ___
-      if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
-        elements.push(
-          <box key={`hr-${i}`}>
-            <text fg={theme.border}>{'─'.repeat(40)}</text>
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Blockquote: > text
-      if (line.trimStart().startsWith('>')) {
-        const quoteText = line.replace(/^\s*>\s?/, '');
-        elements.push(
-          <box
-            key={`q-${i}`}
-            paddingLeft={2}
-            border={['left']}
-            borderColor={theme.accent}
-            flexShrink={0}
-            minWidth={0}
-          >
-            <text
-              fg={theme.textMuted}
-              attributes={TextAttributes.ITALIC}
-              wrapMode="word"
-              minWidth={0}
-            >
-              {quoteText}
-            </text>
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Unordered list: - item, * item, + item
-      const bulletMatch = line.match(/^(\s*)[-*+]\s+(?!\[[ xX]\])(.*)/);
-      if (bulletMatch) {
-        const indent = Math.floor((bulletMatch[1]?.length || 0) / 2);
-        elements.push(
-          <box key={`li-${i}`} paddingLeft={2 + indent * 2} flexDirection="row">
-            <text fg={theme.primary}>● </text>
-            <InlineText text={bulletMatch[2]} />
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Ordered list: 1. item
-      const numMatch = line.match(/^(\s*)(\d+)[.)]\s+(.*)/);
-      if (numMatch) {
-        elements.push(
-          <box key={`ol-${i}`} paddingLeft={2} flexDirection="row">
-            <text fg={theme.secondary}>{numMatch[2]}. </text>
-            <InlineText text={numMatch[3]} />
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Checkbox: - [ ] or - [x]
-      const checkMatch = line.match(/^\s*-\s+\[([ xX])\]\s+(.*)/);
-      if (checkMatch) {
-        const checked = checkMatch[1] !== ' ';
-        elements.push(
-          <box key={`cb-${i}`} paddingLeft={2} flexDirection="row">
-            <text fg={checked ? theme.ok : theme.textMuted}>{checked ? '✓ ' : '○ '}</text>
-            <text fg={checked ? theme.text : theme.textMuted} wrapMode="word">
-              {checkMatch[2]}
-            </text>
-          </box>
-        );
-        i++;
-        continue;
-      }
-
-      // Empty line
-      if (line.trim() === '') {
-        i++;
-        continue;
-      }
-
-      // Regular text with inline markdown
-      elements.push(
-        <box key={`p-${i}`} flexShrink={0}>
-          <InlineText text={line} />
-        </box>
-      );
-      i++;
-    }
-
-    return elements;
-  }, [content, themeVersion]);
-
-  return (
-    <box flexDirection="column" flexShrink={0}>
-      {elements}
-    </box>
-  );
-}
 
 export interface ChatMessage {
   id?: string;
@@ -447,24 +165,18 @@ interface ChatAreaProps {
 
 function ThinkingIndicator() {
   const frame = useThinkingAnimation(true, 90);
+  // A pulsing glyph alone looks the same at second 1 and second 90. The elapsed counter is
+  // what tells you whether a long wait is progress or a hang.
+  const tick = useAnimationTick(true, 1000);
+  const started = useRef(Date.now());
+  const seconds = Math.floor((Date.now() - started.current) / 1000);
+  void tick;
   return (
-    <box paddingX={2}>
+    <box paddingX={2} flexDirection="row">
       <text fg={theme.thinking}>{frame} thinking</text>
+      {seconds >= 2 && <text fg={theme.textMuted}>{`  ${seconds}s`}</text>}
     </box>
   );
-}
-
-function toolColor(name?: string): string {
-  const tool = (name || '').toLowerCase();
-  if (tool.includes('read') || tool.includes('search') || tool.includes('grep')) return theme.info;
-  if (tool.includes('write') || tool.includes('edit') || tool.includes('delete')) return theme.warn;
-  if (tool.includes('terminal') || tool.includes('bash') || tool.includes('code_exec'))
-    return theme.secondary;
-  if (tool.includes('browser') || tool.includes('captcha')) return theme.accent;
-  if (tool.includes('research') || tool.includes('web')) return theme.primary;
-  if (tool.includes('git') || tool.includes('github')) return theme.ok;
-  if (tool.includes('ask')) return theme.thinking;
-  return theme.tool;
 }
 
 function outputLineColor(line: string, fallback: string): string {
@@ -575,15 +287,9 @@ function ToolOutputText({
 }
 
 function ToolSpinner({ name, args }: { name: string; args?: Record<string, unknown> }) {
-  const [tick, setTick] = useState(0);
-  const charsUnicode = ['·', '✢', '*', '✶', '✻', '✽'];
-  const charsAscii = ['.', '*', '**', '***', '****', '***', '**', '*'];
-  const chars = process.platform === 'win32' ? charsAscii : charsUnicode;
-  const frames = process.platform === 'win32' ? chars : [...chars, ...[...chars].reverse()];
-  useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), 120);
-    return () => clearInterval(id);
-  }, []);
+  // A sweeping bar rather than a twirl: it shows the run is still moving even when the
+  // tool name has not changed for a while.
+  const scan = useScanner(true, 7, 80);
 
   const detail = useMemo(
     () =>
@@ -597,7 +303,7 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   return (
     <box paddingX={2} flexDirection="column">
       <box flexDirection="row">
-        <text fg={color}>{frames[tick % frames.length]} </text>
+        <text fg={color}>{scan} </text>
         <text fg={theme.textMuted}>{detail}</text>
       </box>
     </box>
@@ -627,6 +333,11 @@ const UserMessage = React.memo(function UserMessage({
         flexShrink={0}
         minWidth={0}
       >
+        <box flexDirection="row" flexShrink={0}>
+          <text fg={theme.bg} bg={theme.primary} attributes={TextAttributes.BOLD}>
+            {' you '}
+          </text>
+        </box>
         <text fg={theme.text} wrapMode="word" minWidth={0}>
           {safeDisplayText(msg.content)}
         </text>
@@ -665,7 +376,23 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
   return markdownSyntax;
 }
 
-const MARKDOWN_TABLE_OPTIONS = { style: 'columns' as const, wrapMode: 'word' as const, cellPaddingX: 1 };
+/**
+ * Tables render as a real bordered grid rather than bare aligned columns. Borderless
+ * columns read as an accidental block of text once a row wraps; a grid makes the cell
+ * boundaries unambiguous.
+ *
+ * Theme-dependent, so it is rebuilt whenever the palette changes — a plain module
+ * constant would keep the old border colour after a theme switch.
+ */
+function getTableOptions(_themeVersion: number) {
+  return {
+    style: 'grid' as const,
+    wrapMode: 'word' as const,
+    cellPaddingX: 1,
+    borderColor: theme.borderSubtle,
+    borderStyle: 'rounded' as const,
+  };
+}
 
 export function selectVisibleMessages(
   messages: ChatMessage[],
@@ -697,7 +424,7 @@ const AssistantMessage = React.memo(function AssistantMessage({
         streaming={streaming}
         conceal={true}
         concealCode={false}
-        tableOptions={MARKDOWN_TABLE_OPTIONS}
+        tableOptions={getTableOptions(themeVersion)}
       />
     </box>
   );
@@ -722,8 +449,8 @@ const ToolMessage = React.memo(function ToolMessage({
     return (
       <box flexDirection="column" flexShrink={0}>
         <box flexDirection="row" paddingLeft={4} paddingRight={2}>
-          <text fg={color}>▸ </text>
-          <text fg={color}>{msg.toolName || 'tool'}</text>
+          <text fg={color}>{toolIcon(msg.toolName)} </text>
+          <text fg={color} attributes={TextAttributes.BOLD}>{msg.toolName || 'tool'}</text>
         </box>
         <FileDiff
           filePath={safeDiff.filePath}
@@ -737,8 +464,8 @@ const ToolMessage = React.memo(function ToolMessage({
   return (
     <box flexDirection="column" paddingLeft={4} paddingRight={2} flexShrink={0}>
       <box flexDirection="row">
-        <text fg={color}>▸ </text>
-        <text fg={color}>{msg.toolName || 'tool'}</text>
+        <text fg={color}>{toolIcon(msg.toolName)} </text>
+        <text fg={color} attributes={TextAttributes.BOLD}>{msg.toolName || 'tool'}</text>
       </box>
       <box paddingLeft={2}>
         <ToolOutputText content={msg.content} color={color} markdown={msg.toolName === 'memory'} />
@@ -755,9 +482,20 @@ const SystemMessage = React.memo(function SystemMessage({
 }) {
   const completion = /^Model: .* · Duration: .* · Tools: \d+$/.test(msg.content);
   return (
-    <box paddingLeft={completion ? 3 : 4} paddingRight={2} marginTop={completion ? 1 : 0} flexShrink={0}>
-      <text fg={completion ? theme.textMuted : theme.warn} wrapMode="word">
-        {completion ? `▣ ${safeDisplayText(msg.content)}` : safeDisplayText(msg.content)}
+    <box
+      flexDirection="row"
+      paddingLeft={completion ? 3 : 4}
+      paddingRight={2}
+      marginTop={completion ? 1 : 0}
+      flexShrink={0}
+    >
+      {completion && <text fg={theme.primary}>{'▣ '}</text>}
+      <text
+        fg={completion ? theme.textMuted : theme.warn}
+        attributes={completion ? TextAttributes.DIM : TextAttributes.NONE}
+        wrapMode="word"
+      >
+        {safeDisplayText(msg.content)}
       </text>
     </box>
   );
@@ -792,7 +530,7 @@ export function ChatArea({
         stickyStart="bottom"
         flexGrow={1}
         scrollAcceleration={scrollAcceleration}
-        verticalScrollbarOptions={{ visible: false }}
+        verticalScrollbarOptions={{ visible: true, showArrows: false }}
       >
         <box height={1} />
         <box flexDirection="column">
