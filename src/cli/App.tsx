@@ -3448,7 +3448,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               flexShrink={0}
             >
               <box flexDirection="column">
-                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+                <text fg={theme.primary} attributes={TextAttributes.BOLD}>
                   context
                 </text>
                 <box flexDirection="row" marginTop={1}>
@@ -3461,7 +3461,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               </box>
 
               <box flexDirection="column" marginTop={1}>
-                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+                <text fg={theme.primary} attributes={TextAttributes.BOLD}>
                   tokens
                 </text>
                 <box flexDirection="row" marginTop={1}>
@@ -3484,7 +3484,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               </box>
 
               <box flexDirection="column" marginTop={1}>
-                <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
+                <text fg={theme.primary} attributes={TextAttributes.BOLD}>
                   info
                 </text>
                 <box flexDirection="row" marginTop={1}>

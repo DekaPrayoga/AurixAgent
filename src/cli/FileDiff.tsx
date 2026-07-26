@@ -1,4 +1,5 @@
 import React from 'react';
+import { TextAttributes } from '@opentui/core';
 import { theme } from './theme.js';
 
 interface DiffProps {
@@ -27,6 +28,9 @@ export function FileDiff({ filePath, oldLines, newLines, lineStart = 1 }: DiffPr
     String(lineStart + Math.max(oldLines.length, newLines.length)).length
   );
 
+  // The gutter is drawn as its own <text> so the line number can stay dim while the sign
+  // and the code itself carry the diff colour — one flat colour for the whole row makes the
+  // numbers compete with the change for attention.
   const renderDiffLine = (
     key: string,
     sign: '+' | '-',
@@ -35,8 +39,10 @@ export function FileDiff({ filePath, oldLines, newLines, lineStart = 1 }: DiffPr
     bg: string,
     fg: string
   ) => (
-    <box key={key} backgroundColor={bg} flexShrink={0}>
-      <text fg={fg} bg={bg}>{`${sign}${String(lineNo).padStart(lineWidth)} ${line || ' '}`}</text>
+    <box key={key} backgroundColor={bg} flexDirection="row" flexShrink={0}>
+      <text fg={theme.diffLineNumber} bg={bg}>{`${String(lineNo).padStart(lineWidth)} `}</text>
+      <text fg={fg} bg={bg} attributes={TextAttributes.BOLD}>{sign}</text>
+      <text fg={fg} bg={bg}>{` ${line || ' '}`}</text>
     </box>
   );
 
@@ -52,16 +58,18 @@ export function FileDiff({ filePath, oldLines, newLines, lineStart = 1 }: DiffPr
         renderDiffLine(`old-${i}`, '-', lineStart + i, line, removedBg, removedFg)
       )}
       {oldTruncated && (
-        <box>
-          <text fg={theme.textMuted}>{`... ${oldLines.length - maxLines} more removed`}</text>
+        <box flexDirection="row" paddingLeft={1}>
+          <text fg={theme.diffRemoved}>{'… '}</text>
+          <text fg={theme.textMuted}>{`${oldLines.length - maxLines} more removed`}</text>
         </box>
       )}
       {trimmedNew.map((line, i) =>
         renderDiffLine(`new-${i}`, '+', lineStart + i, line, addedBg, addedFg)
       )}
       {newTruncated && (
-        <box>
-          <text fg={theme.textMuted}>{`... ${newLines.length - maxLines} more added`}</text>
+        <box flexDirection="row" paddingLeft={1}>
+          <text fg={theme.diffAdded}>{'… '}</text>
+          <text fg={theme.textMuted}>{`${newLines.length - maxLines} more added`}</text>
         </box>
       )}
     </box>
