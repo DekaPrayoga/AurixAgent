@@ -222,12 +222,36 @@ export function fallbackModelContextLimit(model: string): number {
   return parseContextMarker(model) || familyCatalogContext(model) || FALLBACK_CONTEXT_LIMIT;
 }
 
+/**
+ * Known context windows, checked in order — the first match wins, so the most specific
+ * entry comes first. Only add a model you can actually confirm: guessing high makes the
+ * agent compact too late and the request dies at the provider, guessing low wastes window.
+ * Anything absent falls through to FALLBACK_CONTEXT_LIMIT, and the operator can always
+ * pin the real number with `contextLimit` in ~/.aurix/config.yaml.
+ *
+ * Patterns are matched against the model id with '.' and '_' folded to '-', so a router
+ * prefix and either separator style both hit: "cc/claude-opus-4-7", "kr/claude-opus-4.7".
+ */
+const CONTEXT_CATALOG: { match: RegExp; context: number }[] = [
+  // Anthropic — the 4.6-and-newer generation moved to a 1M window.
+  { match: /claude-(?:fable|mythos)-5/, context: 1_000_000 },
+  { match: /claude-opus-4-(?:6|7|8)/, context: 1_000_000 },
+  { match: /claude-sonnet-(?:5|4-6)/, context: 1_000_000 },
+  { match: /claude-haiku-4-5/, context: 200_000 },
+  { match: /claude-(?:opus|sonnet)-4-5/, context: 200_000 },
+  { match: /claude-(?:3-5|3-7|opus-4|sonnet-4|haiku-3)/, context: 200_000 },
+  { match: /claude-3/, context: 200_000 },
+  // Google
+  { match: /gemini-(?:1-5|2|3)/, context: 1_000_000 },
+  // OpenAI — 4.1 is the 1M one; 4o and turbo stayed at 128k.
+  { match: /gpt-4-1(?:$|[^0-9])/, context: 1_000_000 },
+  { match: /gpt-4o|gpt-4-turbo/, context: 128_000 },
+];
+
 function familyCatalogContext(model: string): number | undefined {
-  const lower = model.toLowerCase();
-  if (lower.includes('claude-3-7') || lower.includes('claude-3.7') || lower.includes('claude-sonnet-4')) return 200_000;
-  if (lower.includes('gemini-1.5') || lower.includes('gemini-2')) return 1_000_000;
-  if (lower.includes('gpt-4.1') || lower.includes('gpt-4o')) return 128_000;
-  return undefined;
+  // Fold separators so "claude-opus-4.7", "claude-opus-4_7" and "claude-opus-4-7" all match.
+  const normalized = model.toLowerCase().replace(/[._]/g, '-');
+  return CONTEXT_CATALOG.find((entry) => entry.match.test(normalized))?.context;
 }
 
 function normalizeModelId(model: string): string {
@@ -331,7 +355,7 @@ export async function resolveModelContextInfo(
   const marker = parseContextMarker(config.model);
   if (marker) return { context: marker, source: 'marker', confidence: 'medium', updatedAt: Date.now() };
   const catalog = familyCatalogContext(config.model);
-  if (catalog) return { context: catalog, source: 'catalog', confidence: 'low', updatedAt: Date.now() };
+  if (catalog) return { context: catalog, source: 'catalog', confidence: 'medium', updatedAt: Date.now() };
   return { context: FALLBACK_CONTEXT_LIMIT, source: 'fallback', confidence: 'low', updatedAt: Date.now() };
 }
 
