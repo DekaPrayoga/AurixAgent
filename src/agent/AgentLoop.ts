@@ -41,43 +41,13 @@ import {
   recoveryMessages,
   recoveryToolNames,
 } from './EmptyResponseRecovery.js';
+import { parseTextToolCalls } from './TextToolCallParser.js';
 
 const TOOL_RESULTS_DIR = join(homedir(), '.aurix-tool-results');
 
 function ensureToolResultsDir(): void {
   if (!existsSync(TOOL_RESULTS_DIR)) {
     mkdirSync(TOOL_RESULTS_DIR, { recursive: true });
-  }
-}
-
-const TEXT_TOOL_CALL_PATTERN = /<function=([a-zA-Z0-9_]+)>([\s\S]*?)<\/function>/g;
-const TEXT_TOOL_PARAMETER_PATTERN = /<parameter=([a-zA-Z0-9_]+)>([\s\S]*?)<\/parameter>/g;
-
-function parseInlineToolValue(name: string, value: string): unknown {
-  const trimmed = value.trim();
-  if (name === 'timeout' && /^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (name === 'command' || name === 'cmd') return trimmed;
-  return value;
-}
-
-function parseTextToolArguments(rawArgs: string): Record<string, unknown> | null {
-  if (!rawArgs.trim()) return {};
-  if (TEXT_TOOL_PARAMETER_PATTERN.test(rawArgs)) {
-    TEXT_TOOL_PARAMETER_PATTERN.lastIndex = 0;
-    const args: Record<string, unknown> = {};
-    let paramMatch: RegExpExecArray | null;
-    while ((paramMatch = TEXT_TOOL_PARAMETER_PATTERN.exec(rawArgs))) {
-      args[paramMatch[1]] = parseInlineToolValue(paramMatch[1], paramMatch[2]);
-    }
-    return Object.keys(args).length > 0 ? args : null;
-  }
-  try {
-    const parsed = JSON.parse(rawArgs);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : { value: parsed };
-  } catch {
-    return null;
   }
 }
 
@@ -88,25 +58,6 @@ function cheapHash(text: string): number {
     hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
   }
   return hash;
-}
-
-function parseTextToolCalls(text: string): { name: string; arguments: Record<string, unknown> }[] {
-  const calls: { name: string; arguments: Record<string, unknown> }[] = [];
-  const pattern = new RegExp(TEXT_TOOL_CALL_PATTERN);
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text))) {
-    const args = parseTextToolArguments(match[2]);
-    if (!args) continue;
-    calls.push({ name: match[1], arguments: args });
-  }
-  return calls;
-}
-
-function stripTextToolCallMarkup(text: string): string {
-  return text
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-    .replace(/<function=[a-zA-Z0-9_]+>[\s\S]*?<\/function>/g, '')
-    .trim();
 }
 
 function persistToolResult(
@@ -1158,27 +1109,41 @@ export class AgentLoop {
           toolDefs,
           this.abortController.signal
         );
-        if (
-          response.toolCalls.length === 0 &&
-          response.text &&
-          TEXT_TOOL_CALL_PATTERN.test(response.text)
-        ) {
-          const parsedCalls = parseTextToolCalls(response.text);
-          const allowedToolNames = new Set(
-            (toolDefs || []).map((tool) => tool.function.name)
-          );
-          const allowedCalls = parsedCalls.filter((call) => allowedToolNames.has(call.name));
-          if (allowedCalls.length > 0) {
+        if (response.toolCalls.length === 0 && response.text && toolDefs?.length) {
+          const allowedToolNames = new Set(toolDefs.map((tool) => tool.function.name));
+          const normalized = parseTextToolCalls(response.text, allowedToolNames);
+          if (normalized.calls.length > 0) {
             response = {
               ...response,
-              text: stripTextToolCallMarkup(response.text),
-              toolCalls: allowedCalls.map((p) => ({
+              text: normalized.visibleText,
+              toolCalls: normalized.calls.map((call) => ({
                 id: randomUUID(),
-                name: p.name,
-                arguments: p.arguments,
+                name: call.name,
+                arguments: call.arguments,
               })),
             };
+          } else if (normalized.recognizedProtocol) {
+            response = { ...response, text: '', toolCalls: [] };
+            this.messages.push({
+              role: 'user',
+              content:
+                '[System] Your previous tool call used malformed or unavailable textual protocol. Re-emit exactly one valid tool call using the structured tool interface. Do not print tool-call JSON or source payloads as assistant text.',
+            });
+            consecutiveEmpty++;
+            if (consecutiveEmpty < MAX_EMPTY) continue;
           }
+        }
+        if (
+          response.toolCalls.length === 0 &&
+          (response.finishReason === 'tool_calls' || response.finishReason === 'tool_use')
+        ) {
+          this.messages.push({
+            role: 'user',
+            content:
+              '[System] The provider reported tool use but supplied no parseable call. Re-emit one valid structured tool call only.',
+          });
+          consecutiveEmpty++;
+          if (consecutiveEmpty < MAX_EMPTY) continue;
         }
         retryCount = 0;
         totalFailures = 0;

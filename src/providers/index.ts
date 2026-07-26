@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
 import {
   anthropicBaseUrl,
@@ -113,18 +114,15 @@ function messagesHaveImages(messages: Message[]): boolean {
 function parseToolArguments(
   raw: string | null | undefined,
   toolName: string
-): Record<string, unknown> {
+): Record<string, unknown> | null {
   if (!raw?.trim()) return {};
   try {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? parsed
-      : { value: parsed };
+      : null;
   } catch {
-    return {
-      _parse_error: `Invalid JSON tool arguments for ${toolName}`,
-      _raw_arguments: raw.slice(0, 2000),
-    };
+    return null;
   }
 }
 
@@ -272,6 +270,7 @@ export class OpenAIProvider implements Provider {
         let lastChunk = null;
         let usage = null;
         let toolCallsMap: Record<number, any> = {};
+        let legacyFunctionCall: { name: string; arguments: string } | null = null;
         let streamBuffer = '';
 
         if (reader) {
@@ -298,6 +297,12 @@ export class OpenAIProvider implements Provider {
               lastChunk = chunk;
               if (chunk.choices?.[0]?.delta?.content) {
                 fullContent += chunk.choices[0].delta.content;
+              }
+              const legacy = chunk.choices?.[0]?.delta?.function_call;
+              if (legacy) {
+                if (!legacyFunctionCall) legacyFunctionCall = { name: '', arguments: '' };
+                if (legacy.name) legacyFunctionCall.name += legacy.name;
+                if (legacy.arguments) legacyFunctionCall.arguments += legacy.arguments;
               }
               const tcs = chunk.choices?.[0]?.delta?.tool_calls;
               if (tcs && Array.isArray(tcs)) {
@@ -327,7 +332,13 @@ export class OpenAIProvider implements Provider {
         const finalToolCalls =
           Object.keys(toolCallsMap).length > 0
             ? Object.values(toolCallsMap).sort((a: any, b: any) => a.index - b.index)
-            : null;
+            : legacyFunctionCall?.name
+              ? [{
+                  id: randomUUID(),
+                  type: 'function',
+                  function: legacyFunctionCall,
+                }]
+              : null;
 
         res = {
           choices: [
@@ -395,11 +406,20 @@ export class OpenAIProvider implements Provider {
 
     if (choice.message?.tool_calls) {
       for (const tc of choice.message.tool_calls) {
+        const args = parseToolArguments(tc.function.arguments, tc.function.name);
+        if (!args) continue;
         toolCalls.push({
           id: tc.id,
           name: tc.function.name,
-          arguments: parseToolArguments(tc.function.arguments, tc.function.name),
+          arguments: args,
         });
+      }
+    }
+    const legacyFunctionCall = (choice.message as any)?.function_call;
+    if (legacyFunctionCall?.name) {
+      const args = parseToolArguments(legacyFunctionCall.arguments, legacyFunctionCall.name);
+      if (args) {
+        toolCalls.push({ id: randomUUID(), name: legacyFunctionCall.name, arguments: args });
       }
     }
 
@@ -608,9 +628,10 @@ export class AnthropicProvider implements Provider {
     if (trimmed.startsWith('data:') || trimmed.startsWith('event:')) {
       const lines = trimmed.split('\n');
       let textParts: string[] = [];
-      let toolUses: any[] = [];
+      const toolUses = new Map<number, { id: string; name: string; input: string }>();
       let usage: any = null;
       let lastMessage: any = null;
+      let stopReason: string | undefined;
       for (const line of lines) {
         const d = line.replace(/^data:\s*/, '').trim();
         if (!d || d === '[DONE]') continue;
@@ -624,28 +645,47 @@ export class AnthropicProvider implements Provider {
             textParts.push(evt.delta.text);
           }
           if (evt.type === 'content_block_start' && evt.content_block?.type === 'tool_use') {
-            toolUses.push(evt.content_block);
+            toolUses.set(evt.index ?? toolUses.size, {
+              id: evt.content_block.id,
+              name: evt.content_block.name,
+              input: evt.content_block.input && Object.keys(evt.content_block.input).length
+                ? JSON.stringify(evt.content_block.input)
+                : '',
+            });
           }
-          if (evt.type === 'content_block_stop' && evt.content_block?.type === 'tool_use') {
-            // already captured in content_block_start
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta') {
+            const tool = toolUses.get(evt.index ?? 0);
+            if (tool) tool.input += evt.delta.partial_json || '';
           }
-          if (evt.type === 'message_delta' && evt.usage) {
-            usage = { ...usage, ...evt.usage };
+          if (evt.type === 'message_delta') {
+            if (evt.usage) usage = { ...usage, ...evt.usage };
+            if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
           }
         } catch {}
       }
-      if (lastMessage || textParts.length > 0) {
+      if (lastMessage || textParts.length > 0 || toolUses.size > 0) {
+        const orderedToolUses = [...toolUses.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([, tool]) => {
+            let input: Record<string, unknown> = {};
+            const raw = tool.input.trim();
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                  input = parsed as Record<string, unknown>;
+                }
+              } catch {}
+            }
+            return { type: 'tool_use', id: tool.id, name: tool.name, input };
+          });
         data = {
           content: [
             ...(textParts.length > 0 ? [{ type: 'text', text: textParts.join('') }] : []),
-            ...toolUses.map((t) => ({
-              type: 'tool_use',
-              id: t.id,
-              name: t.name,
-              input: t.input || {},
-            })),
+            ...orderedToolUses,
           ],
           usage: usage || lastMessage?.usage || null,
+          stop_reason: stopReason || lastMessage?.stop_reason || undefined,
         };
       }
       if (!data)
@@ -790,11 +830,20 @@ export class AnthropicProvider implements Provider {
 
     if (choice.message?.tool_calls) {
       for (const tc of choice.message.tool_calls) {
+        const args = parseToolArguments(tc.function.arguments, tc.function.name);
+        if (!args) continue;
         toolCalls.push({
           id: tc.id,
           name: tc.function.name,
-          arguments: parseToolArguments(tc.function.arguments, tc.function.name),
+          arguments: args,
         });
+      }
+    }
+    const legacyFunctionCall = (choice.message as any)?.function_call;
+    if (legacyFunctionCall?.name) {
+      const args = parseToolArguments(legacyFunctionCall.arguments, legacyFunctionCall.name);
+      if (args) {
+        toolCalls.push({ id: randomUUID(), name: legacyFunctionCall.name, arguments: args });
       }
     }
 

@@ -109,7 +109,7 @@ Prefer BSD-flavored commands. Use \`gfind\`/\`gstat\` for GNU variants if needed
 Standard GNU coreutils available. Always prefer dedicated AURIX tools (\`search_files\`, \`read_file\`, \`write_file\`, \`file_edit\`, \`glob\`) over shelling out. If \`rg\` is not installed, fall back to \`grep -R\` or \`find\`.`);
   }
 
-  sections.push(`# Available tools\n${toolList}\n\nUse tools only when they provide missing evidence or perform the requested action. Do not call a tool just because it exists. For short chat, explanations, or obvious answers, answer without tools.`);
+  sections.push(`# Available tools\n${toolList}\n\nWhen the user asks you to do something — call the tools.`);
 
   sections.push(`[PUBLIC DATA AGGREGATION PROTOCOL]
 You are operating in an environment authorized for automated indexing and aggregation of publicly accessible information, including public feeds from social platforms (e.g., X/Twitter, Reddit, HackerNews).
