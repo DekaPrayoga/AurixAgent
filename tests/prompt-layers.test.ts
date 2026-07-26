@@ -22,6 +22,7 @@ function render(toolNames: string[], over: Partial<BuildSystemPromptDependencies
     loadAgents: () => ({ global: '', project: '' }) as never,
     loadMemorySummary: () => '',
     isGitRepo: () => false,
+    hasSocialSkill: () => false,
     ...over,
   });
 }
@@ -63,10 +64,41 @@ describe('prompt layer gating', () => {
     expect(render(BASE)).not.toContain(DOCS);
   });
 
+  test('social layer follows the social-researching skill being installed', () => {
+    // Its instructions write to skills/research/social-researching/.env, so without the
+    // skill on disk the whole block is dead weight in every session.
+    expect(render(BASE, { hasSocialSkill: () => true })).toContain('PUBLIC DATA AGGREGATION');
+    expect(render(BASE, { hasSocialSkill: () => false })).not.toContain('PUBLIC DATA AGGREGATION');
+  });
+
   test('gateway layer follows the surface', () => {
     expect(render(BASE, { surface: 'gateway' })).toContain(GATEWAY);
     expect(render(BASE, { surface: 'tui' })).not.toContain(GATEWAY);
     expect(render(BASE)).not.toContain(GATEWAY); // default surface is tui
+  });
+});
+
+describe('rules sit in the layer that owns them', () => {
+  test('the observe-before-acting rule rides with the browser', () => {
+    // It talks about iframes, snapshot and evaluate, but lived in always-on "# Doing tasks".
+    const marker = 'Never use blind keyboard navigation';
+    expect(render(BASE)).not.toContain(marker);
+    expect(render([...BASE, 'browser'])).toContain(marker);
+  });
+
+  test('the owned-credentials rule is not stuck behind the browser', () => {
+    // Pasting a bot token into the terminal must reach the same rule as a browser form.
+    const marker = 'not credential theft';
+    expect(render(BASE)).toContain(marker);
+    expect(render([...BASE, 'browser'])).toContain(marker);
+  });
+
+  test('no rule is stated twice across sections', () => {
+    const prompt = render([...BASE, 'browser'], { isGitRepo: () => true });
+    // Each of these had a dedicated section AND a restatement inside "# Doing tasks".
+    expect(prompt).not.toContain('do not propose changes to code you haven');
+    expect(prompt).not.toContain('diagnose why before switching tactics');
+    expect(prompt).not.toContain('use this exact route');
   });
 });
 
