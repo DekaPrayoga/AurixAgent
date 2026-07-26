@@ -102,6 +102,33 @@ const WRITE_TOOLS = new Set([
   'delete_folder',
 ]);
 const BUILD_HINT_TOOLS = new Set(['file_edit', 'write_file']);
+/**
+ * Turns that are recognisably just talk, where sending the tool payload is wasted budget.
+ * Kept narrow on purpose: a miss here only costs tokens, while a false positive strips every
+ * tool from the request and leaves the agent unable to act at all. Covers English and
+ * Indonesian, since the operator works in both.
+ */
+export const CONVERSATIONAL_TURN = new RegExp(
+  // The WHOLE message must be conversational, not merely its opening word. Anchoring only
+  // at the start classified "thanks, now fix the bug" as small talk and stripped its tools.
+  '^(?:' +
+    [
+      // greetings and sign-offs
+      '(?:hi|hey|hello|yo|sup|halo|hai|woy|pagi|siang|sore|malam|bye|dadah|see ?ya)',
+      // thanks and praise
+      '(?:thanks|thank you|thx|ty|nice|cool|great|awesome|mantap|keren|makasih|terima kasih|sip|gg|(?:wk)+w?|(?:ha)+h?)',
+      // bare acknowledgements
+      '(?:ok|okay|oke|okey|yes|yep|yeah|yup|no|nope|sure|alright|siap|iya|ya|betul|bener|noted|got it|paham|ngerti)',
+      // questions about the agent itself rather than about work to do
+      '(?:who are you|what are you|what can you do|siapa (?:kamu|lu|kau)|kamu (?:siapa|apa)|bisa apa)',
+    ].join('|') +
+    ')' +
+    // an optional vocative tail — "makasih bro", "oke bang", "halo min"
+    '(?:[\\s,]+(?:bro|bang|bre|cuy|min|gan|dong|deh|ya|nih|sih|man|dude|there|all))*' +
+    '[\\s.!?,~]*$',
+  'i'
+);
+
 const SESSION_KEY_TOOLS = new Set([
   'ask_user',
   'ask_input_user',
@@ -766,18 +793,24 @@ export class AgentLoop {
     );
   }
 
+  /**
+   * True when a turn is pure conversation, so the request can skip the tool payload.
+   *
+   * This must fail towards keeping tools. It used to do the opposite: it stripped every tool
+   * unless the message matched a list of English verbs (read|edit|write|run|open|…). Anything
+   * outside that list — including every non-English phrasing — was treated as small talk and
+   * the model was handed zero tools, so it could only ask questions back and never act.
+   * "ayo login langsung aja gass" matched nothing, got no tools, and the agent stalled.
+   *
+   * Recognising chit-chat is a much smaller and safer set to enumerate than recognising work,
+   * so that is what is enumerated here. Anything unrecognised keeps its tools.
+   */
   private looksLikeSimpleNoToolTurn(userMessage: string): boolean {
     if (this.config.execution?.simpleTurnsWithoutTools === false) return false;
     const text = userMessage.replace(/^\[sent from [^\]]+\]\s*/i, '').trim();
-    if (!text || text.length > 260 || this.looksLikeExplicitMemoryRequest(text)) return false;
+    if (!text || text.length > 160 || this.looksLikeExplicitMemoryRequest(text)) return false;
     if (this.looksLikeComplexTask(text) || this.looksLikeResearchTask(text)) return false;
-    if (
-      /\b(read|edit|write|fix|run|test|build|search|browse|open|create|delete|install|deploy|file|repo|folder|terminal|command|curl|api)\b/i.test(
-        text
-      )
-    )
-      return false;
-    return true;
+    return CONVERSATIONAL_TURN.test(text);
   }
 
   private selectExecutionMode(userMessage: string): 'single' | 'research' | 'multiagent' {

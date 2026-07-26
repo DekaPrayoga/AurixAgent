@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { detectTerminalCapabilities } from '../TerminalCapabilities.js';
 
 const CHARS_UNICODE = ['·', '✢', '*', '✶', '✻', '✽'];
@@ -51,6 +51,30 @@ export function useAnimationTick(active: boolean, intervalMs: number): number {
   }, [active, intervalMs]);
 
   return active ? tick : 0;
+}
+
+/**
+ * Seconds since this became active.
+ *
+ * Deliberately not gated on CAPS.animation. A once-per-second counter is a status readout,
+ * not decoration, and it matters most exactly where animation is switched off — CI, a
+ * non-TTY pipe, a dumb terminal — because there a frozen number is the only clue left that
+ * a run has hung. Gating it through the animation check froze it at mount in those cases.
+ */
+export function useElapsedSeconds(active: boolean): number {
+  const [, setTick] = useState(0);
+  const startedAt = useRef(0);
+
+  if (active && startedAt.current === 0) startedAt.current = Date.now();
+  if (!active && startedAt.current !== 0) startedAt.current = 0;
+
+  useEffect(() => {
+    if (!active) return;
+    return subscribe(1000, () => setTick((t) => t + 1));
+  }, [active]);
+
+  if (!active || startedAt.current === 0) return 0;
+  return Math.floor((Date.now() - startedAt.current) / 1000);
 }
 
 /** Pulsing glyph shown while the agent is thinking. */

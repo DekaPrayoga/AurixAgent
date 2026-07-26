@@ -1,8 +1,8 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 import { SyntaxStyle, TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
 import { toolColor, toolIcon } from './visual.js';
-import { useThinkingAnimation, useScanner, useAnimationTick } from './animation/useThinking.js';
+import { useThinkingAnimation, useScanner, useElapsedSeconds } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
@@ -114,33 +114,6 @@ function InlineText({ text, baseFg }: { text: string; baseFg?: string }) {
   );
 }
 
-function charWidth(char: string): number {
-  const code = char.codePointAt(0) || 0;
-  if (code === 0x200d || (code >= 0x0300 && code <= 0x036f) || (code >= 0xfe00 && code <= 0xfe0f)) {
-    return 0;
-  }
-  if (
-    code >= 0x1100 &&
-    (code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1f300 && code <= 0x1faff))
-  ) {
-    return 2;
-  }
-  return 1;
-}
-
-function displayWidth(text: string): number {
-  return Array.from(text).reduce((sum, char) => sum + charWidth(char), 0);
-}
 
 
 
@@ -167,10 +140,7 @@ function ThinkingIndicator() {
   const frame = useThinkingAnimation(true, 90);
   // A pulsing glyph alone looks the same at second 1 and second 90. The elapsed counter is
   // what tells you whether a long wait is progress or a hang.
-  const tick = useAnimationTick(true, 1000);
-  const started = useRef(Date.now());
-  const seconds = Math.floor((Date.now() - started.current) / 1000);
-  void tick;
+  const seconds = useElapsedSeconds(true);
   return (
     <box paddingX={2} flexDirection="row">
       <text fg={theme.thinking}>{frame} thinking</text>
@@ -384,7 +354,18 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
  * Theme-dependent, so it is rebuilt whenever the palette changes — a plain module
  * constant would keep the old border colour after a theme switch.
  */
-function getTableOptions(_themeVersion: number) {
+let tableOptionsVersion = -1;
+let tableOptions: ReturnType<typeof buildTableOptions> | undefined;
+
+function getTableOptions(themeVersion: number) {
+  if (!tableOptions || tableOptionsVersion !== themeVersion) {
+    tableOptions = buildTableOptions();
+    tableOptionsVersion = themeVersion;
+  }
+  return tableOptions;
+}
+
+function buildTableOptions() {
   return {
     style: 'grid' as const,
     wrapMode: 'word' as const,
