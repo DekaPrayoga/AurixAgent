@@ -650,7 +650,7 @@ export class Gateway extends EventEmitter {
   private getAgent(key: string): AgentLoop {
     let agent = this.agents.get(key);
     if (!agent) {
-      agent = new AgentLoop(this.config, this.registry);
+      agent = new AgentLoop(this.config, this.registry, { surface: 'gateway' });
       agent.setSessionKey(key);
       this.agents.set(key, agent);
     }

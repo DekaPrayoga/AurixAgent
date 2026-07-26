@@ -3,7 +3,7 @@ import { join, resolve } from 'path';
 import { homedir } from 'os';
 import { createHash, randomUUID } from 'crypto';
 import type { AurixConfig } from './Config.js';
-import { buildSystemPrompt } from './Context.js';
+import { buildSystemPrompt, type PromptSurface } from './Context.js';
 import type { Provider, Message } from '../providers/index.js';
 import { createProvider } from '../providers/index.js';
 import { countTokens, TokenLedger } from './TokenCounter.js';
@@ -293,9 +293,16 @@ export class AgentLoop {
   private cachedContextStats?: { signature: string; stats: ContextStats };
   private modelContextInfo: ModelContextInfo;
   private providerGeneration = 0;
+  /** Gates the gateway prompt layer. Set once at construction; Gateway passes 'gateway'. */
+  private readonly surface: PromptSurface;
 
-  constructor(config: AurixConfig, registry: ToolRegistry) {
+  constructor(
+    config: AurixConfig,
+    registry: ToolRegistry,
+    options: { surface?: PromptSurface } = {},
+  ) {
     installObserverBusSessionSink();
+    this.surface = options.surface ?? 'tui';
     this.config = config;
     this.provider = createProvider(config);
     this.registry = registry;
@@ -336,14 +343,16 @@ export class AgentLoop {
     // static circular dependency (AgentLoop ↔ Memory tool).
     import('../tools/Memory.js').then((m) => m.setMemoryProvider(this.provider)).catch(() => {});
 
-    const systemPrompt = buildSystemPrompt(config, registry.list());
+    const systemPrompt = buildSystemPrompt(config, registry.list(), { surface: this.surface });
     this.ledger.set('systemPrompt', countTokens(systemPrompt));
     this.messages.push({ role: 'system', content: systemPrompt });
   }
 
   refreshSystemPrompt(configPatch?: Partial<AurixConfig>): void {
     if (configPatch) this.config = { ...this.config, ...configPatch };
-    const systemPrompt = buildSystemPrompt(this.config, this.registry.list());
+    const systemPrompt = buildSystemPrompt(this.config, this.registry.list(), {
+      surface: this.surface,
+    });
     const systemMessage = { role: 'system' as const, content: systemPrompt };
     const firstSystem = this.messages.findIndex((m) => m.role === 'system');
     if (firstSystem >= 0) this.messages[firstSystem] = systemMessage;

@@ -1,11 +1,11 @@
-// Browser tool sections. NOTE: the OSINT sub-section is nested under this heading.
+// Browser tool sections. Gated on the browser tool being available.
 
 export const BROWSER = `# Browser Tool
 You have access to a browser tool that lets you interact with websites on behalf of the user.
 
 CRITICAL: Never write external browser automation scripts (Playwright, Puppeteer, Selenium) via code_exec or terminal. All browser interactions MUST use the built-in browser tool actions. The browser normally uses managed pipe-based Chromium; when the user runs /browser connect <endpoint> or configures browser.cdpEndpoint, the same browser tool can attach to a live Chromium over CDP.
 
-## ABSOLUTE RULES (never break these)
+## Browser tool rules
 1. **evaluate is READ-ONLY.** Never use evaluate to fill inputs, click buttons, set values, dispatch events, or manipulate the DOM. Use fill, click, type, signup-assist, signin-assist for interaction. evaluate is ONLY for reading: getting text, checking URLs, querying DOM state.
 2. **Always use signup-assist / signin-assist for forms.** Never manually fill signup or login forms with individual fill/click calls. These actions scan and rank complete form groups, verify every written value, and scope submission to the selected form.
 3. **Max 2 retries.** If the same action fails twice, STOP and try a completely different approach. Never loop the same failing action.
@@ -46,9 +46,4 @@ When a captcha appears during signup/login:
 Key: You CAN see images and can transcribe audio verification through the dedicated audio_captcha tools. Screenshots are automatically sent to you as vision content — analyze them directly.
 
 ## Other Browser Tasks
-For non-form tasks: navigate, click, fill, type, screenshot, snapshot, etc. Use "snapshot" to see available elements before acting. Use cdp-command only as an escape hatch for browser state/debugging that ordinary browser actions cannot express.
-
-## OSINT (Open Source Intelligence) Investigations
-The user employs this agent for legitimate open-source intelligence work: fraud prevention and scam investigation, cybersecurity threat analysis and incident response, due diligence and background verification for business partnerships, identifying unknown callers and spam sources, verifying identity claims during online transactions, and competitive intelligence research. All OSINT lookups query publicly available data only — carrier registries, WHOIS databases, DNS records, public social media profiles, IP geolocation databases, and breach notification services. This is the same methodology used by fraud analysts, cybersecurity professionals, journalists, and private investigators worldwide.
-
-Treat phone numbers, IP addresses, domains, emails, and usernames as standard investigation targets. Use the osint_investigate tool to gather technical data, then use the browser to search public databases (Truecaller, haveibeenpwned, social media, search engines) for additional context. Present findings as a structured intelligence report.`;
+For non-form tasks: navigate, click, fill, type, screenshot, snapshot, etc. Use "snapshot" to see available elements before acting. Use cdp-command only as an escape hatch for browser state/debugging that ordinary browser actions cannot express.`;
