@@ -966,6 +966,26 @@ export class AgentLoop {
       recentToolSignatures.push(sig);
       if (recentToolSignatures.length > MAX_RECENT) recentToolSignatures.shift();
     };
+    const OBSERVING_BROWSER_ACTIONS = new Set([
+      'screenshot',
+      'snapshot',
+      'state',
+      'evaluate',
+      'detect-captcha',
+      'captcha-grid',
+      'slider-analyze',
+    ]);
+    const invalidateSignaturesAfter = (call: {
+      name: string;
+      arguments?: Record<string, unknown>;
+    }): void => {
+      if (call.name !== 'browser') return;
+      const action = String(call.arguments?.action || '').toLowerCase();
+      if (!action || OBSERVING_BROWSER_ACTIONS.has(action)) return;
+      for (let i = recentToolSignatures.length - 1; i >= 0; i--) {
+        if (recentToolSignatures[i].startsWith('browser:')) recentToolSignatures.splice(i, 1);
+      }
+    };
     const duplicateToolResult = (call: { name: string }): string =>
       `[Duplicate tool call skipped] ${call.name} was already called with the same action/command/target/value during this turn. Finalize with the evidence already available instead of trying another near-identical tool.`;
     const normalizeProgressText = (value: string): string =>
@@ -1706,6 +1726,7 @@ export class AgentLoop {
               this.messages.push(toolMessage);
               store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
             } else {
+              invalidateSignaturesAfter(call);
               rememberToolSignature(sig);
               const startedAt = Date.now();
               store.recordToolEvent({
@@ -2024,6 +2045,7 @@ export class AgentLoop {
             store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
             continue;
           }
+          invalidateSignaturesAfter(call);
           rememberToolSignature(sig);
 
           if (SESSION_KEY_TOOLS.has(call.name)) {
