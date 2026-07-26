@@ -530,7 +530,16 @@ export function ChatArea({
         stickyStart="bottom"
         flexGrow={1}
         scrollAcceleration={scrollAcceleration}
-        verticalScrollbarOptions={{ visible: true, showArrows: false }}
+        // No `visible` flag: passing one pins the bar on or off forever. Left unset it
+        // follows the content, appearing only once the transcript overflows. Forcing it
+        // visible painted a full-height solid thumb over every short session.
+        verticalScrollbarOptions={{
+          showArrows: false,
+          trackOptions: {
+            backgroundColor: theme.bgPanel,
+            foregroundColor: theme.borderSubtle,
+          },
+        }}
       >
         <box height={1} />
         <box flexDirection="column">
