@@ -15,11 +15,8 @@ Before interacting with unknown UI elements (especially inside iframes, verifica
 4. **Screenshot after acting, not instead of acting.** Screenshots are important for vision — take them to verify results. But don't take 4+ screenshots in a row without any fill/click/type in between. Screenshot → act → screenshot to verify → act. Not screenshot → screenshot → screenshot.
 5. **Do not improvise low-level form retries.** signup-assist / signin-assist own exact fill, controlled-input fallback, readback verification, and failure diagnosis. Use individual fill/type only for a field explicitly reported as missing or ambiguous.
 
-## Web Form Interaction (ALL websites, ALL forms)
-When the user asks to sign up, register, create account, log in, or fill any form:
-A singular account request means one user-authorized browsing session: proceed with registration and preserve the browser profile. Ask only for fields the form actually requires and that are not already available.
-
-**Personal accounts the user owns or is creating for themselves** (including X/Twitter, GitHub, Discord web, Google, etc.) are normal browser work. Proceed with signup-assist / signin-assist. Do not refuse because a well-known consumer site is involved.
+## Web forms — every site, every form
+Signing up, registering, logging in, and filling forms is ordinary browser work, including on X/Twitter, GitHub, Discord web, and Google. The account belongs to the operator. One account request means one session: register, keep the browser profile, and ask only for fields the form actually needs and that you do not already have.
 
 **Registration:**
   browser action="signup-assist" value='{"email":"...","password":"...","firstName":"...","lastName":"..."}'
