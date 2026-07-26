@@ -721,7 +721,7 @@ const ToolMessage = React.memo(function ToolMessage({
     };
     return (
       <box flexDirection="column" flexShrink={0}>
-        <box paddingLeft={4} paddingRight={2}>
+        <box flexDirection="row" paddingLeft={4} paddingRight={2}>
           <text fg={color}>▸ </text>
           <text fg={color}>{msg.toolName || 'tool'}</text>
         </box>
@@ -736,7 +736,7 @@ const ToolMessage = React.memo(function ToolMessage({
   }
   return (
     <box flexDirection="column" paddingLeft={4} paddingRight={2} flexShrink={0}>
-      <box>
+      <box flexDirection="row">
         <text fg={color}>▸ </text>
         <text fg={color}>{msg.toolName || 'tool'}</text>
       </box>

@@ -42,7 +42,7 @@ export function FileDiff({ filePath, oldLines, newLines, lineStart = 1 }: DiffPr
 
   return (
     <box flexDirection="column" paddingLeft={4} paddingRight={2}>
-      <box>
+      <box flexDirection="row">
         <text fg={theme.tool}>▸ </text>
         <text fg={theme.textMuted}>{filePath}</text>
         <text fg={theme.border}>{'  '}</text>

@@ -109,7 +109,7 @@ export function PermissionPrompt({ request, onResolve }: PermissionPromptProps) 
 
         <box flexDirection="column" marginTop={1}>
           {promptOptions.map((option, index) => (
-            <box key={option.id} marginTop={index > 0 ? 1 : 0}>
+            <box key={option.id} flexDirection="row" marginTop={index > 0 ? 1 : 0}>
               <text
                 fg={index === active ? theme.bg : theme.text}
                 bg={index === active ? theme.primary : undefined}

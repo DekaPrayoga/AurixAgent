@@ -755,16 +755,29 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       const requestId = ++modelPickerRequestRef.current;
       modelPickerOpenRef.current = true;
       setModelPicker({ items: [], loading: true, initialQuery });
-      const result = await fetchConfiguredModels(config);
-      if (requestId !== modelPickerRequestRef.current) return;
-      const items = toModelPickerItems(result.models, agentRef.current?.getModel() || config.model);
-      const lastFailure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
-      const error = items.length
-        ? undefined
-        : lastFailure
-          ? `Could not load /models: ${lastFailure.status ? `HTTP ${lastFailure.status} ` : ''}${lastFailure.error || lastFailure.url}`
-          : 'No models returned by the configured provider.';
-      setModelPicker({ items, loading: false, error, initialQuery });
+      try {
+        const result = await fetchConfiguredModels(config);
+        if (requestId !== modelPickerRequestRef.current) return;
+        const items = toModelPickerItems(result.models, agentRef.current?.getModel() || config.model);
+        const lastFailure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
+        const error = items.length
+          ? undefined
+          : lastFailure
+            ? `Could not load /models: ${lastFailure.status ? `HTTP ${lastFailure.status} ` : ''}${lastFailure.error || lastFailure.url}`
+            : 'No models returned by the configured provider.';
+        setModelPicker({ items, loading: false, error, initialQuery });
+      } catch (e: any) {
+        // A malformed baseUrl throws out of endpoint construction. Without this the
+        // rejection escapes to the unhandledRejection hook and resets the terminal,
+        // and modelPickerOpenRef stays true, killing every global shortcut.
+        if (requestId !== modelPickerRequestRef.current) return;
+        setModelPicker({
+          items: [],
+          loading: false,
+          error: `Could not load /models: ${e?.message || String(e)}`,
+          initialQuery,
+        });
+      }
     },
     [config]
   );
@@ -1184,10 +1197,17 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             await openModelPicker();
             return;
           }
-          const selected = await applyModelSelection(agent, config, slash.args);
-          addAssistant(
-            `Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`
-          );
+          // handleSubmit is invoked fire-and-forget from onSubmit, so an unguarded
+          // rejection here reaches TerminalLifecycle's unhandledRejection hook and
+          // tears the whole TUI down instead of showing an error.
+          try {
+            const selected = await applyModelSelection(agent, config, slash.args);
+            addAssistant(
+              `Model switched to: ${selected.model}\nContext: ${modelContextDiagnostic(selected.context)}`
+            );
+          } catch (e: any) {
+            addAssistant(`Failed to switch model: ${e?.message || String(e)}`);
+          }
           return;
         }
 
@@ -3051,7 +3071,18 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     ]
   ); // Keep dependencies explicit so slash commands always read current session state.
 
-  const isHome = showBanner && messages.length === 0 && !isProcessing;
+  // Every modal except ModelPicker is mounted inside the non-home branch, so the
+  // home layout must yield as soon as one opens or the modal renders nowhere.
+  const modalOpen =
+    !!permissionPrompt ||
+    showVisionConfig ||
+    showLogin ||
+    showRewind ||
+    showPalette ||
+    !!sessionList ||
+    !!connectModal ||
+    showWhatsApp;
+  const isHome = showBanner && messages.length === 0 && !isProcessing && !modalOpen;
   const ctxStats = agent.getContextStats();
   const tokenStats = agent.getTokenStats(ctxStats);
   const mode: 'auto' | 'ask' | 'deny' = permissionMode === 'bypass' ? 'auto' : permissionMode;
@@ -3132,7 +3163,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               />
             </box>
             <box flexGrow={1} minHeight={0} />
-            <box width="100%" flexShrink={0} justifyContent="space-between" paddingX={2}>
+            <box width="100%" flexDirection="row" flexShrink={0} justifyContent="space-between" paddingX={2}>
               <text fg={theme.textMuted}>{process.cwd().replace(/^\/root\//, '~/')}</text>
               <text fg={theme.textMuted}>v{aurixVersion}</text>
             </box>
@@ -3420,7 +3451,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
                   context
                 </text>
-                <box marginTop={1}>
+                <box flexDirection="row" marginTop={1}>
                   <text fg={barColor}>{barStr}</text>
                   <text fg={theme.textMuted}> {tokenStats.pct}%</text>
                 </box>
@@ -3433,11 +3464,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
                   tokens
                 </text>
-                <box marginTop={1}>
+                <box flexDirection="row" marginTop={1}>
                   <text fg={theme.secondary}>↑ </text>
                   <text fg={theme.text}>{fmtTok(tokenStats.input)}</text>
                 </box>
-                <box>
+                <box flexDirection="row">
                   <text fg={theme.primary}>↓ </text>
                   <text fg={theme.text}>{fmtTok(tokenStats.output)}</text>
                 </box>
@@ -3456,11 +3487,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>
                   info
                 </text>
-                <box marginTop={1}>
+                <box flexDirection="row" marginTop={1}>
                   <text fg={theme.textMuted}>provider </text>
                   <text fg={theme.text}>{agent.getProviderName()}</text>
                 </box>
-                <box>
+                <box flexDirection="row">
                   <text fg={theme.textMuted}>depth </text>
                   <text
                     fg={
@@ -3470,11 +3501,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                     {researchMode}
                   </text>
                 </box>
-                <box>
+                <box flexDirection="row">
                   <text fg={theme.textMuted}>messages </text>
                   <text fg={theme.text}>{ctxStats.messageCount}</text>
                 </box>
-                <box>
+                <box flexDirection="row">
                   <text fg={theme.textMuted}>tools </text>
                   <text fg={theme.text}>{toolCount}</text>
                 </box>

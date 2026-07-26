@@ -74,11 +74,11 @@ export function SessionPanel({
 
       <box paddingTop={1} flexDirection="column">
         <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>Context</text>
-        <box paddingTop={1}>
+        <box flexDirection="row" paddingTop={1}>
           <text fg={theme.text}>{formatTokens(totalTokens)}</text>
           <text fg={theme.textMuted}> tokens</text>
         </box>
-        <box>
+        <box flexDirection="row">
           <TokenBar pct={contextPct} width={16} />
           <text fg={theme.textMuted}>{' '}{contextPct}% used</text>
         </box>
@@ -86,11 +86,11 @@ export function SessionPanel({
 
       <box paddingTop={1} flexDirection="column">
         <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>Tokens</text>
-        <box paddingTop={1}>
+        <box flexDirection="row" paddingTop={1}>
           <text fg={theme.secondary}>↑ input </text>
           <text fg={theme.text}>{formatTokens(inputTokens)}</text>
         </box>
-        <box>
+        <box flexDirection="row">
           <text fg={theme.primary}>↓ output </text>
           <text fg={theme.text}>{formatTokens(outputTokens)}</text>
         </box>
@@ -98,19 +98,19 @@ export function SessionPanel({
 
       <box paddingTop={1} flexDirection="column">
         <text fg={theme.textMuted} attributes={TextAttributes.BOLD}>Info</text>
-        <box paddingTop={1}>
+        <box flexDirection="row" paddingTop={1}>
           <text fg={theme.textMuted}>model    </text>
           <text fg={theme.text}>{model}</text>
         </box>
-        <box>
+        <box flexDirection="row">
           <text fg={theme.textMuted}>provider </text>
           <text fg={theme.text}>{provider}</text>
         </box>
-        <box>
+        <box flexDirection="row">
           <text fg={theme.textMuted}>depth    </text>
           <text fg={theme.text}>{researchMode}</text>
         </box>
-        <box>
+        <box flexDirection="row">
           <text fg={theme.textMuted}>messages </text>
           <text fg={theme.text}>{messageCount}</text>
         </box>

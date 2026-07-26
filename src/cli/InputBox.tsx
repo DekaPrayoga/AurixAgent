@@ -227,14 +227,7 @@ export function InputBox({
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [selectedCommand, setSelectedCommand] = useState(0);
-  const [spinnerTick, setSpinnerTick] = useState(0);
   const submittingRef = React.useRef(false);
-
-  useEffect(() => {
-    if (!disabled) return;
-    const id = setInterval(() => setSpinnerTick((n) => n + 1), 530);
-    return () => clearInterval(id);
-  }, [disabled]);
 
   useEffect(() => {
     if (process.stdin.isTTY) process.stdout.write('\x1b[?2004h');
@@ -271,11 +264,6 @@ export function InputBox({
       })
       .catch(() => {});
   });
-
-  const frame = () => {
-    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    return frames[spinnerTick % frames.length];
-  };
 
   const commandQuery = extractCommandQuery(value);
   const suggestions = useMemo(() => {
@@ -365,12 +353,8 @@ export function InputBox({
       if (fileSuggestionsVisible) return applyFileCompletion();
       return;
     }
-    if (evt.ctrl && name === 'p') {
-      evt.preventDefault();
-      const next = valueRef.current.startsWith('/') ? '' : '/';
-      setInputState(next, next.length);
-      return;
-    }
+    // Ctrl+P belongs to App's command palette. Handling it here too made both fire:
+    // the palette opened and a stray "/" was written into the editor.
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
@@ -489,12 +473,22 @@ export function InputBox({
   if (disabled) {
     return (
       <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-        <box backgroundColor={theme.bgElement} paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>
+        {/* Sibling <text> needs an explicit row direction — OpenTUI/Yoga boxes
+            default to column and would stack each fragment on its own line. */}
+        <box
+          flexDirection="row"
+          backgroundColor={theme.bgElement}
+          paddingX={2}
+          paddingTop={1}
+          paddingBottom={1}
+          minHeight={3}
+        >
           <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
-          <text fg={theme.textMuted}>{'  '}{frame()} thinking...</text>
+          {/* This branch renders while a modal owns the input, not while the agent
+              runs, so it must not claim to be thinking. */}
           <text fg={theme.textMuted}>{'  '}esc to cancel</text>
         </box>
-        <box marginTop={1} paddingX={1}>
+        <box flexDirection="row" marginTop={1} paddingX={1}>
           <text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text><text fg={theme.border}>{' · '}</text><text fg={theme.textMuted}>{homeDir}</text>
         </box>
       </box>
@@ -512,7 +506,9 @@ export function InputBox({
   );
 
   if (home) {
-    const boxWidth = Math.max(24, Math.min(termWidth - 4, 72));
+    // Must match App's home prompt budget (min(80, termWidth - 8)) or the box
+    // overflows its parent on terminals narrower than 80 and clips the model name.
+    const boxWidth = Math.max(24, Math.min(termWidth - 8, 72));
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
         <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
@@ -565,7 +561,7 @@ export function InputBox({
         <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
       </box>
       <box paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
-        <box><text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
+        <box flexDirection="row"><text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
         <box><text fg={theme.textMuted}>{homeDir}</text></box>
       </box>
     </box>
@@ -633,6 +629,7 @@ function CommandSuggestions({
         return (
           <box
             key={command.name}
+            flexDirection="row"
             onMouseDown={(event) => {
               if (event.button !== 0) return;
               event.preventDefault();
