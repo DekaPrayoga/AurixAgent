@@ -544,6 +544,21 @@ export class Gateway extends EventEmitter {
 
           let sendOptions: any = undefined;
 
+          // Build the answer map for every platform, not just the one that gets buttons.
+          // Platforms without buttons are shown a numbered list, so "3", "[3]" and the
+          // option text all have to resolve — otherwise the agent receives the literal "3".
+          if (toolOptions && toolOptions.length > 0 && !isApprovalOptions(toolOptions)) {
+            const optionMap = new Map<string, string>();
+            toolOptions.forEach((opt, idx) => {
+              optionMap.set(`__aurix_opt_${idx}__`, opt);
+              optionMap.set(String(idx + 1), opt);
+              optionMap.set(`[${idx + 1}]`, opt);
+              optionMap.set(`${idx + 1}.`, opt);
+              optionMap.set(opt.trim().toLowerCase(), opt);
+            });
+            this.pendingOptionValues.set(sessionKey, optionMap);
+          }
+
           if (platform.name === 'telegram') {
             if (isApprovalOptions(toolOptions)) {
               sendOptions = {
@@ -557,21 +572,15 @@ export class Gateway extends EventEmitter {
                 },
               };
             } else if (toolOptions && toolOptions.length > 0) {
-              const optionMap = new Map<string, string>();
               const keyboard = [
-                ...toolOptions.slice(0, 8).map((opt, idx) => {
-                  const token = `__aurix_opt_${idx}__`;
-                  optionMap.set(token, opt);
-                  return [
-                    {
-                      text: opt.length > 48 ? `${opt.slice(0, 45)}...` : opt,
-                      callback_data: token,
-                    },
-                  ];
-                }),
+                ...toolOptions.slice(0, 8).map((opt, idx) => [
+                  {
+                    text: opt.length > 48 ? `${opt.slice(0, 45)}...` : opt,
+                    callback_data: `__aurix_opt_${idx}__`,
+                  },
+                ]),
                 [{ text: '✍️ Type Your Answer', callback_data: '__aurix_type_answer__' }],
               ];
-              this.pendingOptionValues.set(sessionKey, optionMap);
               sendOptions = {
                 reply_markup: {
                   inline_keyboard: keyboard,
@@ -1195,6 +1204,14 @@ export class Gateway extends EventEmitter {
     // (queue processing via setImmediate can race with a new message)
     this.processing.add(agentKey);
     try {
+      // An escape hatch has to come before the answer capture below. Otherwise every
+      // command typed while a question is open is submitted as its answer, so a stuck
+      // ask can only be escaped by answering it.
+      if (AskUserManager.isWaiting(agentKey) && (cmd === 'cancel' || cmd === 'stop')) {
+        AskUserManager.cancel(agentKey, 'Cancelled by user');
+        this.pendingOptionValues.delete(agentKey);
+      }
+
       if (AskUserManager.isWaiting(agentKey)) {
         if (msg.content.trim() === '__aurix_type_answer__') {
           const rendered = gatewayText(
@@ -1205,7 +1222,9 @@ export class Gateway extends EventEmitter {
           return;
         }
         const rawAnswer = msg.content.trim();
-        const mappedAnswer = this.pendingOptionValues.get(agentKey)?.get(rawAnswer) || rawAnswer;
+        const optionMap = this.pendingOptionValues.get(agentKey);
+        const mappedAnswer =
+          optionMap?.get(rawAnswer) || optionMap?.get(rawAnswer.toLowerCase()) || rawAnswer;
         if (rawAnswer !== '__aurix_type_answer__') this.pendingOptionValues.delete(agentKey);
         const submitted = AskUserManager.submitAnswer(agentKey, mappedAnswer);
         if (submitted) {

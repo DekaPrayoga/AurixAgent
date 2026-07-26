@@ -46,6 +46,19 @@ export class AskUserManager {
     }
     return false;
   }
+
+  /**
+   * Abandons the pending question so the waiting tool call unwinds with an error.
+   * Without this the only way out of an ask is to answer it — /cancel and every other
+   * command get swallowed as the answer text, which strands the session.
+   */
+  static cancel(sessionKey: string, reason = 'Cancelled by user'): boolean {
+    const pending = this.pendings.get(sessionKey);
+    if (!pending) return false;
+    this.pendings.delete(sessionKey);
+    pending.reject(new Error(reason));
+    return true;
+  }
 }
 
 // Global callback set by App.tsx (CLI) or Gateway.ts to physically show the message to the user
