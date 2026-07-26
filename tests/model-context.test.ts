@@ -48,9 +48,23 @@ describe('context catalog', () => {
   test('an unknown model falls back rather than guessing', () => {
     // Guessing high makes the agent compact too late and the provider rejects the request.
     // Unknown ids stay on the conservative default; `contextLimit` in config pins the truth.
-    // grok-4.5 and glm-5.2 are absent from the vendored registry too, so they land here.
-    expect(fallbackModelContextLimit('ih/free/grok/grok-4.5')).toBe(256_000);
     expect(fallbackModelContextLimit('some/unheard-of-model')).toBe(256_000);
+  });
+
+  test('operator-supplied values cover what the registry does not carry', () => {
+    // These four are absent from LiteLLM, so without the catalog they fell to 256k.
+    expect(fallbackModelContextLimit('grok-4.5')).toBe(500_000);
+    expect(fallbackModelContextLimit('ih/free/grok/grok-4.5')).toBe(500_000);
+    expect(fallbackModelContextLimit('glm-5.2')).toBe(1_000_000);
+    expect(fallbackModelContextLimit('ih/zai/glm-5.2')).toBe(1_000_000);
+    expect(fallbackModelContextLimit('kimi-k3')).toBe(1_000_000);
+    expect(fallbackModelContextLimit('deepseek-v4-pro')).toBe(1_000_000);
+    expect(fallbackModelContextLimit('deepseek-v4-flash')).toBe(1_000_000);
+  });
+
+  test('the new entries do not shadow existing deepseek models', () => {
+    // /deepseek-v4-(pro|flash)/ must not swallow deepseek-chat, which is a real 131k model.
+    expect(fallbackModelContextLimit('deepseek-chat')).toBe(131_072);
   });
 });
 

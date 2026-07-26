@@ -257,6 +257,14 @@ export function fallbackModelContextLimit(model: string): number {
  * prefix and either separator style both hit: "cc/claude-opus-4-7", "kr/claude-opus-4.7".
  */
 const CONTEXT_CATALOG: { match: RegExp; context: number }[] = [
+  // Operator-supplied values for models the vendored registry does not carry.
+  // These run on the 9router, so the id arrives prefixed ("ih/free/grok/grok-4.5",
+  // "ih/zai/glm-5.2") and the patterns stay unanchored to match the tail.
+  { match: /grok-4-5/, context: 500_000 },
+  { match: /glm-5-2/, context: 1_000_000 },
+  { match: /kimi-k3/, context: 1_000_000 },
+  { match: /deepseek-v4-(?:pro|flash)/, context: 1_000_000 },
+
   // Anthropic — the 4.6-and-newer generation moved to a 1M window.
   { match: /claude-(?:fable|mythos)-5/, context: 1_000_000 },
   { match: /claude-opus-4-(?:6|7|8)/, context: 1_000_000 },
