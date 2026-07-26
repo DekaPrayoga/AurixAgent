@@ -962,32 +962,24 @@ export class AgentLoop {
       const argsHash = createHash('sha1').update(normalizedArgs).digest('hex').slice(0, 12);
       return `${call.name}:${argsHash}`;
     };
+    let repeatStreak = 0;
+    let lastSignature: string | undefined;
+    const REPEAT_BLOCK_AT = 3;
+    const REPEAT_HALT_AT = 6;
     const rememberToolSignature = (sig: string): void => {
+      repeatStreak = sig === lastSignature ? repeatStreak + 1 : 1;
+      lastSignature = sig;
       recentToolSignatures.push(sig);
       if (recentToolSignatures.length > MAX_RECENT) recentToolSignatures.shift();
     };
-    const OBSERVING_BROWSER_ACTIONS = new Set([
-      'screenshot',
-      'snapshot',
-      'state',
-      'evaluate',
-      'detect-captcha',
-      'captcha-grid',
-      'slider-analyze',
-    ]);
-    const invalidateSignaturesAfter = (call: {
-      name: string;
-      arguments?: Record<string, unknown>;
-    }): void => {
-      if (call.name !== 'browser') return;
-      const action = String(call.arguments?.action || '').toLowerCase();
-      if (!action || OBSERVING_BROWSER_ACTIONS.has(action)) return;
-      for (let i = recentToolSignatures.length - 1; i >= 0; i--) {
-        if (recentToolSignatures[i].startsWith('browser:')) recentToolSignatures.splice(i, 1);
-      }
+    const repeatVerdict = (sig: string): 'ok' | 'block' | 'halt' => {
+      const streak = sig === lastSignature ? repeatStreak + 1 : 1;
+      if (streak >= REPEAT_HALT_AT) return 'halt';
+      if (streak >= REPEAT_BLOCK_AT) return 'block';
+      return 'ok';
     };
     const duplicateToolResult = (call: { name: string }): string =>
-      `[Duplicate tool call skipped] ${call.name} was already called with the same action/command/target/value during this turn. Finalize with the evidence already available instead of trying another near-identical tool.`;
+      `[Repeated tool call skipped] ${call.name} has been called ${REPEAT_BLOCK_AT} times in a row with identical arguments and the result has not changed. Change the arguments, use a different tool, or answer from the evidence already gathered.`;
     const normalizeProgressText = (value: string): string =>
       value
         .toLowerCase()
@@ -1686,9 +1678,10 @@ export class AgentLoop {
           if (readOnlyCalls.length === 1) {
             const call = readOnlyCalls[0];
             const sig = toolSignature(call);
-            if (recentToolSignatures.includes(sig)) {
+            if (repeatVerdict(sig) !== 'ok') {
               const result = duplicateToolResult(call);
-              toolLoopHaltReason = `${call.name} repeated the same tool call`;
+              if (repeatVerdict(sig) === 'halt')
+              toolLoopHaltReason = `${call.name} repeated the same tool call ${REPEAT_HALT_AT} times`;
               rememberToolSignature(sig);
               this.ledger.add('toolResults', result);
               store.recordToolEvent({
@@ -1726,8 +1719,7 @@ export class AgentLoop {
               this.messages.push(toolMessage);
               store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
             } else {
-              invalidateSignaturesAfter(call);
-              rememberToolSignature(sig);
+                rememberToolSignature(sig);
               const startedAt = Date.now();
               store.recordToolEvent({
                 sessionId: this.sessionId,
@@ -2004,9 +1996,10 @@ export class AgentLoop {
           }
 
           const sig = toolSignature(call);
-          if (recentToolSignatures.includes(sig)) {
+          if (repeatVerdict(sig) !== 'ok') {
             const result = duplicateToolResult(call);
-            toolLoopHaltReason = `${call.name} repeated the same tool call`;
+            if (repeatVerdict(sig) === 'halt')
+              toolLoopHaltReason = `${call.name} repeated the same tool call ${REPEAT_HALT_AT} times`;
             rememberToolSignature(sig);
             this.ledger.add('toolResults', result);
             store.recordToolEvent({
@@ -2045,7 +2038,6 @@ export class AgentLoop {
             store.appendMessage({ sessionId: this.sessionId, turnId, message: toolMessage });
             continue;
           }
-          invalidateSignaturesAfter(call);
           rememberToolSignature(sig);
 
           if (SESSION_KEY_TOOLS.has(call.name)) {

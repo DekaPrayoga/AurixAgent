@@ -1,78 +1,81 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 
-const OBSERVING_BROWSER_ACTIONS = new Set([
-  'screenshot',
-  'snapshot',
-  'state',
-  'evaluate',
-  'detect-captcha',
-  'captcha-grid',
-  'slider-analyze',
-]);
-
 type Call = { name: string; arguments?: Record<string, unknown> };
+type Verdict = 'ok' | 'block' | 'halt';
 
-function makeGuard(maxRecent = 8) {
-  const recent: string[] = [];
+const REPEAT_BLOCK_AT = 3;
+const REPEAT_HALT_AT = 6;
+
+function makeGuard() {
+  let repeatStreak = 0;
+  let lastSignature: string | undefined;
   const sigOf = (call: Call) =>
     `${call.name}:${createHash('sha1').update(JSON.stringify(call.arguments || {})).digest('hex').slice(0, 12)}`;
 
-  const invalidate = (call: Call) => {
-    if (call.name !== 'browser') return;
-    const action = String(call.arguments?.action || '').toLowerCase();
-    if (!action || OBSERVING_BROWSER_ACTIONS.has(action)) return;
-    for (let i = recent.length - 1; i >= 0; i--) {
-      if (recent[i].startsWith('browser:')) recent.splice(i, 1);
-    }
+  const verdict = (sig: string): Verdict => {
+    const streak = sig === lastSignature ? repeatStreak + 1 : 1;
+    if (streak >= REPEAT_HALT_AT) return 'halt';
+    if (streak >= REPEAT_BLOCK_AT) return 'block';
+    return 'ok';
   };
 
-  return (call: Call): 'blocked' | 'ran' => {
+  return (call: Call): Verdict => {
     const sig = sigOf(call);
-    if (recent.includes(sig)) return 'blocked';
-    invalidate(call);
-    recent.push(sig);
-    if (recent.length > maxRecent) recent.shift();
-    return 'ran';
+    const v = verdict(sig);
+    repeatStreak = sig === lastSignature ? repeatStreak + 1 : 1;
+    lastSignature = sig;
+    return v;
   };
 }
 
 const signin = { name: 'browser', arguments: { action: 'signin-assist', value: '{"email":"a"}' } };
 const navigate = { name: 'browser', arguments: { action: 'navigate', url: 'https://github.com/login' } };
-const shot = { name: 'browser', arguments: { action: 'screenshot' } };
+const read = { name: 'read_file', arguments: { path: '/tmp/a' } };
 
-describe('duplicate tool-call guard', () => {
-  test('retrying an action after the page moved is allowed', () => {
+describe('repeated tool-call guard', () => {
+  test('retrying after the page moved is allowed', () => {
     const guard = makeGuard();
-    expect(guard(signin)).toBe('ran');
-    expect(guard(navigate)).toBe('ran');
-    expect(guard(signin)).toBe('ran');
+    expect(guard(signin)).toBe('ok');
+    expect(guard(navigate)).toBe('ok');
+    expect(guard(signin)).toBe('ok');
   });
 
-  test('the same action twice with nothing in between is still blocked', () => {
+  test('one immediate retry is allowed, because transient failures are normal', () => {
     const guard = makeGuard();
-    expect(guard(signin)).toBe('ran');
-    expect(guard(signin)).toBe('blocked');
+    expect(guard(signin)).toBe('ok');
+    expect(guard(signin)).toBe('ok');
   });
 
-  test('a repeated navigation is still blocked', () => {
+  test('the third identical call in a row is refused', () => {
     const guard = makeGuard();
-    expect(guard(navigate)).toBe('ran');
-    expect(guard(navigate)).toBe('blocked');
+    guard(signin);
+    guard(signin);
+    expect(guard(signin)).toBe('block');
   });
 
-  test('observing the page does not license a repeat', () => {
+  test('a refusal does not end the turn until the sixth attempt', () => {
     const guard = makeGuard();
-    expect(guard(signin)).toBe('ran');
-    expect(guard(shot)).toBe('ran');
-    expect(guard(signin)).toBe('blocked');
+    const verdicts = Array.from({ length: 6 }, () => guard(signin));
+    expect(verdicts.slice(0, 2)).toEqual(['ok', 'ok']);
+    expect(verdicts.slice(2, 5)).toEqual(['block', 'block', 'block']);
+    expect(verdicts[5]).toBe('halt');
   });
 
-  test('a non-browser tool is unaffected by browser navigation', () => {
+  test('anything in between resets the streak', () => {
     const guard = makeGuard();
-    const read = { name: 'read_file', arguments: { path: '/tmp/a' } };
-    expect(guard(read)).toBe('ran');
-    expect(guard(navigate)).toBe('ran');
-    expect(guard(read)).toBe('blocked');
+    guard(signin);
+    guard(signin);
+    expect(guard(read)).toBe('ok');
+    expect(guard(signin)).toBe('ok');
+    expect(guard(signin)).toBe('ok');
+  });
+
+  test('alternating between two calls never blocks, and the iteration cap is the backstop', () => {
+    const guard = makeGuard();
+    for (let i = 0; i < 10; i++) {
+      expect(guard(signin)).toBe('ok');
+      expect(guard(navigate)).toBe('ok');
+    }
   });
 });
