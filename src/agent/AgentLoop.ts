@@ -935,6 +935,7 @@ export class AgentLoop {
     }
 
     let consecutiveEmpty = 0;
+    let lastToolCount = 0;
     let totalFailures = 0;
     let browserToolUsedThisTurn = false;
     let toolLoopHaltReason: string | undefined;
@@ -1146,6 +1147,7 @@ export class AgentLoop {
                   .map((tool) => tool.name)
                   .filter((name) => explicitMemoryRequest || name !== 'memory')
               );
+        lastToolCount = toolDefs?.length ?? 0;
         response = await this.provider.chat(
           messagesForModel,
           toolDefs,
@@ -1278,6 +1280,7 @@ export class AgentLoop {
         consecutiveEmpty++;
 
         const diag: string[] = [];
+        diag.push(`tools offered: ${lastToolCount}`);
         if (response.finishReason) diag.push(`finish_reason: ${response.finishReason}`);
         if (response.rawSnippet) diag.push(`raw: ${response.rawSnippet.slice(0, 200)}`);
         if (!response.finishReason && !response.rawSnippet)
@@ -1322,7 +1325,7 @@ export class AgentLoop {
           'Please provide your response. If blocked, state the blocker briefly instead of starting another recovery loop.',
         ];
         const nudge = nudges[Math.min(consecutiveEmpty - 1, nudges.length - 1)];
-        this.messages.push({ role: 'user', content: `[System] ${nudge}` });
+        this.messages.push({ role: 'system', content: nudge });
 
         const delay = 3;
         yield {
