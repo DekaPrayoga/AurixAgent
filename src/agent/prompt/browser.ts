@@ -36,7 +36,7 @@ Optional signup fields: phone, birthYear (default 2003), birthMonth, birthDay, c
 
 ## Captcha / Verification Widgets
 When a captcha appears during signup/login:
-1. Use solve-captcha FIRST — it auto-solves image grids, sliders, and FunCaptcha
+1. Use solve-captcha FIRST — it auto-solves image grids, GeeTest/Aliyun sliders, FunCaptcha, and Cloudflare Turnstile. Never click visible verification text such as "Verify you are human" with the generic click action; closed-shadow widgets are routed through solve-captcha.
 2. If an audio verification challenge or audio URL appears, use audio_captcha FIRST (Groq Whisper Large from config). Do NOT use terminal/curl/whisper directly. If the user explicitly wants local AI, use audio_captcha_local.
 3. If solve-captcha fails → try once more
 4. If it fails again → tell the user the captcha couldn't be auto-solved, then continue with the rest of the task

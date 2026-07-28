@@ -49,6 +49,9 @@ import {
   classifyHcaptchaFrames,
   solveHcaptcha,
   solveTurnstile,
+  detectTurnstile,
+  detectAliyunCaptcha,
+  solveAliyunCaptcha,
   injectA11yCookie,
   setA11yCookieFromUser,
   needsA11yCookieFromUser,
@@ -57,6 +60,7 @@ import {
   a11yTtlSeconds,
   getA11yCookie,
 } from './captcha/index.js';
+import { solveWithCapSolverFallback } from './captcha/CapSolverBrowserFallback.js';
 
 function ok(msg: string, details?: Record<string, string>): string {
   const lines = [`[OK] ${msg}`];
@@ -684,6 +688,96 @@ async function ensureBrowser(): Promise<Page> {
           return originalQuery.call(this, params);
         };
       }
+
+      window.__aurixTurnstile = window.__aurixTurnstile || {};
+      window.__aurixAliyunVerified = false;
+      window.__aurixAliyunGeneration = 0;
+      let aliyunInit;
+      Object.defineProperty(window, 'initAliyunCaptcha', {
+        configurable: true,
+        get() { return aliyunInit; },
+        set(value) {
+          if (typeof value !== 'function' || value.__aurixWrapped) {
+            aliyunInit = value;
+            return;
+          }
+          const wrapped = function (options) {
+            const next = Object.assign({}, options);
+            const originalVerify = next.captchaVerifyCallback;
+            const originalInstance = next.getInstance;
+            window.__aurixAliyunOptions = {
+              element: next.element,
+              button: next.button,
+              mode: next.mode,
+              sceneId: next.SceneId,
+              prefix: next.prefix,
+              region: next.region,
+            };
+            const callbackGeneration = window.__aurixAliyunGeneration;
+            next.captchaVerifyCallback = function (payload) {
+              if (typeof originalVerify !== 'function') return undefined;
+              try {
+                const result = originalVerify.apply(this, arguments);
+                if (result && typeof result.then === 'function') {
+                  return result.then(function (accepted) {
+                    if (
+                      callbackGeneration === window.__aurixAliyunGeneration &&
+                      accepted && accepted.captchaResult === true && accepted.bizResult === true &&
+                      payload?.sceneId && payload?.certifyId && payload?.deviceToken && payload?.data
+                    ) {
+                      window.__aurixAliyunVerified = true;
+                    }
+                    return accepted;
+                  });
+                }
+                if (
+                  callbackGeneration === window.__aurixAliyunGeneration &&
+                  result && result.captchaResult === true && result.bizResult === true &&
+                  payload?.sceneId && payload?.certifyId && payload?.deviceToken && payload?.data
+                ) {
+                  window.__aurixAliyunVerified = true;
+                }
+                return result;
+              } catch (error) {
+                window.__aurixAliyunVerified = false;
+                throw error;
+              }
+            };
+            next.getInstance = function (instance) {
+              window.__aurixAliyunInstance = instance;
+              return typeof originalInstance === 'function'
+                ? originalInstance.apply(this, arguments)
+                : undefined;
+            };
+            return value.call(this, next);
+          };
+          wrapped.__aurixWrapped = true;
+          aliyunInit = wrapped;
+        },
+      });
+      let turnstileValue;
+      Object.defineProperty(window, 'turnstile', {
+        configurable: true,
+        get() { return turnstileValue; },
+        set(value) {
+          turnstileValue = value;
+          if (!value || typeof value.render !== 'function' || value.render.__aurixWrapped) return;
+          const originalRender = value.render.bind(value);
+          const wrapped = function (container, options) {
+            try {
+              window.__aurixTurnstile = {
+                websiteKey: options && options.sitekey,
+                action: options && options.action,
+                cdata: options && options.cData,
+                callback: options && options.callback,
+              };
+            } catch {}
+            return originalRender(container, options);
+          };
+          wrapped.__aurixWrapped = true;
+          value.render = wrapped;
+        },
+      });
 
       const originalToString = Function.prototype.toString;
       Function.prototype.toString = function () {
@@ -1438,11 +1532,21 @@ except Exception as e:
             });
           } catch (e: any) {
             const msg = e.message || String(e);
-            if (msg.includes('Timeout'))
+            if (msg.includes('Timeout')) {
+              const verificationTarget = /verify\s*(?:you are|that you are)?\s*human|turnstile|captcha|challenge|checkbox/i.test(target);
+              if (verificationTarget && (await detectTurnstile(p))) {
+                const solved = await solveTurnstile(p);
+                if (!solved.includes('[OK]')) {
+                  const fallback = await solveWithCapSolverFallback(p, 'turnstile', 60_000);
+                  return `Generic click rerouted to CAPTCHA solving.\n${solved}\nCapSolver fallback: ${fallback.message}${fallback.taskId ? `\nTask ID: ${fallback.taskId}` : ''}`;
+                }
+                return `Generic click rerouted to CAPTCHA solving.\n${solved}`;
+              }
               return err(
                 `Element "${target}" not found within timeout`,
                 'Use "snapshot" to see available elements, or "wait" to wait for page load'
               );
+            }
             if (msg.includes('not visible') || msg.includes('intercepts pointer'))
               return err(
                 `Element "${target}" is hidden or covered by another element`,
@@ -2023,6 +2127,9 @@ except Exception as e:
             if (url.includes('geetest') || url.includes('captcha.com')) {
               captchaInfo.push(`GeeTest iframe: ${url.slice(0, 100)}`);
             }
+            if (url.includes('captcha-open') || url.includes('aliyuncs.com')) {
+              captchaInfo.push(`Aliyun Captcha frame: ${url.slice(0, 100)}`);
+            }
           }
 
           const pageContent = await p.content();
@@ -2032,6 +2139,7 @@ except Exception as e:
             captchaInfo.push('hCaptcha element detected in DOM');
           if (pageContent.includes('cf-turnstile') || pageContent.includes('challenges.cloudflare'))
             captchaInfo.push('Cloudflare Turnstile detected');
+          if (await detectAliyunCaptcha(p)) captchaInfo.push('Aliyun Captcha 2.0 detected');
           if (pageContent.includes('captcha-image') || pageContent.includes('captcha_img'))
             captchaInfo.push(
               'Image verification widget detected — use "solve-captcha" to analyze and complete'
@@ -2046,6 +2154,8 @@ except Exception as e:
           const results: string[] = [];
 
           const _solveTimeout = 120_000;
+          const solveStartedAt = Date.now();
+          let solveExpired = false;
           const _solveLogic = async () => {
             const frames = p.frames();
             let captchaType = 'unknown';
@@ -2055,6 +2165,7 @@ except Exception as e:
             let hcaptchaCheckbox: any = null;
             let hcaptchaChallenge: any = null;
             let funcaptchaFrame: any = null;
+            let turnstileFrame: any = null;
             let mtcaptchaFrame: any = null;
             let geetestFrame: any = null;
 
@@ -2066,6 +2177,7 @@ except Exception as e:
               if (hcaptchaFrames.checkbox) hcaptchaCheckbox = hcaptchaFrames.checkbox;
               if (hcaptchaFrames.challenge) hcaptchaChallenge = hcaptchaFrames.challenge;
               if (url.includes('funcaptcha') || url.includes('arkoselabs')) funcaptchaFrame = frame;
+              if (url.includes('challenges.cloudflare.com')) turnstileFrame = frame;
               if (url.includes('service.mtcaptcha')) mtcaptchaFrame = frame;
               if (
                 (url.includes('geetest.com') || url.includes('captcha.com')) &&
@@ -2075,9 +2187,11 @@ except Exception as e:
                 geetestFrame = frame;
             }
 
-            if (recaptchaAnchor) captchaType = 'recaptcha';
+            if (await detectAliyunCaptcha(p)) captchaType = 'aliyun';
+            else if (recaptchaAnchor) captchaType = 'recaptcha';
             else if (hcaptchaCheckbox || hcaptchaChallenge) captchaType = 'hcaptcha';
             else if (funcaptchaFrame) captchaType = 'funcaptcha';
+            else if (turnstileFrame) captchaType = 'turnstile';
             else if (mtcaptchaFrame) captchaType = 'mtcaptcha';
             else if (geetestFrame) captchaType = 'geetest';
 
@@ -2096,6 +2210,13 @@ except Exception as e:
               captchaType = 'mtcaptcha';
             }
             if (captchaType === 'unknown' && recaptchaBframe) captchaType = 'recaptcha';
+
+            if (captchaType === 'aliyun') {
+              results.push(await solveAliyunCaptcha(p, {
+                maxAttempts: 3,
+                deadlineMs: solveStartedAt + _solveTimeout - 5_000,
+              }));
+            }
 
             if (captchaType === 'recaptcha') {
               results.push('Attempting reCAPTCHA...');
@@ -2801,6 +2922,25 @@ except Exception as e:
               }
             }
 
+            const nativeSolved = results.some((line) =>
+              /CAPTCHA SOLVED|solved successfully|\[OK\].*(?:solved|verified|bypassed|token already present)|Challenge frame disappeared/i.test(line)
+            );
+            const remainingSolveMs = _solveTimeout - (Date.now() - solveStartedAt) - 6_000;
+            if (
+              !solveExpired &&
+              remainingSolveMs >= 5_000 &&
+              !nativeSolved &&
+              ['recaptcha', 'mtcaptcha', 'geetest', 'turnstile'].includes(captchaType)
+            ) {
+              const fallback = await solveWithCapSolverFallback(p, captchaType, remainingSolveMs);
+              if (fallback.attempted) {
+                results.push(`\nCapSolver fallback: ${fallback.message}`);
+                if (fallback.taskId) results.push(`Task ID: ${fallback.taskId}`);
+              }
+            } else if (!nativeSolved && remainingSolveMs < 5_000) {
+              results.push('\nCapSolver fallback skipped because the browser solve deadline was nearly exhausted.');
+            }
+
             const screenshotPath = join(homedir(), '.aurix', 'captcha-after.png');
             await p.screenshot({ path: screenshotPath });
             results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
@@ -2811,7 +2951,10 @@ except Exception as e:
             return await Promise.race([
               _solveLogic(),
               new Promise<string>((_, rej) =>
-                setTimeout(() => rej(new Error('solve-captcha timed out (120s)')), _solveTimeout)
+                setTimeout(() => {
+                  solveExpired = true;
+                  rej(new Error('solve-captcha timed out (120s)'));
+                }, _solveTimeout)
               ),
             ]);
           } catch (e: any) {

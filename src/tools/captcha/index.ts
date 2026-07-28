@@ -18,6 +18,21 @@ export {
 export type { CaptchaTrainingExample } from './common.js';
 export { solveCaptchaGrid } from './RecaptchaSolver.js';
 export {
+  CapSolverClient,
+  capSolverConfigured,
+  createConfiguredCapSolverClient,
+} from './CapSolverClient.js';
+export { CAPSOLVER_TASK_TYPES, validateCapSolverTask } from './CapSolverTypes.js';
+export { solveWithCapSolverFallback } from './CapSolverBrowserFallback.js';
+export {
+  detectAliyunCaptcha,
+  classifyAliyunCaptcha,
+  solveAliyunCaptcha,
+  invertAliyunDragDistance,
+  aliyunPieceOffset,
+  buildAliyunDragTrajectory,
+} from './AliyunSolver.js';
+export {
   autoSolveCaptcha,
   analyzeImageChallenge,
   _lastGridAnalyzeTime,
@@ -30,7 +45,13 @@ export {
   isHcaptchaChallengeUrl,
   isHcaptchaCheckboxUrl,
 } from './HcaptchaSolver.js';
-export { solveTurnstile } from './TurnstileSolver.js';
+export {
+  solveTurnstile,
+  detectTurnstile,
+  extractTurnstileDetails,
+  hasTurnstileToken,
+  injectTurnstileToken,
+} from './TurnstileSolver.js';
 export { FuncaptchaSolver, extractPublicKey, extractServiceUrl } from './FuncaptchaSolver.js';
 export type { FuncaptchaOptions, FuncaptchaSolveResult } from './FuncaptchaSolver.js';
 export {

@@ -24,6 +24,7 @@ import { banner } from '../utils/ascii-logo.js';
 import { normalizeBaseUrl } from '../utils/base-url.js';
 import { fetchConfiguredModels, type ModelFetchAttempt } from './ModelDiscovery.js';
 import { toModelPickerItems } from './ModelSelection.js';
+import { CapSolverClient } from '../tools/captcha/CapSolverClient.js';
 
 const teal = chalk.hex('#fab283');
 const dim = chalk.hex('#808080');
@@ -266,6 +267,14 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
     const captchaAudio = hasSetupValue(state, 'captchaAudio')
       ? state.captchaAudio
       : await stepCaptcha(existingConfig.captchaAudio, existingConfig.groqApiKey);
+    const resumedCapSolver = hasSetupValue(state, 'capSolver') ? state.capSolver : undefined;
+    const capSolver =
+      resumedCapSolver?.enabled && resumedCapSolver?.apiKey
+        ? resumedCapSolver
+        : await stepCapSolver(
+            resumedCapSolver?.requiresApiKey ? true : existingConfig.IsSolverApiEnabled,
+            existingConfig.capSolverApiKey,
+          );
     checkpointSetupState({
       step: 'searchEngine',
       themeChoice,
@@ -278,6 +287,7 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
       integrations: integrations || null,
       plugins,
       captchaAudio,
+      capSolver,
     });
 
     // Step 10: Web search engine
@@ -310,6 +320,8 @@ export async function runSetup(continueFrom?: boolean): Promise<AurixConfig> {
       captchaAudio: captchaAudio.mode,
       useGroqAudio: captchaAudio.useGroqAudio,
       groqApiKey: captchaAudio.groqApiKey,
+      IsSolverApiEnabled: capSolver.enabled,
+      capSolverApiKey: capSolver.apiKey,
       searchEngine: searchEngine.engine,
       searchApiKey: searchEngine.apiKey || '',
       searchBaseUrl: searchEngine.baseUrl,
@@ -1099,6 +1111,65 @@ async function stepCaptcha(
   return { mode, groqApiKey: existingGroqApiKey };
 }
 
+async function stepCapSolver(
+  existingEnabled?: boolean,
+  existingApiKey?: string,
+): Promise<{ enabled: boolean; apiKey: string }> {
+  while (true) {
+    const selected = await drawSelector({
+      title: 'Would You Like Use capsolver.com API for CAPTCHA fallback?',
+      items: [
+        {
+          id: 'no',
+          label: 'No (Default)',
+          desc: 'Keep native hybrid solving only',
+        },
+        {
+          id: 'yes',
+          label: 'Yes',
+          desc: 'Use the paid CapSolver API only after native solving fails',
+        },
+      ],
+      allowSkip: true,
+      extra: existingEnabled
+        ? ['CapSolver fallback is currently enabled.', 'Skip keeps the existing setting.']
+        : undefined,
+    });
+
+    if (!selected || selected === '__skip__' || selected === '__back__') {
+      return existingEnabled && existingApiKey
+        ? { enabled: true, apiKey: existingApiKey }
+        : { enabled: false, apiKey: '' };
+    }
+    if (selected === 'no') return { enabled: false, apiKey: '' };
+
+    drawInfo('Create or copy your key at https://dashboard.capsolver.com');
+    const apiKey = await drawInputScreen({
+      title: 'CapSolver API Key',
+      hint: 'Stored locally in ~/.aurix/config.yaml. The key will be validated with getBalance.',
+      label: 'API Key:',
+      masked: true,
+    });
+    if (!apiKey || apiKey === '__back__') continue;
+
+    const balance = await new CapSolverClient(apiKey).getBalance();
+    if (balance.ok) {
+      drawSuccess(`CapSolver connected. Balance: $${(balance.balance || 0).toFixed(4)}`);
+      return { enabled: true, apiKey };
+    }
+    drawWarning(`CapSolver validation failed: ${balance.error || 'Unknown error'}`);
+    const retry = await drawSelector({
+      title: 'CapSolver Setup',
+      items: [
+        { id: 'retry', label: 'Retry API Key', desc: 'Enter and validate the key again' },
+        { id: 'disable', label: 'Disable Fallback', desc: 'Continue with native solving only' },
+      ],
+      allowSkip: false,
+    });
+    if (retry !== 'retry') return { enabled: false, apiKey: '' };
+  }
+}
+
 // ─── Search Engine Step ─────────────────────────────────────────────────────
 
 async function stepSearchEngine(
@@ -1223,14 +1294,22 @@ function loadSetupState(): Record<string, any> {
   return {};
 }
 
+function setupStateWithoutSecrets(state: Record<string, any>): Record<string, any> {
+  const sanitized = { ...state };
+  if (sanitized.capSolver) {
+    sanitized.capSolver = { enabled: false, requiresApiKey: Boolean(sanitized.capSolver.enabled) };
+  }
+  return sanitized;
+}
+
 function checkpointSetupState(state: Record<string, any>): void {
   ensureConfigDir();
-  fs.writeFileSync(SETUP_STATE, JSON.stringify(state, null, 2));
+  fs.writeFileSync(SETUP_STATE, JSON.stringify(setupStateWithoutSecrets(state), null, 2), { mode: 0o600 });
 }
 
 function saveSetupState(state: Record<string, any>): void {
   ensureConfigDir();
-  fs.writeFileSync(SETUP_STATE, JSON.stringify(state, null, 2));
+  fs.writeFileSync(SETUP_STATE, JSON.stringify(setupStateWithoutSecrets(state), null, 2), { mode: 0o600 });
   drawInfo(
     `Setup paused at: ${state.step}. Run \`aurix setup --continue\` to resume.`,
   );

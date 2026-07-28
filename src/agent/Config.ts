@@ -39,6 +39,8 @@ export interface AurixConfig {
   useGroqAudio?: boolean;
   captchaAudio?: 'image' | 'audio' | 'hybrid' | boolean;
   groqApiKey?: string;
+  IsSolverApiEnabled?: boolean;
+  capSolverApiKey?: string;
   integrations?: {
     github?: { enabled: boolean; auth?: 'gh-cli' | 'token'; token?: string };
     gmail?: { enabled: boolean; address?: string; appPassword?: string };
@@ -159,6 +161,9 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     useGroqAudio: file.useGroqAudio,
     captchaAudio: file.captchaAudio,
     groqApiKey: process.env.GROQ_API_KEY || file.groqApiKey,
+    IsSolverApiEnabled:
+      parseBooleanEnv(process.env.AURIX_CAPSOLVER_ENABLED) ?? file.IsSolverApiEnabled ?? false,
+    capSolverApiKey: process.env.AURIX_CAPSOLVER_API_KEY || file.capSolverApiKey || '',
     integrations: file.integrations,
     plugins: file.plugins,
     gateway: file.gateway,
@@ -228,7 +233,8 @@ function parseBooleanEnv(value?: string): boolean | undefined {
 export function saveConfig(config: AurixConfig): void {
   ensureConfigDir();
   const yamlStr = yaml.dump(config, { indent: 2 });
-  fs.writeFileSync(CONFIG_FILE, yamlStr, 'utf-8');
+  fs.writeFileSync(CONFIG_FILE, yamlStr, { encoding: 'utf-8', mode: 0o600 });
+  fs.chmodSync(CONFIG_FILE, 0o600);
 }
 
 export const CONFIG_PATH = CONFIG_DIR;

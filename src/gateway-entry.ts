@@ -24,6 +24,7 @@ const GATEWAY_TOOL_ALLOWLIST = new Set([
   'read_archive',
   'audio_captcha',
   'audio_captcha_local',
+  'captcha_api_solving',
   'temp_mailing',
   'todo',
   'memory',
