@@ -722,8 +722,7 @@ async function ensureBrowser(): Promise<Page> {
                   return result.then(function (accepted) {
                     if (
                       callbackGeneration === window.__aurixAliyunGeneration &&
-                      accepted && accepted.captchaResult === true && accepted.bizResult === true &&
-                      payload?.sceneId && payload?.certifyId && payload?.deviceToken && payload?.data
+                      accepted && accepted.captchaResult === true && accepted.bizResult === true
                     ) {
                       window.__aurixAliyunVerified = true;
                     }
@@ -732,8 +731,7 @@ async function ensureBrowser(): Promise<Page> {
                 }
                 if (
                   callbackGeneration === window.__aurixAliyunGeneration &&
-                  result && result.captchaResult === true && result.bizResult === true &&
-                  payload?.sceneId && payload?.certifyId && payload?.deviceToken && payload?.data
+                  result && result.captchaResult === true && result.bizResult === true
                 ) {
                   window.__aurixAliyunVerified = true;
                 }

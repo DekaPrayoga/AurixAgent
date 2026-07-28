@@ -1,5 +1,10 @@
 import type { Page } from 'playwright-core';
+import { mkdir, rm, writeFile } from 'fs/promises';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 import { visionClassify } from './common.js';
+import { detectAliyunGapOpenCv, scaleAliyunGapCoordinate } from './AliyunOpenCvDetector.js';
 
 export type AliyunCaptchaType = 'TRACELESS' | 'SLIDE' | 'PUZZLE' | 'INPAINTING' | 'ONE_CLICK';
 
@@ -125,6 +130,49 @@ async function readGeometry(page: Page): Promise<AliyunGeometry | null> {
   });
 }
 
+async function estimateGapWithOpenCv(
+  page: Page,
+  geometry: AliyunGeometry,
+  deadline: number
+): Promise<{ gapX: number; confidence: number; method: string } | undefined> {
+  const remainingBeforeCapture = deadline - Date.now();
+  if (remainingBeforeCapture < 500) return undefined;
+  const background = page.locator(
+    '#aliyunCaptcha-img, #aliyunCaptcha-window-puzzle, [class*="aliyunCaptcha"][class*="puzzle-bg"]'
+  ).first();
+  const piece = page.locator(
+    '#aliyunCaptcha-puzzle, [class*="aliyunCaptcha"][class*="puzzle-piece"]'
+  ).first();
+  if ((await background.count().catch(() => 0)) === 0 || (await piece.count().catch(() => 0)) === 0) return undefined;
+  const directory = join(tmpdir(), `aurix-aliyun-${randomUUID()}`);
+  const backgroundPath = join(directory, 'background.png');
+  const piecePath = join(directory, 'piece.png');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  try {
+    const [backgroundImage, pieceImage] = await Promise.all([
+      background.screenshot({ type: 'png' }),
+      piece.screenshot({ type: 'png', omitBackground: true }),
+    ]);
+    await Promise.all([
+      writeFile(backgroundPath, backgroundImage, { mode: 0o600 }),
+      writeFile(piecePath, pieceImage, { mode: 0o600 }),
+    ]);
+    const remaining = deadline - Date.now();
+    if (remaining < 100) return undefined;
+    const detected = await detectAliyunGapOpenCv(backgroundPath, piecePath, 5, remaining);
+    if (!detected.ok || !detected.candidates?.length || !detected.backgroundWidth || !geometry.background) return undefined;
+    const candidate = detected.candidates[0];
+    return {
+      gapX: scaleAliyunGapCoordinate(candidate.gapX, detected.backgroundWidth, geometry.background.width),
+      confidence: candidate.confidence,
+      method: detected.method || 'opencv',
+    };
+  } finally {
+    if (process.env.AURIX_ALIYUN_DEBUG !== '1') await rm(directory, { recursive: true, force: true }).catch(() => {});
+    else console.error(`[aliyun] debug captures preserved: ${directory}`);
+  }
+}
+
 async function estimateGapWithVision(page: Page, geometry: AliyunGeometry, deadline: number): Promise<number | undefined> {
   if (!geometry.background) return undefined;
   const clip = geometry.background;
@@ -207,9 +255,12 @@ export async function solveAliyunCaptcha(
   page: Page,
   options: { maxAttempts?: number; deadlineMs?: number } = {}
 ): Promise<string> {
-  const maxAttempts = Math.max(1, Math.min(1, options.maxAttempts ?? 1));
+  const maxAttempts = 1;
   const deadline = options.deadlineMs ?? Date.now() + 75_000;
   const results: string[] = ['Attempting Aliyun Captcha 2.0 natively...'];
+  if (await hasAliyunSuccess(page)) {
+    return [...results, '[OK] Aliyun Captcha 2.0 was already accepted by the application callback'].join('\n');
+  }
   let completedAttempts = 0;
 
   for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline; attempt++) {
@@ -242,22 +293,39 @@ export async function solveAliyunCaptcha(
       if (type === 'SLIDE') {
         distance = geometry.trackWidth;
       } else {
-        const gapOffset = geometry.gapOffset ?? await estimateGapWithVision(page, geometry, deadline);
+        const openCv = geometry.gapOffset === undefined
+          ? await estimateGapWithOpenCv(page, geometry, deadline).catch(() => undefined)
+          : undefined;
+        const visionGap = geometry.gapOffset === undefined && !openCv
+          ? await estimateGapWithVision(page, geometry, deadline)
+          : undefined;
+        const gapOffset = geometry.gapOffset ?? openCv?.gapX ?? visionGap;
         if (gapOffset === undefined) {
           results.push('[WARN] Aliyun puzzle gap could not be localized');
           if (attempt < maxAttempts - 1) await refreshAliyun(page);
           continue;
         }
         distance = invertAliyunDragDistance(Math.max(1, gapOffset));
-        results.push(`Gap localized at ${Math.round(gapOffset)}px; quadratic handle distance ${distance.toFixed(1)}px`);
+        const method = geometry.gapOffset !== undefined
+          ? 'dom'
+          : openCv
+            ? `${openCv.method} confidence ${openCv.confidence.toFixed(3)}`
+            : 'vision';
+        results.push(`Gap localized at ${Math.round(gapOffset)}px via ${method}; quadratic handle distance ${distance.toFixed(1)}px`);
       }
       await dragAliyun(page, geometry, distance, deadline);
     }
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    await page.waitForTimeout(Math.min(1800, remaining));
-    if (await hasAliyunSuccess(page)) {
-      return [...results, '[OK] Aliyun Captcha 2.0 verified natively; callback token retained in page session'].join('\n');
+    let accepted = false;
+    const acceptanceDeadline = Math.min(deadline, Date.now() + 5_000);
+    while (Date.now() < acceptanceDeadline) {
+      if (await hasAliyunSuccess(page)) {
+        accepted = true;
+        break;
+      }
+      await page.waitForTimeout(Math.min(250, Math.max(1, acceptanceDeadline - Date.now())));
+    }
+    if (accepted) {
+      return [...results, '[OK] Aliyun Captcha 2.0 verified natively; application callback accepted the result'].join('\n');
     }
     if (attempt < maxAttempts - 1) await refreshAliyun(page);
   }

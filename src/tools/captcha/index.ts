@@ -33,6 +33,10 @@ export {
   buildAliyunDragTrajectory,
 } from './AliyunSolver.js';
 export {
+  detectAliyunGapOpenCv,
+  scaleAliyunGapCoordinate,
+} from './AliyunOpenCvDetector.js';
+export {
   autoSolveCaptcha,
   analyzeImageChallenge,
   _lastGridAnalyzeTime,
