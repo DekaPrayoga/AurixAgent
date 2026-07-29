@@ -152,7 +152,7 @@ export class OpenAIProvider implements Provider {
 
   async chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
     if (this.endpointMode === 'completion') {
-      return this.completionFallback(messages);
+      return this.completionFallback(messages, signal);
     }
 
     const clean = sanitizeMessages(messages);
@@ -241,7 +241,7 @@ export class OpenAIProvider implements Provider {
         if (fetchRes.status === 404 || fetchRes.status === 405) {
           if (!this.endpointMode) {
             this.endpointMode = 'completion';
-            return this.completionFallback(messages);
+            return this.completionFallback(messages, signal);
           }
         }
 
@@ -355,7 +355,7 @@ export class OpenAIProvider implements Provider {
     } catch (e: any) {
       if ((e.status === 404 || e.status === 405) && !this.endpointMode) {
         this.endpointMode = 'completion';
-        return this.completionFallback(messages);
+        return this.completionFallback(messages, signal);
       }
 
       // If it's a 403 or API error, try to extract the real response body from 9router/OpenAI SDK
@@ -443,7 +443,7 @@ export class OpenAIProvider implements Provider {
     };
   }
 
-  private async completionFallback(messages: Message[]): Promise<ChatResponse> {
+  private async completionFallback(messages: Message[], signal?: AbortSignal): Promise<ChatResponse> {
     if (messagesHaveImages(messages)) {
       throw new Error('Image input requires a chat/vision endpoint; completion fallback cannot process images.');
     }
@@ -473,6 +473,7 @@ export class OpenAIProvider implements Provider {
       } catch (e) {}
     }
 
+    if (signal) fetchOpts.signal = signal;
     const res = await fetch(url, fetchOpts);
 
     if (!res.ok) {
@@ -515,23 +516,23 @@ export class AnthropicProvider implements Provider {
     this.baseUrl = anthropicBaseUrl(config.baseUrl);
   }
 
-  async chat(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+  async chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
     if (this.endpointMode === 'openai-compat') {
-      return this.openAICompatFallback(messages, tools);
+      return this.openAICompatFallback(messages, tools, signal);
     }
 
     try {
-      return await this.anthropicNative(messages, tools);
+      return await this.anthropicNative(messages, tools, signal);
     } catch (e: any) {
       if ((e.message?.includes('404') || e.message?.includes('Not Found')) && !this.endpointMode) {
         this.endpointMode = 'openai-compat';
-        return this.openAICompatFallback(messages, tools);
+        return this.openAICompatFallback(messages, tools, signal);
       }
       throw e;
     }
   }
 
-  private async anthropicNative(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+  private async anthropicNative(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
     const clean = sanitizeMessages(messages);
     const systemText = clean
       .filter((m) => m.role === 'system')
@@ -613,6 +614,7 @@ export class AnthropicProvider implements Provider {
       } catch (e) {}
     }
 
+    if (signal) fetchOpts.signal = signal;
     const res = await fetch(url, fetchOpts);
 
     if (!res.ok) {
@@ -666,16 +668,20 @@ export class AnthropicProvider implements Provider {
       if (lastMessage || textParts.length > 0 || toolUses.size > 0) {
         const orderedToolUses = [...toolUses.entries()]
           .sort((a, b) => a[0] - b[0])
-          .map(([, tool]) => {
+          .map(([index, tool]) => {
             let input: Record<string, unknown> = {};
             const raw = tool.input.trim();
             if (raw) {
+              let parsed: unknown;
               try {
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                  input = parsed as Record<string, unknown>;
-                }
-              } catch {}
+                parsed = JSON.parse(raw);
+              } catch {
+                throw new Error(`Anthropic SSE returned malformed tool input for "${tool.name}" at block ${index}`);
+              }
+              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error(`Anthropic SSE returned non-object tool input for "${tool.name}" at block ${index}`);
+              }
+              input = parsed as Record<string, unknown>;
             }
             return { type: 'tool_use', id: tool.id, name: tool.name, input };
           });
@@ -736,7 +742,8 @@ export class AnthropicProvider implements Provider {
 
   private async openAICompatFallback(
     messages: Message[],
-    tools?: ToolDef[]
+    tools?: ToolDef[],
+    signal?: AbortSignal
   ): Promise<ChatResponse> {
     const clean = sanitizeMessages(messages);
     const baseUrl = openAIBaseUrl(this.baseUrl);
@@ -791,7 +798,7 @@ export class AnthropicProvider implements Provider {
 
     let res;
     try {
-      res = await client.chat.completions.create(params);
+      res = await client.chat.completions.create(params, { signal });
     } catch (e: any) {
       let errorMsg = e.message || String(e);
       let rawBody = '';
@@ -881,33 +888,34 @@ export class AutoDetectProvider implements Provider {
     this.config = config;
   }
 
-  async chat(messages: Message[], tools?: ToolDef[]): Promise<ChatResponse> {
+  async chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
     if (this.resolved) {
-      return this.resolved.chat(messages, tools);
+      return this.resolved.chat(messages, tools, signal);
     }
 
     const apiStyle = (this.config as any).apiStyle as string | undefined;
 
     if (apiStyle === 'anthropic') {
       this.resolved = new AnthropicProvider(this.config);
-      return this.resolved.chat(messages, tools);
+      return this.resolved.chat(messages, tools, signal);
     }
 
     if (apiStyle === 'openai') {
       this.resolved = new OpenAIProvider(this.config);
-      return this.resolved.chat(messages, tools);
+      return this.resolved.chat(messages, tools, signal);
     }
 
     try {
       this.openai = new OpenAIProvider(this.config);
-      const result = await this.openai.chat(messages, tools);
+      const result = await this.openai.chat(messages, tools, signal);
       this.resolved = this.openai;
       this.name = `custom (openai-compat)`;
       return result;
-    } catch {
+    } catch (error: any) {
+      if (signal?.aborted || error?.name === 'AbortError') throw error;
       try {
         this.anthropic = new AnthropicProvider(this.config);
-        const result = await this.anthropic.chat(messages, tools);
+        const result = await this.anthropic.chat(messages, tools, signal);
         this.resolved = this.anthropic;
         this.name = `custom (anthropic-compat)`;
         return result;

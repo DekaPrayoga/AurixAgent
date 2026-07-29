@@ -540,7 +540,7 @@ export function InputBox({
 
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-      <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement}>
+      <box flexDirection="column" border={['left', 'top', 'right']} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.borderActive : theme.primary} backgroundColor={theme.bgElement}>
         {suggestionsVisible && (
           <CommandSuggestions
             suggestions={suggestions}
@@ -630,6 +630,8 @@ function CommandSuggestions({
           <box
             key={command.name}
             flexDirection="row"
+            justifyContent="space-between"
+            backgroundColor={isSelected ? theme.bgSelected : undefined}
             onMouseDown={(event) => {
               if (event.button !== 0) return;
               event.preventDefault();
@@ -637,13 +639,14 @@ function CommandSuggestions({
               onSelect(index);
             }}
           >
-            <text
-              fg={isSelected ? theme.bg : theme.primary}
-              bg={isSelected ? theme.primary : undefined}
-            >
-              {` /${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ''} `}
-            </text>
-            <text fg={theme.textMuted}> {safeDisplayText(command.description)}</text>
+            <box flexDirection="row">
+              <text fg={isSelected ? theme.primary : theme.textMuted}>{isSelected ? '▌' : ' '}</text>
+              <text fg={isSelected ? theme.textBright : theme.primary} attributes={isSelected ? TextAttributes.BOLD : TextAttributes.NONE}>
+                {` /${command.name} `}
+              </text>
+              <text fg={isSelected ? theme.text : theme.textMuted}> {safeDisplayText(command.description)}</text>
+            </box>
+            {command.argumentHint && <text fg={theme.accent}>{command.argumentHint} </text>}
           </box>
         );
       })}

@@ -54,11 +54,22 @@ export const theme = {
   intentSuccess: '#7fd88f',
   intentWarning: '#f5a742',
   intentDanger: '#e06c75',
+  markdownText: '#eeeeee',
   markdownHeading: '#9d7cd8',
-  markdownLink: '#56b6c2',
+  markdownLink: '#fab283',
+  markdownLinkText: '#56b6c2',
   markdownCode: '#7fd88f',
-  markdownQuote: '#f5a742',
+  markdownQuote: '#e5c07b',
+  markdownEmphasis: '#e5c07b',
   markdownStrong: '#fab283',
+  syntaxComment: '#808080',
+  syntaxKeyword: '#9d7cd8',
+  syntaxString: '#7fd88f',
+  syntaxNumber: '#f5a742',
+  syntaxFunction: '#56b6c2',
+  syntaxType: '#fab283',
+  syntaxOperator: '#cfcfcf',
+  syntaxPunctuation: '#808080',
   toolPending: '#eeeeee',
   toolRunning: '#f5a742',
   toolSuccess: '#808080',
@@ -346,10 +357,13 @@ const themePalettes: Record<ThemeName, ThemePalette> = {
   },
 };
 
+const baseTheme = { ...theme };
+
 export function applyTheme(config: Pick<AurixConfig, 'themeName' | 'accentColor'>): void {
   const name = (config.themeName || 'aurix') as ThemeName;
   const palette = themePalettes[name] || themePalettes.aurix;
 
+  Object.assign(theme, baseTheme);
   theme.primary = config.accentColor || palette.primary;
   theme.prompt = theme.primary;
   theme.cursor = palette.cursor;
@@ -395,11 +409,22 @@ export function applyTheme(config: Pick<AurixConfig, 'themeName' | 'accentColor'
   theme.intentSuccess = theme.ok;
   theme.intentWarning = theme.warn;
   theme.intentDanger = theme.error;
+  theme.markdownText = theme.text;
   theme.markdownHeading = theme.accent;
-  theme.markdownLink = theme.info;
+  theme.markdownLink = theme.primary;
+  theme.markdownLinkText = theme.info;
   theme.markdownCode = theme.ok;
   theme.markdownQuote = theme.warn;
+  theme.markdownEmphasis = theme.warn;
   theme.markdownStrong = theme.primary;
+  theme.syntaxComment = theme.textMuted;
+  theme.syntaxKeyword = theme.accent;
+  theme.syntaxString = theme.ok;
+  theme.syntaxNumber = theme.warn;
+  theme.syntaxFunction = theme.info;
+  theme.syntaxType = theme.primary;
+  theme.syntaxOperator = theme.textSecondary;
+  theme.syntaxPunctuation = theme.textMuted;
   theme.toolPending = theme.text;
   theme.toolRunning = theme.running;
   theme.toolSuccess = theme.textMuted;

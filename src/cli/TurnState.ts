@@ -7,6 +7,11 @@ export interface FlatChatMessage {
   role: PresentationRole;
   content: string;
   toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolCallId?: string;
+  toolStatus?: ToolLifecyclePart['status'];
+  durationMs?: number;
+  errorType?: string;
   model?: string;
   timestamp: Date;
   checkpointId?: string;
@@ -259,7 +264,6 @@ export function flattenPresentationState(
   const turn = state.currentTurn;
   if (!turn) return messages;
 
-  const renderToolEnd = options.renderToolEnd || DEFAULT_TOOL_END_RENDERER;
   for (const part of turn.parts) {
     if (part.kind === 'text') {
       messages.push({ role: 'assistant', content: part.content, model: part.model || options.model, timestamp: part.startedAt });
@@ -274,15 +278,23 @@ export function flattenPresentationState(
         status: part.status,
         errorType: part.errorType,
       };
-      const header = part.status === 'running' ? `${part.toolName || 'tool'} running` : renderToolEnd(endEvent);
       const memoryBody = part.content.startsWith('Memory saved.')
         ? 'Memory saved.'
         : part.content.startsWith('Memory skipped:')
           ? part.content
           : 'Memory checked.';
       const visibleContent = part.toolName === 'memory' ? memoryBody : part.content;
-      const body = visibleContent ? `\n\n${visibleContent}` : '';
-      messages.push({ role: 'tool', content: `${header}${body}`, toolName: part.toolName, timestamp: part.startedAt });
+      messages.push({
+        role: 'tool',
+        content: visibleContent,
+        toolName: part.toolName,
+        toolArgs: part.args,
+        toolCallId: part.toolCallId,
+        toolStatus: part.status,
+        durationMs: part.durationMs,
+        errorType: part.errorType,
+        timestamp: part.startedAt,
+      });
     } else {
       messages.push({ role: part.kind === 'error' ? 'assistant' : 'tool', content: part.content, toolName: part.toolName, timestamp: part.timestamp });
     }

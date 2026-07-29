@@ -26,6 +26,6 @@ describe('Aliyun quadratic slider geometry', () => {
     const start = { x: 30, y: 40 };
     const points = buildAliyunDragTrajectory(start, 150, () => 0.5);
     expect(Math.max(...points.map((point) => Math.abs(point.y - start.y)))).toBeLessThanOrEqual(1.2);
-    expect(points.length).toBe(53);
+    expect(points.length).toBe(7);
   });
 });

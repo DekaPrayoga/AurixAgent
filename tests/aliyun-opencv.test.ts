@@ -14,12 +14,13 @@ const execFileAsync = promisify(execFile);
 const directory = await mkdtemp(join(tmpdir(), 'aurix-aliyun-opencv-test-'));
 afterAll(async () => rm(directory, { recursive: true, force: true }));
 
+const width = 300;
+const height = 150;
+const pieceWidth = 40;
+const pieceHeight = 46;
+const pieceTop = 50;
+
 async function createFixture(gapX: number): Promise<{ background: string; piece: string }> {
-  const width = 300;
-  const height = 150;
-  const pieceWidth = 40;
-  const pieceHeight = 46;
-  const pieceTop = 50;
   const pieceSvg = Buffer.from(`<svg width="${width}" height="${height}"><rect x="0" y="0" width="${width}" height="${height}" fill="rgba(0,0,0,0)"/><path d="M 0 ${pieceTop} h ${pieceWidth} v 12 q 12 8 0 16 v 18 h -${pieceWidth} z" fill="white"/></svg>`);
   const backgroundSvg = Buffer.from(`<svg width="${width}" height="${height}"><rect width="${width}" height="${height}" fill="#6688aa"/><path d="M ${gapX} ${pieceTop} h ${pieceWidth} v 12 q 12 8 0 16 v 18 h -${pieceWidth} z" fill="#1b2733"/><line x1="230" y1="0" x2="230" y2="${height}" stroke="#ddd" stroke-width="2"/></svg>`);
   const background = join(directory, 'background.png');
@@ -37,7 +38,13 @@ describe('Aliyun OpenCV bridge', () => {
 
   test('detects a synthetic puzzle gap', async () => {
     const fixture = await createFixture(162);
-    const result = await detectAliyunGapOpenCv(fixture.background, fixture.piece, 5);
+    const result = await detectAliyunGapOpenCv(fixture.background, fixture.piece, 5, 10_000, {
+      pieceTop,
+      pieceWidth,
+      pieceHeight,
+      renderedBackgroundWidth: width,
+      renderedBackgroundHeight: height,
+    });
     expect(result.ok).toBe(true);
     expect(result.candidates?.length).toBeGreaterThan(0);
     expect(Math.abs((result.candidates?.[0].gapX || 0) - 162)).toBeLessThanOrEqual(8);

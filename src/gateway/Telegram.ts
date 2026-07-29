@@ -14,6 +14,17 @@ export class TelegramPlatform extends EventEmitter implements Platform {
   private polling: boolean = false;
   private _polling: boolean = false;
   private offset: number = 0;
+  private pollController?: AbortController;
+  private backoffController?: AbortController;
+  private pollHealth = {
+    active: false,
+    lastSuccessAt: undefined as string | undefined,
+    consecutiveErrors: 0,
+    lastError: undefined as string | undefined,
+    lastErrorAt: undefined as string | undefined,
+    conflicts: 0,
+    backoffMs: 0,
+  };
   private pendingText = new Map<
     string,
     { msg: any; text: string; timer: ReturnType<typeof setTimeout> }
@@ -39,17 +50,10 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
     await this.registerCommands();
 
-    // Clear any webhook and pending updates from previous instances
     try {
-      await this.api('deleteWebhook', { drop_pending_updates: true });
-      // Clear pending updates by getting latest offset
-      const updates = await this.api('getUpdates', { offset: -1, timeout: 0 });
-      if (updates.length > 0) {
-        this.offset = updates[updates.length - 1].update_id + 1;
-        console.log(`  Telegram: cleared ${updates.length} pending updates`);
-      }
+      await this.api('deleteWebhook', { drop_pending_updates: false });
     } catch (e: any) {
-      console.error(`  Telegram: failed to clear pending updates: ${e.message}`);
+      console.error(`  Telegram: failed to disable webhook: ${e.message}`);
     }
 
     this.polling = true;
@@ -58,7 +62,9 @@ export class TelegramPlatform extends EventEmitter implements Platform {
 
   async disconnect(): Promise<void> {
     this.polling = false;
-    this._polling = false;
+    this.pollController?.abort('Telegram disconnect');
+    this.backoffController?.abort('Telegram disconnect');
+    this.pollHealth.active = false;
     for (const pending of this.pendingText.values()) clearTimeout(pending.timer);
     for (const pending of this.pendingPhoto.values()) clearTimeout(pending.timer);
     this.pendingText.clear();
@@ -393,20 +399,46 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     }
   }
 
+  getHealth() {
+    return { ...this.pollHealth, offset: this.offset, polling: this.polling };
+  }
+
+  private async waitBackoff(ms: number): Promise<void> {
+    this.pollHealth.backoffMs = ms;
+    const controller = new AbortController();
+    this.backoffController = controller;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      controller.signal.addEventListener('abort', () => {
+        clearTimeout(timer);
+        resolve();
+      }, { once: true });
+    });
+    if (this.backoffController === controller) this.backoffController = undefined;
+    this.pollHealth.backoffMs = 0;
+  }
+
   private async poll() {
-    if (this._polling) return; // Prevent multiple polling loops
+    if (this._polling) return;
     this._polling = true;
 
     while (this.polling) {
       try {
+        this.pollHealth.active = true;
         const updates = await this.api('getUpdates', {
           offset: this.offset,
           timeout: 30,
           allowed_updates: ['message', 'callback_query'],
-        });
+        }, true);
+        this.pollHealth.active = false;
+        this.pollHealth.lastSuccessAt = new Date().toISOString();
+        this.pollHealth.consecutiveErrors = 0;
+        this.pollHealth.lastError = undefined;
+        this.pollHealth.backoffMs = 0;
 
         for (const update of updates) {
-          this.offset = update.update_id + 1;
+          if (!this.polling) break;
+          let processed = false;
 
           if (update.callback_query) {
             const cb = update.callback_query;
@@ -435,18 +467,26 @@ export class TelegramPlatform extends EventEmitter implements Platform {
               chatType,
               isCallback: true,
             } as IncomingMessage);
+            processed = true;
+            if (processed) this.offset = update.update_id + 1;
             continue;
           }
 
           const msg = update.message;
-          if (!msg) continue;
+          if (!msg) {
+            this.offset = update.update_id + 1;
+            continue;
+          }
 
           const text = msg.text || msg.caption || '';
           const hasPhoto = msg.photo?.length > 0;
           const hasDocument = Boolean(msg.document?.file_id);
           const hasImageDoc = msg.document?.mime_type?.startsWith('image/');
 
-          if (!text && !hasPhoto && !hasDocument) continue;
+          if (!text && !hasPhoto && !hasDocument) {
+            this.offset = update.update_id + 1;
+            continue;
+          }
 
           let forwardedFrom: string | undefined;
           if (msg.forward_from) {
@@ -485,19 +525,31 @@ export class TelegramPlatform extends EventEmitter implements Platform {
             }
           }
 
+          if (!this.polling) break;
           this.enqueueMessage(msg, text, forwardedFrom, attachments);
+          processed = true;
+          if (processed) this.offset = update.update_id + 1;
         }
       } catch (e: any) {
-        if (e.message?.includes('Conflict')) {
-          // Another bot instance is polling - wait and retry
-          console.error(`  Telegram poll conflict - another instance polling. Waiting 10s...`);
-          await new Promise((r) => setTimeout(r, 10000));
+        this.pollHealth.active = false;
+        if (!this.polling && (e?.name === 'AbortError' || e?.code === 'shutdown')) break;
+        this.pollHealth.consecutiveErrors++;
+        this.pollHealth.lastError = String(e?.message || e).slice(0, 300);
+        this.pollHealth.lastErrorAt = new Date().toISOString();
+        if (e?.code === 'conflict') {
+          this.pollHealth.conflicts++;
+          const delay = 10_000 + Math.floor(Math.random() * 2_000);
+          console.error(`  Telegram poll conflict - another instance is polling. Retrying in ${Math.round(delay / 1000)}s...`);
+          await this.waitBackoff(delay);
         } else {
-          console.error(`  Telegram poll error: ${e.message}`);
-          await new Promise((r) => setTimeout(r, 5000));
+          const base = Math.min(30_000, 1000 * 2 ** Math.min(5, this.pollHealth.consecutiveErrors - 1));
+          const delay = base + Math.floor(Math.random() * Math.max(250, base * 0.25));
+          console.error(`  Telegram poll ${e?.code || 'network_error'}: ${this.pollHealth.lastError}. Retrying in ${(delay / 1000).toFixed(1)}s...`);
+          await this.waitBackoff(delay);
         }
       }
     }
+    this.pollHealth.active = false;
     this._polling = false;
   }
 
@@ -613,21 +665,58 @@ export class TelegramPlatform extends EventEmitter implements Platform {
     }
   }
 
-  private async api(method: string, params: Record<string, any>): Promise<any> {
+  private async api(method: string, params: Record<string, any>, isPoll = false): Promise<any> {
     const url = `https://api.telegram.org/bot${this.token}/${method}`;
+    const controller = new AbortController();
+    if (isPoll) this.pollController = controller;
+    const serverTimeoutMs = Math.max(0, Number(params.timeout) || 0) * 1000;
+    const deadlineMs = isPoll ? serverTimeoutMs + 10_000 : 20_000;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort('Telegram client deadline exceeded');
+    }, deadlineMs);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-
-    const data = (await res.json()) as any;
-    if (!data.ok) {
-      throw new Error(data.description || 'Telegram API error');
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+        signal: controller.signal,
+      });
+      const raw = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        const error: any = new Error(`Telegram returned invalid JSON (HTTP ${res.status}): ${raw.slice(0, 160)}`);
+        error.code = 'invalid_response';
+        throw error;
+      }
+      if (!res.ok || !data.ok) {
+        const description = String(data?.description || raw || res.statusText).slice(0, 300);
+        const error: any = new Error(`Telegram API ${res.status}: ${description}`);
+        error.code = res.status === 409 || /conflict/i.test(description) ? 'conflict' : 'api_error';
+        error.status = res.status;
+        throw error;
+      }
+      return data.result;
+    } catch (cause: any) {
+      if (cause?.code) throw cause;
+      const error: any = new Error(
+        timedOut
+          ? `client deadline exceeded after ${Math.round(deadlineMs / 1000)}s`
+          : controller.signal.aborted && !this.polling
+            ? 'Telegram polling stopped'
+            : String(cause?.message || cause)
+      );
+      error.name = controller.signal.aborted ? 'AbortError' : cause?.name || 'Error';
+      error.code = timedOut ? 'timeout' : controller.signal.aborted && !this.polling ? 'shutdown' : 'network_error';
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (isPoll && this.pollController === controller) this.pollController = undefined;
     }
-
-    return data.result;
   }
 }
 

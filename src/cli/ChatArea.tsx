@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { SyntaxStyle, TextAttributes, type ScrollAcceleration } from '@opentui/core';
 import { theme } from './theme.js';
-import { toolColor, toolIcon } from './visual.js';
+import { formatDuration, humanToolName, statusColor, statusIcon, toolColor, toolIcon, toolSummary } from './visual.js';
 import { useThinkingAnimation, useScanner, useElapsedSeconds } from './animation/useThinking.js';
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
@@ -122,6 +122,11 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
   toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolCallId?: string;
+  toolStatus?: 'running' | 'success' | 'error' | 'timeout' | 'cancelled';
+  durationMs?: number;
+  errorType?: string;
   model?: string;
   timestamp: Date;
   checkpointId?: string;
@@ -132,7 +137,7 @@ interface ChatAreaProps {
   isProcessing: boolean;
   activeTool?: { name: string; args?: Record<string, unknown> };
   scrollOffset: number;
-  todos?: { text: string; done: boolean }[];
+  onJumpToBottom?: () => void;
   themeVersion?: number;
 }
 
@@ -280,8 +285,13 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   );
 }
 
-function truncateOutput(content: string, maxLines: number = 14, maxChars: number = 8_000): string {
-  return truncateRawPreview(content, maxLines, maxChars);
+function truncateOutput(content: string, maxLines: number = 5, maxChars: number = 4_000): string {
+  const bounded = truncateRawPreview(content, maxLines, maxChars);
+  const lines = content.split('\n');
+  if (lines.length <= maxLines) return bounded;
+  const head = lines.slice(0, Math.max(2, maxLines - 2));
+  const tail = lines.slice(-2);
+  return [...head, `  … ${lines.length - head.length - tail.length} more lines`, ...tail].join('\n');
 }
 
 const UserMessage = React.memo(function UserMessage({
@@ -323,23 +333,34 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
   if (!markdownSyntax || markdownSyntaxVersion !== themeVersion) {
     markdownSyntax?.destroy();
     markdownSyntax = SyntaxStyle.fromStyles({
-      default: { fg: theme.text },
+      default: { fg: theme.markdownText },
       'markup.heading': { fg: theme.markdownHeading, bold: true },
       'markup.heading.1': { fg: theme.primary, bold: true },
       'markup.heading.2': { fg: theme.markdownHeading, bold: true },
       'markup.bold': { fg: theme.markdownStrong, bold: true },
-      'markup.italic': { fg: theme.textSecondary, italic: true },
+      'markup.italic': { fg: theme.markdownEmphasis, italic: true },
       'markup.link': { fg: theme.markdownLink, underline: true },
+      'markup.link.url': { fg: theme.markdownLinkText, underline: true },
       'markup.raw': { fg: theme.markdownCode },
       'markup.quote': { fg: theme.markdownQuote, italic: true },
-      comment: { fg: theme.textMuted, italic: true },
-      keyword: { fg: theme.accent },
-      string: { fg: theme.ok },
-      number: { fg: theme.warn },
-      function: { fg: theme.info },
-      type: { fg: theme.primary },
-      operator: { fg: theme.textSecondary },
-      punctuation: { fg: theme.textMuted },
+      comment: { fg: theme.syntaxComment, italic: true },
+      keyword: { fg: theme.syntaxKeyword },
+      string: { fg: theme.syntaxString },
+      number: { fg: theme.syntaxNumber },
+      function: { fg: theme.syntaxFunction },
+      'function.call': { fg: theme.syntaxFunction },
+      'function.method': { fg: theme.syntaxFunction },
+      type: { fg: theme.syntaxType },
+      constructor: { fg: theme.syntaxType },
+      variable: { fg: theme.markdownText },
+      'variable.builtin': { fg: theme.primary },
+      property: { fg: theme.info },
+      constant: { fg: theme.syntaxNumber },
+      tag: { fg: theme.syntaxKeyword },
+      attribute: { fg: theme.syntaxFunction },
+      embedded: { fg: theme.syntaxString },
+      operator: { fg: theme.syntaxOperator },
+      punctuation: { fg: theme.syntaxPunctuation },
     });
     markdownSyntaxVersion = themeVersion;
   }
@@ -397,11 +418,11 @@ const AssistantMessage = React.memo(function AssistantMessage({
 }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
+    <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0} border={['left']} borderColor={theme.borderSubtle}>
       <markdown
         content={msg.content}
         syntaxStyle={getMarkdownSyntax(themeVersion)}
-        fg={theme.text}
+        fg={theme.markdownText}
         streaming={streaming}
         conceal={true}
         concealCode={false}
@@ -418,6 +439,10 @@ const ToolMessage = React.memo(function ToolMessage({
   themeVersion: number;
 }) {
   const color = toolColor(msg.toolName);
+  const status = msg.toolStatus || (msg.errorType ? 'error' : 'success');
+  const stateColor = statusColor(status);
+  const summary = toolSummary(msg.toolName, msg.toolArgs);
+  const duration = formatDuration(msg.durationMs);
   const canRenderDiff = msg.toolName === 'file_edit' || msg.toolName === 'write_file';
   const diff = canRenderDiff ? parseToolEditOutput(msg.content) : null;
   if (diff) {
@@ -429,9 +454,13 @@ const ToolMessage = React.memo(function ToolMessage({
     };
     return (
       <box flexDirection="column" flexShrink={0}>
-        <box flexDirection="row" paddingLeft={4} paddingRight={2}>
-          <text fg={color}>{toolIcon(msg.toolName)} </text>
-          <text fg={color} attributes={TextAttributes.BOLD}>{msg.toolName || 'tool'}</text>
+        <box flexDirection="row" paddingLeft={3} paddingRight={2} justifyContent="space-between">
+          <box flexDirection="row">
+            <text fg={color}>{toolIcon(msg.toolName)} </text>
+            <text fg={status === 'success' ? theme.textMuted : color} attributes={TextAttributes.BOLD}>{humanToolName(msg.toolName)}</text>
+            {summary && <text fg={theme.textMuted}>  {summary}</text>}
+          </box>
+          <text fg={stateColor}>{duration ? `${duration}  ` : ''}{statusIcon(status)}</text>
         </box>
         <FileDiff
           filePath={safeDiff.filePath}
@@ -443,14 +472,20 @@ const ToolMessage = React.memo(function ToolMessage({
     );
   }
   return (
-    <box flexDirection="column" paddingLeft={4} paddingRight={2} flexShrink={0}>
-      <box flexDirection="row">
-        <text fg={color}>{toolIcon(msg.toolName)} </text>
-        <text fg={color} attributes={TextAttributes.BOLD}>{msg.toolName || 'tool'}</text>
+    <box flexDirection="column" paddingLeft={3} paddingRight={2} flexShrink={0}>
+      <box flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row">
+          <text fg={color}>{toolIcon(msg.toolName)} </text>
+          <text fg={status === 'success' ? theme.textMuted : color} attributes={TextAttributes.BOLD}>{humanToolName(msg.toolName)}</text>
+          {summary && <text fg={theme.textMuted}>  {summary}</text>}
+        </box>
+        <text fg={stateColor}>{duration ? `${duration}  ` : ''}{statusIcon(status)}</text>
       </box>
-      <box paddingLeft={2}>
-        <ToolOutputText content={msg.content} color={color} markdown={msg.toolName === 'memory'} />
-      </box>
+      {msg.content && (
+        <box paddingLeft={2} border={['left']} borderColor={status === 'error' || status === 'timeout' ? theme.error : theme.borderSubtle}>
+          <ToolOutputText content={msg.content} color={stateColor} markdown={msg.toolName === 'memory'} />
+        </box>
+      )}
     </box>
   );
 });
@@ -487,7 +522,7 @@ export function ChatArea({
   isProcessing,
   activeTool,
   scrollOffset,
-  todos,
+  onJumpToBottom,
   themeVersion = 0,
 }: ChatAreaProps) {
   const { visible, start } = useMemo(
@@ -495,15 +530,25 @@ export function ChatArea({
     [messages, scrollOffset]
   );
 
-  const todoCount = todos ? `${todos.filter((t) => t.done).length}/${todos.length}` : null;
-
   return (
     <box flexDirection="column" minHeight={0} backgroundColor={theme.bg}>
-      {todoCount && (
-        <box flexDirection="row" justifyContent="flex-end" paddingX={1}>
-          <text fg={theme.accent} attributes={TextAttributes.BOLD}>
-            Todo: {todoCount}
-          </text>
+      {scrollOffset > 0 && (
+        <box flexDirection="row" justifyContent="center" flexShrink={0}>
+          <box
+            backgroundColor={theme.bgSelected}
+            border={['left', 'right']}
+            borderColor={theme.primary}
+            paddingX={1}
+            onMouseDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onJumpToBottom?.();
+            }}
+          >
+            <text fg={theme.primary} attributes={TextAttributes.BOLD}>↓ Jump to the bottom</text>
+            <text fg={theme.textMuted}>  End</text>
+          </box>
         </box>
       )}
       <scrollbox

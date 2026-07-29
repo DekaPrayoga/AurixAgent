@@ -32,14 +32,25 @@ export function toolCallSignature(call: GuardedToolCall): string {
 export class DuplicateToolCallGuard {
   private repeatStreak = 0;
   private lastSignature?: string;
+  private lastToolName?: string;
+  private lastVerdict: DuplicateToolVerdict = 'ok';
 
   check(call: GuardedToolCall): DuplicateToolVerdict {
     const signature = toolCallSignature(call);
     const streak = signature === this.lastSignature ? this.repeatStreak + 1 : 1;
     this.repeatStreak = streak;
     this.lastSignature = signature;
-    if (streak >= REPEAT_HALT_AT) return 'halt';
-    if (streak >= REPEAT_BLOCK_AT) return 'block';
-    return 'ok';
+    this.lastToolName = call.name;
+    this.lastVerdict = streak >= REPEAT_HALT_AT ? 'halt' : streak >= REPEAT_BLOCK_AT ? 'block' : 'ok';
+    return this.lastVerdict;
+  }
+
+  snapshot() {
+    return {
+      toolName: this.lastToolName,
+      signature: this.lastSignature,
+      streak: this.repeatStreak,
+      verdict: this.lastVerdict,
+    };
   }
 }

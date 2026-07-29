@@ -112,6 +112,7 @@ export interface Platform {
   typing?(channelId: string): Promise<void>;
   requestImageConfigModal?(channelId: string, userId: string, description?: string): Promise<void>;
   ackImageGenerationRequest?(channelId: string, userId: string): Promise<void>;
+  getHealth?(): Record<string, unknown>;
   on(event: 'message', handler: (msg: IncomingMessage) => void): this;
 }
 
@@ -1265,7 +1266,7 @@ export class Gateway extends EventEmitter {
       if (cmd === 'cancel') {
         const runId = this.activeRuns.get(agentKey);
         if (runId) this.cancelledRuns.add(runId);
-        if (this.activeProcessing.has(agentKey) || this.processing.has(agentKey)) {
+        if (this.activeProcessing.has(agentKey) || Boolean(runId)) {
           const agent = this.agents.get(agentKey);
           if (agent) agent.interrupt();
           this.activeProcessing.delete(agentKey);
@@ -2119,8 +2120,13 @@ export class Gateway extends EventEmitter {
 
       if (cmd === 'doctor') {
         const agent = this.getAgent(agentKey);
+        const healthLines = [...this.platforms.values()].flatMap((item) => {
+          const health = item.getHealth?.();
+          if (!health) return [];
+          return [`${item.name} health: ${Object.entries(health).map(([key, value]) => `${key}=${value ?? 'none'}`).join(' ')}`];
+        });
         await platform.send(
-          `🩺 Gateway doctor\nNode: ${process.version}\nUptime: ${this.getUptime()}\nProvider: ${agent.getProviderName()}\nModel: ${agent.getModel()}\nTools: ${this.registry.list().length}\nPlatforms: ${this.getPlatforms().join(', ') || '(none)'}\nCron: available`,
+          `🩺 Gateway doctor\nPlatform: ${process.platform} ${process.arch}\nNode: ${process.version}\nUptime: ${this.getUptime()}\nProvider: ${agent.getProviderName()}\nModel: ${agent.getModel()}\nTools: ${this.registry.list().length}\nPlatforms: ${this.getPlatforms().join(', ') || '(none)'}\n${healthLines.join('\n')}\nCron: available`,
           msg.channelId,
           msg.replyTo
         );
@@ -2670,6 +2676,10 @@ export class Gateway extends EventEmitter {
           }
         }
       } catch (e: any) {
+        if (
+          this.cancelledRuns.has(currentRunId) ||
+          this.activeRuns.get(agentKey) !== currentRunId
+        ) return;
         console.error(`[Gateway] Error processing message: ${e.message}`);
         console.error(e.stack);
         await platform.react?.(msg.channelId, msg.replyTo || '', '😢');

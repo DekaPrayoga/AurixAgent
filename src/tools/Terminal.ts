@@ -95,20 +95,40 @@ async function runCommand(
 
   return new Promise((resolve) => {
     const { cmd, args, shell } = shellCommand(preparedCommand);
-    const child = spawn(cmd, args, { shell, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(cmd, args, {
+      shell,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     const stdoutLine = { value: '' };
     const stderrLine = { value: '' };
     let timedOut = false;
+    let aborted = false;
+    const terminate = (signal: NodeJS.Signals) => {
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch {}
+    };
+    const onAbort = () => {
+      aborted = true;
+      terminate('SIGTERM');
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) terminate('SIGKILL');
+      }, 1000).unref?.();
+    };
+    if (context.signal?.aborted) onAbort();
+    else context.signal?.addEventListener('abort', onAbort, { once: true });
 
     const timer =
       timeout > 0
         ? setTimeout(() => {
             timedOut = true;
-            child.kill('SIGTERM');
+            terminate('SIGTERM');
             setTimeout(() => {
-              if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+              if (child.exitCode === null && child.signalCode === null) terminate('SIGKILL');
             }, 1000).unref?.();
           }, timeout)
         : undefined;
@@ -124,12 +144,14 @@ async function runCommand(
 
     child.on('error', (err) => {
       if (timer) clearTimeout(timer);
+      context.signal?.removeEventListener('abort', onAbort);
       context.onEvent?.({ type: 'chunk', stream: 'stderr', data: `spawn error: ${err.message}` });
       resolve(`Error executing command: ${err.message}`);
     });
 
     child.on('close', (code) => {
       if (timer) clearTimeout(timer);
+      context.signal?.removeEventListener('abort', onAbort);
       flushLine(context, 'stdout', stdoutLine);
       flushLine(context, 'stderr', stderrLine);
       const stdout = Buffer.concat(stdoutChunks).toString().trim();
@@ -137,7 +159,8 @@ async function runCommand(
       const output = [];
       if (stdout) output.push(stdout);
       if (stderr) output.push(`[stderr] ${stderr}`);
-      if (timedOut) output.push('[timeout] Command killed after timeout');
+      if (aborted) output.push('[cancelled] Command terminated');
+      else if (timedOut) output.push('[timeout] Command killed after timeout');
       else if (code && code !== 0) output.push(`[exit ${code}]`);
       resolve(output.join('\n') || '(no output)');
     });

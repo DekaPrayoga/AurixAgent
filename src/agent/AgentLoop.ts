@@ -1577,18 +1577,22 @@ export class AgentLoop {
           return NO_TIMEOUT;
         };
 
-        const withTimeout = <T>(promise: Promise<T>, ms: number, name: string): Promise<T> => {
+        const withTimeout = <T>(
+          promise: Promise<T>,
+          ms: number,
+          name: string,
+          controller?: AbortController
+        ): Promise<T> => {
           if (!Number.isFinite(ms) || ms <= 0) return promise;
           return new Promise<T>((resolve, reject) => {
-            const timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `Tool "${name}" timed out after ${Math.round(ms / 1000)}s. Retry with an explicit timeout only if this command is expected to finish, or run long-lived processes in the background.`
-                  )
-                ),
-              ms
-            );
+            const timer = setTimeout(() => {
+              controller?.abort(new Error(`Tool "${name}" timed out`));
+              reject(
+                new Error(
+                  `Tool "${name}" timed out after ${Math.round(ms / 1000)}s. Retry with an explicit timeout only if this command is expected to finish, or run long-lived processes in the background.`
+                )
+              );
+            }, ms);
             promise
               .then((v) => {
                 clearTimeout(timer);
@@ -1599,6 +1603,17 @@ export class AgentLoop {
                 reject(e);
               });
           });
+        };
+
+        const createToolController = (): { controller: AbortController; unlink: () => void } => {
+          const controller = new AbortController();
+          const abort = () => controller.abort(this.abortController.signal.reason);
+          if (this.abortController.signal.aborted) abort();
+          else this.abortController.signal.addEventListener('abort', abort, { once: true });
+          return {
+            controller,
+            unlink: () => this.abortController.signal.removeEventListener('abort', abort),
+          };
         };
 
         const processResult = (result: string, toolName: string): string => {
@@ -1713,11 +1728,13 @@ export class AgentLoop {
                 if (SESSION_KEY_TOOLS.has(call.name)) {
                   call.arguments._sessionKey = this.sessionKey;
                 }
+                const toolAbort = createToolController();
                 const result = await withTimeout(
-                  this.registry.execute(call.name, call.arguments),
+                  this.registry.executeWithEvents(call.name, call.arguments, { signal: toolAbort.controller.signal }),
                   getToolTimeout(call.name, call.arguments),
-                  call.name
-                );
+                  call.name,
+                  toolAbort.controller
+                ).finally(toolAbort.unlink);
                 const rawResult = result;
                 const errorType = this.classifyToolResultError(call.name, rawResult);
                 const toolStatus = errorType ? 'error' : 'success';
@@ -1843,11 +1860,13 @@ export class AgentLoop {
                     call.arguments._sessionId = this.sessionId;
                     call.arguments._turnId = turnId;
                   }
+                  const toolAbort = createToolController();
                   const result = await withTimeout(
-                    this.registry.execute(call.name, call.arguments),
+                    this.registry.executeWithEvents(call.name, call.arguments, { signal: toolAbort.controller.signal }),
                     getToolTimeout(call.name, call.arguments),
-                    call.name
-                  );
+                    call.name,
+                    toolAbort.controller
+                  ).finally(toolAbort.unlink);
                   return { call, result, error: null as any, startedAt, repeatVerdict };
                 } catch (e: any) {
                   return { call, result: '', error: e, startedAt, repeatVerdict };
@@ -2109,18 +2128,21 @@ export class AgentLoop {
                   wake();
                 }
               };
+              const toolAbort = createToolController();
               const execution = withTimeout(
                 this.registry.executeWithEvents(
                   call.name,
                   { ...call.arguments, timeout: getToolTimeout(call.name, call.arguments) },
                   {
+                    signal: toolAbort.controller.signal,
                     onEvent: (event) =>
                       pushChunk(event.stream === 'stderr' ? `[stderr] ${event.data}` : event.data),
                   }
                 ),
                 getToolTimeout(call.name, call.arguments),
-                call.name
-              ).then(
+                call.name,
+                toolAbort.controller
+              ).finally(toolAbort.unlink).then(
                 (value) => ({ value }),
                 (error) => ({ error })
               );
@@ -2148,11 +2170,13 @@ export class AgentLoop {
               if (settled.error) throw settled.error;
               result = settled.value || '';
             } else {
+              const toolAbort = createToolController();
               result = await withTimeout(
-                this.registry.execute(call.name, call.arguments),
+                this.registry.executeWithEvents(call.name, call.arguments, { signal: toolAbort.controller.signal }),
                 getToolTimeout(call.name, call.arguments),
-                call.name
-              );
+                call.name,
+                toolAbort.controller
+              ).finally(toolAbort.unlink);
             }
           } catch (e: any) {
             errorType = classifyError(e);
@@ -2352,6 +2376,7 @@ export class AgentLoop {
       let runError: any;
       let done = false;
       this.multiAgent!.run(userMessage, {
+        signal: this.abortController.signal,
         sessionId: this.sessionId,
         turnId,
         onEvent: (event) => pendingEvents.push(event),

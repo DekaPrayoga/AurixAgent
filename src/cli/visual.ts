@@ -49,9 +49,59 @@ export function toolColor(name?: string): string {
 }
 
 /** Status glyph for a finished/failed/running tool call. */
-export function statusIcon(status: 'ok' | 'error' | 'running'): string {
-  if (!CAPS.unicode) return status === 'ok' ? '[ok]' : status === 'error' ? '[!]' : '...';
-  return status === 'ok' ? '✓' : status === 'error' ? '✗' : '⋯';
+export type ToolVisualStatus = 'running' | 'success' | 'error' | 'timeout' | 'cancelled';
+
+export function statusIcon(status: ToolVisualStatus | 'ok'): string {
+  if (!CAPS.unicode) {
+    if (status === 'success' || status === 'ok') return '[ok]';
+    if (status === 'cancelled') return '[-]';
+    if (status === 'running') return '...';
+    return '[!]';
+  }
+  if (status === 'success' || status === 'ok') return '✓';
+  if (status === 'cancelled') return '−';
+  if (status === 'running') return '⋯';
+  if (status === 'timeout') return '◷';
+  return '✗';
+}
+
+export function statusColor(status: ToolVisualStatus): string {
+  if (status === 'success') return theme.toolSuccess;
+  if (status === 'running') return theme.toolRunning;
+  if (status === 'cancelled') return theme.warn;
+  return theme.toolError;
+}
+
+export function humanToolName(name?: string): string {
+  const raw = (name || 'tool').replace(/^mcp__/, '').replace(/[_-]+/g, ' ').trim();
+  return raw.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function compactValue(value: unknown): string {
+  if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim().slice(0, 90);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return '';
+}
+
+export function toolSummary(name?: string, args?: Record<string, unknown>): string {
+  if (!args) return '';
+  const tool = (name || '').toLowerCase();
+  const safe = Object.fromEntries(Object.entries(args).filter(([key]) =>
+    !key.startsWith('_') && !/(token|password|secret|cookie|api.?key|authorization)/i.test(key)
+  ));
+  if (tool.includes('browser')) return [safe.action, safe.target || safe.value].map(compactValue).filter(Boolean).join(' ');
+  if (tool.includes('terminal') || tool.includes('bash')) return compactValue(safe.command || safe.cmd);
+  if (tool.includes('read')) return [safe.file_path || safe.path, safe.offset ? `:${safe.offset}` : ''].map(compactValue).join('');
+  if (tool.includes('search') || tool.includes('grep')) return compactValue(safe.pattern || safe.query || safe.path);
+  if (tool.includes('write') || tool.includes('edit')) return compactValue(safe.file_path || safe.path);
+  if (tool.includes('web')) return compactValue(safe.url || safe.query);
+  const first = Object.values(safe).map(compactValue).find(Boolean);
+  return first || '';
+}
+
+export function formatDuration(durationMs?: number): string {
+  if (typeof durationMs !== 'number') return '';
+  return durationMs < 1000 ? `${Math.round(durationMs)}ms` : `${(durationMs / 1000).toFixed(durationMs < 10_000 ? 1 : 0)}s`;
 }
 
 export const capabilities = CAPS;

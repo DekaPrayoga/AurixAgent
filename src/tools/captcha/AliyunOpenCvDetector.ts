@@ -43,7 +43,7 @@ async function resolveRuntime(): Promise<{ python?: string; helper?: string; err
   for (const python of candidates) {
     try {
       await execFileAsync(python, ['-c', 'import cv2,numpy'], {
-        timeout: 5000,
+        timeout: 1500,
         maxBuffer: 128 * 1024,
         env: { ...process.env, OMP_NUM_THREADS: '2' },
       });
@@ -94,15 +94,26 @@ export async function detectAliyunGapOpenCv(
   backgroundPath: string,
   piecePath: string,
   maxCandidates = 5,
-  timeoutMs = 10_000
+  timeoutMs = 10_000,
+  geometry?: { pieceTop: number; pieceWidth: number; pieceHeight: number; renderedBackgroundWidth: number; renderedBackgroundHeight: number }
 ): Promise<AliyunOpenCvResult> {
   availabilityPromise ||= resolveRuntime();
   const runtime = await availabilityPromise;
   if (!runtime.python || !runtime.helper) return { ok: false, error: runtime.error };
   try {
+    const args = [runtime.helper, '--background', backgroundPath, '--piece', piecePath, '--max-candidates', String(Math.max(1, Math.min(10, maxCandidates)))];
+    if (geometry) {
+      args.push(
+        '--piece-top', String(geometry.pieceTop),
+        '--piece-width', String(geometry.pieceWidth),
+        '--piece-height', String(geometry.pieceHeight),
+        '--rendered-background-width', String(geometry.renderedBackgroundWidth),
+        '--rendered-background-height', String(geometry.renderedBackgroundHeight)
+      );
+    }
     const { stdout } = await execFileAsync(
       runtime.python,
-      [runtime.helper, '--background', backgroundPath, '--piece', piecePath, '--max-candidates', String(Math.max(1, Math.min(10, maxCandidates)))],
+      args,
       {
         timeout: Math.max(100, Math.min(10_000, timeoutMs)),
         maxBuffer: 1024 * 1024,

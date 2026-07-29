@@ -8,6 +8,7 @@ export interface ToolExecutionEvent {
 
 export interface ToolExecutionContext {
   onEvent?: (event: ToolExecutionEvent) => void;
+  signal?: AbortSignal;
 }
 
 export interface Tool {
@@ -171,6 +172,19 @@ export class ToolRegistry {
     args: Record<string, unknown>,
     context?: ToolExecutionContext
   ): Promise<string> {
+    const throwIfAborted = () => {
+      if (context?.signal?.aborted) throw context.signal.reason || new DOMException('Aborted', 'AbortError');
+    };
+    const raceAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      throwIfAborted();
+      const signal = context?.signal;
+      if (!signal) return promise;
+      return new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+        signal.addEventListener('abort', abort, { once: true });
+        promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+      });
+    };
     const tool = this.tools.get(name);
     if (!tool) return `Error: Unknown tool "${name}"`;
 
@@ -180,7 +194,7 @@ export class ToolRegistry {
       sessionId: typeof args._sessionId === 'string' ? args._sessionId : undefined,
       turnId: typeof args._turnId === 'string' ? args._turnId : undefined,
     };
-    const preHook = await this.runHook({ event: 'preToolUse', ...hookBase });
+    const preHook = await raceAbort(this.runHook({ event: 'preToolUse', ...hookBase }));
     if (preHook.decision === 'deny') {
       return `Permission denied for ${name} by hook${preHook.reason ? `: ${preHook.reason}` : '.'}`;
     }
@@ -246,7 +260,7 @@ export class ToolRegistry {
                 },
               }
             : permission;
-        const reply = await this.permissionHandler(manualPermission);
+        const reply = await raceAbort(this.permissionHandler(manualPermission));
         if (reply === 'deny') return `Permission denied for ${name}.`;
         if (manualDeleteApproval) args._approvedByUser = true;
         if (dependencyInstallApproval) args._approvedDependencyInstall = true;

@@ -10,6 +10,8 @@ import { launchPersistentContext, ensureBinary } from 'cloakbrowser';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import {
   readdirSync,
   readFileSync,
@@ -161,6 +163,7 @@ async function humanType(locator: any, page: Page, text: string, isSecret = fals
   }
 }
 
+const execFileAsync = promisify(execFile);
 const tempMails = new Map<string, TempMail>();
 
 interface BrowserSession {
@@ -168,6 +171,7 @@ interface BrowserSession {
   page: Page;
   profileDir: string;
   mode: 'managed' | 'cdp';
+  ownedPids?: number[];
   cdpEndpoint?: string;
   cdpBrowser?: Browser;
   cdpSession?: CDPSession;
@@ -202,17 +206,76 @@ function getSession(): BrowserSession | undefined {
   return sessions.get(currentSessionKey);
 }
 
-async function closeAllSessions(): Promise<void> {
+async function listManagedBrowserPids(profileDir: string): Promise<number[]> {
+  if (process.platform !== 'linux') return [];
+  try {
+    const { stdout } = await execFileAsync('ps', ['-eo', 'pid=,args='], { timeout: 2000, maxBuffer: 1024 * 1024 });
+    const profileArg = `--user-data-dir=${profileDir}`;
+    return stdout.split('\n').flatMap((line) => {
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (!match || !match[2].includes('/.cloakbrowser/chromium-') || !match[2].includes(profileArg)) return [];
+      return [Number(match[1])];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForPidsExit(pids: number[], timeoutMs: number): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs;
+  let remaining = pids.filter(processAlive);
+  while (remaining.length && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    remaining = remaining.filter(processAlive);
+  }
+  return remaining;
+}
+
+async function closeManagedSession(session: BrowserSession): Promise<'graceful' | 'forced' | 'failed'> {
+  const ownedPids = session.ownedPids || [];
+  await Promise.race([
+    session.context.close().catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 2500)),
+  ]);
+  let remaining = await waitForPidsExit(ownedPids, 750);
+  if (!remaining.length) return 'graceful';
+  for (const pid of remaining) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  remaining = await waitForPidsExit(remaining, 1000);
+  for (const pid of remaining) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+  remaining = await waitForPidsExit(remaining, 500);
+  return remaining.length ? 'failed' : 'forced';
+}
+
+async function closeAllSessions(): Promise<{ count: number; forced: number; failed: number }> {
   await pendingLaunches.closeAllPending();
-  for (const [key, session] of sessions) {
+  let forced = 0;
+  let failed = 0;
+  const entries = [...sessions.entries()];
+  for (const [key, session] of entries) {
     session.cdpSession = undefined;
     if (session.mode === 'cdp') {
       await session.cdpBrowser?.close({ reason: 'Aurix browser CDP disconnect' }).catch(() => {});
     } else {
-      await session.context.close().catch(() => {});
+      const result = await closeManagedSession(session);
+      if (result === 'forced') forced++;
+      if (result === 'failed') failed++;
     }
+    sessions.delete(key);
   }
-  sessions.clear();
+  return { count: entries.length, forced, failed };
 }
 
 function getProxyPool(): string[] {
@@ -580,8 +643,10 @@ async function ensureBrowser(): Promise<Page> {
   }
 
   const launchSessionKey = currentSessionKey;
+  const pidsBeforeLaunch = new Set(await listManagedBrowserPids(profileDir));
   const launchPromise = launchPersistentContext(launchOpts as any);
   const context = await pendingLaunches.track(launchSessionKey, launchPromise);
+  const ownedPids = (await listManagedBrowserPids(profileDir)).filter((pid) => !pidsBeforeLaunch.has(pid));
   if (pendingLaunches.wasCancelled(launchPromise)) {
     pendingLaunches.release(launchSessionKey, launchPromise);
     await context.close().catch(() => {});
@@ -812,7 +877,7 @@ async function ensureBrowser(): Promise<Page> {
   page.on('crash', _updateCrashed);
   context.on('close', _updateCrashed);
 
-  sessions.set(launchSessionKey, { context, page, profileDir, mode: 'managed', crashed: false });
+  sessions.set(launchSessionKey, { context, page, profileDir, mode: 'managed', ownedPids, crashed: false });
   registered = true;
   return page;
   } catch (error) {
@@ -823,17 +888,19 @@ async function ensureBrowser(): Promise<Page> {
   }
 }
 
-async function closeBrowser(): Promise<void> {
+async function closeBrowser(): Promise<'none' | 'graceful' | 'forced' | 'failed' | 'disconnected'> {
   const session = getSession();
-  if (session) {
-    session.cdpSession = undefined;
-    if (session.mode === 'cdp') {
-      await session.cdpBrowser?.close({ reason: 'Aurix browser CDP disconnect' }).catch(() => {});
-    } else {
-      await session.context.close().catch(() => {});
-    }
-    sessions.delete(currentSessionKey);
+  if (!session) return 'none';
+  session.cdpSession = undefined;
+  let result: 'graceful' | 'forced' | 'failed' | 'disconnected';
+  if (session.mode === 'cdp') {
+    await session.cdpBrowser?.close({ reason: 'Aurix browser CDP disconnect' }).catch(() => {});
+    result = 'disconnected';
+  } else {
+    result = await closeManagedSession(session);
   }
+  sessions.delete(currentSessionKey);
+  return result;
 }
 
 // Auto-handle Cloudflare Turnstile — click the checkbox to trigger managed challenge.
@@ -995,7 +1062,9 @@ Navigation: navigate, back, forward, scroll, new-tab, switch-tab, close-tab, ope
 Read: state, screenshot, snapshot, text, html, url, title, cookies
 Advanced: evaluate (READ ONLY), drag-to, hold-click, wait, cdp-command
 Captcha: detect-captcha, solve-captcha, set-hcaptcha-a11y, hcaptcha-a11y-status, get-temp-email, wait-email, captcha-grid, click-tile, captcha-verify, slider-analyze
-Config: connect-cdp, disconnect-cdp, cdp-status, set-proxy, set-ui, status, close
+Config: connect-cdp, disconnect-cdp, cdp-status, set-proxy, set-ui, status, close, close-all
+
+To kill/close CloakBrowser, release its profile lock, or close Chromium without touching Firefox, use action="close-all". Never use terminal pkill/kill for Aurix browser lifecycle. close-all preserves profiles and targets only browsers owned by this Aurix runtime.
 
 # hCaptcha accessibility cookie
 - If hCaptcha shows an image challenge, cookie hc_accessibility is missing/expired.
@@ -1361,14 +1430,18 @@ except Exception as e:
         case 'close': {
           const session = getSession();
           const profilePath = session?.profileDir || BASE_PROFILE_DIR;
-          await closeBrowser();
+          const result = await closeBrowser();
+          if (result === 'failed') return `Browser close failed; an owned CloakBrowser process is still running. Profile: ${profilePath}`;
+          if (result === 'forced') return `Browser closed after terminating its owned CloakBrowser process. Profile preserved at ${profilePath}`;
+          if (result === 'disconnected') return 'Disconnected from external CDP browser; the external browser was not terminated.';
           return 'Browser closed. Profile preserved at ' + profilePath;
         }
 
         case 'close-all': {
-          const count = sessions.size;
-          await closeAllSessions();
-          return `All ${count} browser session(s) closed. Profiles preserved at ${BASE_PROFILE_DIR}`;
+          const result = await closeAllSessions();
+          if (result.failed) return `Closed ${result.count - result.failed}/${result.count} browser session(s); ${result.failed} owned CloakBrowser process cleanup(s) failed. Profiles preserved at ${BASE_PROFILE_DIR}`;
+          const forced = result.forced ? ` (${result.forced} required owned-process termination)` : '';
+          return `All ${result.count} browser session(s) closed${forced}. Profiles preserved at ${BASE_PROFILE_DIR}. Firefox and external browsers were not touched.`;
         }
 
         case 'navigate': {
@@ -2211,8 +2284,7 @@ except Exception as e:
 
             if (captchaType === 'aliyun') {
               results.push(await solveAliyunCaptcha(p, {
-                maxAttempts: 3,
-                deadlineMs: solveStartedAt + _solveTimeout - 5_000,
+                deadlineMs: Math.min(Date.now() + 10_000, solveStartedAt + _solveTimeout - 5_000),
               }));
             }
 
@@ -2939,9 +3011,11 @@ except Exception as e:
               results.push('\nCapSolver fallback skipped because the browser solve deadline was nearly exhausted.');
             }
 
-            const screenshotPath = join(homedir(), '.aurix', 'captcha-after.png');
-            await p.screenshot({ path: screenshotPath });
-            results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
+            if (captchaType !== 'aliyun') {
+              const screenshotPath = join(homedir(), '.aurix', 'captcha-after.png');
+              await p.screenshot({ path: screenshotPath });
+              results.push(`\nPost-attempt screenshot: ${screenshotPath}`);
+            }
             return results.join('\n');
           };
 

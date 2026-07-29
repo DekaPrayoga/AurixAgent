@@ -536,30 +536,39 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     if (name === 'escape' && isProcessing) {
       evt.preventDefault();
-      cancelActiveUiRun();
-      setIsProcessing(false);
+      const runId = activeUiRunRef.current;
+      streamBatchRef.current.flush?.();
       if (activeTool) {
-        agent.interrupt();
-        setActiveTool(undefined);
-        setMessages((prev) => [
-          ...prev,
+        const cancelled = applyAgentEvent(
+          presentationStateRef.current,
           {
-            role: 'system',
-            content: 'Tool cancelled. Agent will continue with next action.',
-            timestamp: new Date(),
+            type: 'tool_end',
+            data: 'Cancelled by user.',
+            toolName: activeTool.name,
+            turnId: runId,
+            status: 'cancelled',
+            errorType: 'abort',
           },
-        ]);
-      } else {
-        agent.interrupt();
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'system',
-            content: 'Agent interrupted. Response stopped.',
-            timestamp: new Date(),
-          },
-        ]);
+          { model: agent.getModel(), renderToolEnd },
+        );
+        presentationStateRef.current = cancelled;
+        setPresentationState(cancelled);
       }
+      cancelActiveUiRun(false);
+      setIsProcessing(false);
+      agent.interrupt();
+      setActiveTool(undefined);
+      const interrupted = applyAgentEvent(
+        presentationStateRef.current,
+        {
+          type: 'error',
+          data: activeTool ? 'Tool cancelled by user.' : 'Agent interrupted. Response stopped.',
+          turnId: runId,
+        },
+        { model: agent.getModel(), renderToolEnd },
+      );
+      presentationStateRef.current = interrupted;
+      setPresentationState(interrupted);
       return;
     }
 
@@ -648,6 +657,12 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     if (name === 'pagedown' && !isProcessing) {
       evt.preventDefault();
       setScrollOffset((prev) => Math.max(0, prev - 20));
+      return;
+    }
+
+    if (name === 'end' && scrollOffset > 0) {
+      evt.preventDefault();
+      setScrollOffset(0);
       return;
     }
   });
@@ -3177,7 +3192,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   isProcessing={isProcessing}
                   activeTool={activeTool}
                   scrollOffset={scrollOffset}
-                  todos={todos}
+                  onJumpToBottom={() => setScrollOffset(0)}
                   themeVersion={themeVersion}
                 />
                 {permissionPrompt && (
@@ -3431,6 +3446,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 <StatusBar
                   model={agent.getModel()}
                   provider={agent.getProviderName()}
+                  tokenCount={ctxStats.estimatedPct}
                   researchMode={researchMode}
                   version={aurixVersion}
                   cwd={process.cwd()}
@@ -3482,6 +3498,60 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   <text fg={theme.text}>{agent.getModel()}</text>
                 </box>
               </box>
+
+              <box flexDirection="column" marginTop={1}>
+                <text fg={theme.accent} attributes={TextAttributes.BOLD}>guide</text>
+                <box flexDirection="column" marginTop={1}>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text}>Command palette</text>
+                    <text fg={theme.primary}>Ctrl+P</text>
+                  </box>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text}>Exit Aurix</text>
+                    <text fg={theme.info}>/exit</text>
+                  </box>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text}>Rewind</text>
+                    <text fg={theme.info}>/rewind</text>
+                  </box>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text}>Help</text>
+                    <text fg={theme.info}>/help</text>
+                  </box>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.text}>Resume session</text>
+                    <text fg={theme.info}>/resume</text>
+                  </box>
+                </box>
+              </box>
+
+              {todos.length > 0 && (
+                <box flexDirection="column" marginTop={1}>
+                  <box flexDirection="row" justifyContent="space-between">
+                    <text fg={theme.accent} attributes={TextAttributes.BOLD}>Todo</text>
+                    <text fg={theme.textMuted}>{todos.filter((todo) => todo.done).length}/{todos.length}</text>
+                  </box>
+                  <box flexDirection="column" marginTop={1}>
+                    {todos.slice(0, 8).map((todo, index) => {
+                      const active = !todo.done && index === todos.findIndex((item) => !item.done);
+                      return (
+                        <box key={`${index}:${todo.text}`} flexDirection="row">
+                          <text fg={todo.done ? theme.ok : active ? theme.running : theme.textMuted}>
+                            {todo.done ? '● ' : active ? '◉ ' : '○ '}
+                          </text>
+                          <text
+                            fg={todo.done ? theme.textMuted : active ? theme.text : theme.textSecondary}
+                            attributes={todo.done ? TextAttributes.STRIKETHROUGH : TextAttributes.NONE}
+                          >
+                            {todo.text.length > 21 ? `${todo.text.slice(0, 20)}…` : todo.text}
+                          </text>
+                        </box>
+                      );
+                    })}
+                    {todos.length > 8 && <text fg={theme.textMuted}>+ {todos.length - 8} more</text>}
+                  </box>
+                </box>
+              )}
 
               <box flexDirection="column" marginTop={1}>
                 <text fg={theme.primary} attributes={TextAttributes.BOLD}>

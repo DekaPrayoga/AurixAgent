@@ -58,15 +58,27 @@ export function detectInstallMethod(
   };
 }
 
-export function terminalDiagnostics(env: NodeJS.ProcessEnv = process.env): string[] {
+export function terminalDiagnostics(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  arch = process.arch
+): string[] {
   const terminal = env.WT_SESSION
     ? 'Windows Terminal'
     : env.TERM_PROGRAM || env.TERM || (process.stdout.isTTY ? 'TTY' : 'non-TTY');
+  const shell = platform === 'win32' ? env.COMSPEC || 'cmd.exe' : env.SHELL || '(unknown)';
+  const platformDetails = platform === 'win32'
+    ? `Console: Windows guard enabled when FFI is available; shell=${shell}; clipboard=PowerShell/OSC52`
+    : platform === 'darwin'
+      ? `Desktop: macOS; shell=${shell}; clipboard=pbcopy/OSC52`
+      : `Desktop: Linux; shell=${shell}; display=${env.WAYLAND_DISPLAY ? 'Wayland' : env.DISPLAY ? `X11 ${env.DISPLAY}` : 'headless'}; clipboard=Wayland/X11/OSC52`;
   return [
+    `Platform: ${platform} ${arch}`,
+    `Runtime: Node ${process.version}${process.versions.bun ? `; Bun ${process.versions.bun}` : ''}`,
     `Terminal: ${terminal}`,
     `TTY: stdin=${Boolean(process.stdin.isTTY)} stdout=${Boolean(process.stdout.isTTY)}`,
     `Color: ${env.NO_COLOR !== undefined ? 'disabled (NO_COLOR)' : 'enabled'}`,
-    `Clipboard: ${process.platform === 'win32' ? 'PowerShell/OSC52' : process.platform === 'darwin' ? 'pbcopy/OSC52' : 'Wayland/X11/OSC52'}`,
-    `Win32 console guard: ${process.platform === 'win32' ? 'enabled when FFI is available' : 'not required'}`,
+    platformDetails,
+    `Command guidance: ${platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'macOS/POSIX' : 'Linux/POSIX'}`,
   ];
 }

@@ -30,16 +30,16 @@ export function buildAliyunDragTrajectory(
 ): AliyunPoint[] {
   const points: AliyunPoint[] = [];
   const overshoot = distance + 6 + random() * 5;
-  for (let step = 1; step <= 42; step++) {
-    const t = step / 42;
+  for (let step = 1; step <= 4; step++) {
+    const t = step / 4;
     const ease = 1 - Math.pow(1 - t, 3);
     points.push({
       x: start.x + overshoot * ease,
       y: start.y + Math.sin(t * 5) * 1.2,
     });
   }
-  for (let step = 1; step <= 10; step++) {
-    const t = step / 10;
+  for (let step = 1; step <= 2; step++) {
+    const t = step / 2;
     points.push({
       x: start.x + overshoot + (distance - overshoot) * t,
       y: start.y + (random() - 0.5) * 1.2,
@@ -149,9 +149,16 @@ async function estimateGapWithOpenCv(
   const piecePath = join(directory, 'piece.png');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   try {
+    const captureTimeout = Math.max(100, Math.min(1_500, deadline - Date.now()));
     const [backgroundImage, pieceImage] = await Promise.all([
-      background.screenshot({ type: 'png' }),
-      piece.screenshot({ type: 'png', omitBackground: true }),
+      background.screenshot({ type: 'png', animations: 'disabled', timeout: captureTimeout }),
+      piece.screenshot({
+        type: 'png',
+        omitBackground: true,
+        animations: 'disabled',
+        timeout: captureTimeout,
+        style: '#aliyunCaptcha-img { visibility: hidden !important; } #aliyunCaptcha-window-puzzle { background: transparent !important; }',
+      }),
     ]);
     await Promise.all([
       writeFile(backgroundPath, backgroundImage, { mode: 0o600 }),
@@ -159,7 +166,21 @@ async function estimateGapWithOpenCv(
     ]);
     const remaining = deadline - Date.now();
     if (remaining < 100) return undefined;
-    const detected = await detectAliyunGapOpenCv(backgroundPath, piecePath, 5, remaining);
+    const detected = await detectAliyunGapOpenCv(
+      backgroundPath,
+      piecePath,
+      3,
+      Math.min(2_500, remaining),
+      geometry.piece && geometry.background
+        ? {
+            pieceTop: geometry.piece.y - geometry.background.y,
+            pieceWidth: geometry.piece.width,
+            pieceHeight: geometry.piece.height,
+            renderedBackgroundWidth: geometry.background.width,
+            renderedBackgroundHeight: geometry.background.height,
+          }
+        : undefined
+    );
     if (!detected.ok || !detected.candidates?.length || !detected.backgroundWidth || !geometry.background) return undefined;
     const candidate = detected.candidates[0];
     return {
@@ -198,7 +219,7 @@ async function dragAliyun(page: Page, geometry: AliyunGeometry, distance: number
     x: geometry.handle.x + geometry.handle.width / 2,
     y: geometry.handle.y + geometry.handle.height / 2,
   };
-  await page.mouse.move(start.x, start.y, { steps: 8 });
+  await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   const points = buildAliyunDragTrajectory(start, clamped);
   for (let index = 0; index < points.length; index++) {
@@ -207,9 +228,9 @@ async function dragAliyun(page: Page, geometry: AliyunGeometry, distance: number
       throw new Error('Aliyun solve deadline exhausted during drag');
     }
     await page.mouse.move(points[index].x, points[index].y);
-    await page.waitForTimeout(index < 42 ? 11 + (index % 4) * 4 : 20 + Math.random() * 15);
+    await page.waitForTimeout(index < 4 ? 5 + (index % 2) * 2 : 8 + Math.random() * 4);
   }
-  await page.waitForTimeout(160 + Math.random() * 100);
+  await page.waitForTimeout(70 + Math.random() * 50);
   await page.mouse.up();
 }
 
@@ -235,7 +256,13 @@ async function openAliyunChallenge(page: Page): Promise<void> {
     }
     return false;
   });
-  if (opened) await page.waitForTimeout(900);
+  if (opened) {
+    const readyDeadline = Date.now() + 1_500;
+    while (Date.now() < readyDeadline) {
+      if (await readGeometry(page)) break;
+      await page.waitForTimeout(50);
+    }
+  }
 }
 
 async function refreshAliyun(page: Page): Promise<boolean> {
@@ -255,12 +282,14 @@ export async function solveAliyunCaptcha(
   page: Page,
   options: { maxAttempts?: number; deadlineMs?: number } = {}
 ): Promise<string> {
-  const maxAttempts = 1;
-  const deadline = options.deadlineMs ?? Date.now() + 75_000;
-  const results: string[] = ['Attempting Aliyun Captcha 2.0 natively...'];
-  if (await hasAliyunSuccess(page)) {
-    return [...results, '[OK] Aliyun Captcha 2.0 was already accepted by the application callback'].join('\n');
-  }
+  const maxAttempts = Math.max(1, Math.min(3, options.maxAttempts ?? 1));
+  const deadline = options.deadlineMs ?? Date.now() + 10_000;
+  const debug = process.env.AURIX_ALIYUN_DEBUG === '1';
+  const startedAt = Date.now();
+  const logDebug = (message: string) => {
+    if (debug) console.error(`[aliyun +${Date.now() - startedAt}ms] ${message}`);
+  };
+  if (await hasAliyunSuccess(page)) return '[OK] Aliyun Captcha 2.0 verified';
   let completedAttempts = 0;
 
   for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline; attempt++) {
@@ -271,7 +300,7 @@ export async function solveAliyunCaptcha(
       await openAliyunChallenge(page);
       type = await classifyAliyunCaptcha(page);
     }
-    results.push(`Attempt ${attempt + 1}/${maxAttempts}: ${type}`);
+    logDebug(`challenge type ${type}`);
     if (type === 'TRACELESS') {
       await page.evaluate(() => {
         const instance = (window as any).__aurixAliyunInstance;
@@ -284,11 +313,7 @@ export async function solveAliyunCaptcha(
       if ((await target.count().catch(() => 0)) > 0) await target.click({ timeout: 3000 }).catch(() => {});
     } else {
       const geometry = await readGeometry(page);
-      if (!geometry) {
-        results.push('[WARN] Aliyun slider handle is not visible');
-        if (attempt < maxAttempts - 1) await refreshAliyun(page);
-        continue;
-      }
+      if (!geometry) return '[ERROR] Aliyun Captcha 2.0 slider is not ready';
       let distance: number;
       if (type === 'SLIDE') {
         distance = geometry.trackWidth;
@@ -300,38 +325,31 @@ export async function solveAliyunCaptcha(
           ? await estimateGapWithVision(page, geometry, deadline)
           : undefined;
         const gapOffset = geometry.gapOffset ?? openCv?.gapX ?? visionGap;
-        if (gapOffset === undefined) {
-          results.push('[WARN] Aliyun puzzle gap could not be localized');
-          if (attempt < maxAttempts - 1) await refreshAliyun(page);
-          continue;
-        }
+        if (gapOffset === undefined) return '[ERROR] Aliyun Captcha 2.0 puzzle gap was not found';
         distance = invertAliyunDragDistance(Math.max(1, gapOffset));
-        const method = geometry.gapOffset !== undefined
-          ? 'dom'
-          : openCv
-            ? `${openCv.method} confidence ${openCv.confidence.toFixed(3)}`
-            : 'vision';
-        results.push(`Gap localized at ${Math.round(gapOffset)}px via ${method}; quadratic handle distance ${distance.toFixed(1)}px`);
+        const method = geometry.gapOffset !== undefined ? 'dom' : openCv ? openCv.method : 'vision';
+        logDebug(`gap ${Math.round(gapOffset)}px via ${method}; drag ${distance.toFixed(1)}px`);
       }
       await dragAliyun(page, geometry, distance, deadline);
     }
     let accepted = false;
-    const acceptanceDeadline = Math.min(deadline, Date.now() + 5_000);
+    const acceptanceDeadline = Math.min(deadline, Date.now() + 2_500);
     while (Date.now() < acceptanceDeadline) {
       if (await hasAliyunSuccess(page)) {
         accepted = true;
         break;
       }
-      await page.waitForTimeout(Math.min(250, Math.max(1, acceptanceDeadline - Date.now())));
+      await page.waitForTimeout(Math.min(75, Math.max(1, acceptanceDeadline - Date.now())));
     }
     if (accepted) {
-      return [...results, '[OK] Aliyun Captcha 2.0 verified natively; application callback accepted the result'].join('\n');
+      logDebug('application callback accepted');
+      return '[OK] Aliyun Captcha 2.0 verified';
     }
     if (attempt < maxAttempts - 1) await refreshAliyun(page);
   }
 
   const reason = Date.now() >= deadline
-    ? `deadline exhausted after ${completedAttempts} attempt(s)`
-    : `not confirmed after ${completedAttempts} native attempt(s)`;
-  return [...results, `[ERROR] Aliyun Captcha 2.0 ${reason}`].join('\n');
+    ? `timed out after ${completedAttempts} attempt(s)`
+    : `was not confirmed after ${completedAttempts} attempt(s)`;
+  return `[ERROR] Aliyun Captcha 2.0 ${reason}`;
 }

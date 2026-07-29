@@ -140,6 +140,7 @@ export interface MultiAgentResult {
 
 export interface MultiAgentRunOptions {
   onEvent?: (event: AgentEvent) => void;
+  signal?: AbortSignal;
   sessionId?: string;
   turnId?: string;
   jobId?: string;
@@ -220,7 +221,7 @@ export class MultiAgentSystem {
       status: 'running',
       summary: userMessage,
     });
-    const plan = await this.supervisorPlan(userMessage);
+    const plan = await this.supervisorPlan(userMessage, options.signal);
     agentObserverBus.publish({
       sessionId: options.sessionId,
       turnId: options.turnId,
@@ -239,7 +240,7 @@ export class MultiAgentSystem {
           content: 'You are AURIX — a direct, action-oriented AI. Be concise and accurate.',
         },
         { role: 'user', content: userMessage },
-      ]);
+      ], undefined, options.signal);
       agentObserverBus.publish({
         sessionId: options.sessionId,
         turnId: options.turnId,
@@ -282,7 +283,7 @@ export class MultiAgentSystem {
     for (const item of outputs) specialistOutputs[item.agentId] = item.output;
 
     if (outputs.length > 1) {
-      const answer = await this.runJudge(userMessage, specialistOutputs);
+      const answer = await this.runJudge(userMessage, specialistOutputs, options.signal);
       return {
         answer: formatStructuredOutput(answer, 'terminal'),
         route: 'multi-agent',
@@ -298,7 +299,7 @@ export class MultiAgentSystem {
     };
   }
 
-  private async supervisorPlan(message: string): Promise<{ route: string; agents: string[] }> {
+  private async supervisorPlan(message: string, signal?: AbortSignal): Promise<{ route: string; agents: string[] }> {
     const agentList = Object.entries(SPECIALISTS)
       .filter(([id]) => id !== 'judge')
       .map(([id, s]) => `- ${id} (${s.team}): ${s.description}`)
@@ -328,7 +329,7 @@ REASON: one line`,
       { role: 'user', content: message },
     ];
 
-    const response = await this.provider.chat(messages);
+    const response = await this.provider.chat(messages, undefined, signal);
     const content = response.text.trim();
     if (/route:\s*direct/i.test(content)) return { route: 'direct', agents: [] };
     const agentsMatch = content.match(/AGENTS:\s*(.+)/i);
@@ -376,6 +377,9 @@ REASON: one line`,
     const subConfig = { ...this.config, researchMode: 'low' as const };
     const sub = new AgentLoop(subConfig, subRegistry);
     sub.setMaxIterations(SUBAGENT_MAX_ITERATIONS);
+    const interruptSub = () => sub.interrupt();
+    if (options.signal?.aborted) interruptSub();
+    else options.signal?.addEventListener('abort', interruptSub, { once: true });
     const prompt = `[MULTI-AGENT SPECIALIST: ${specialist.name}]
 ${specialist.systemPrompt}
 
@@ -427,6 +431,8 @@ Return your specialist result only. Use tools when needed; do not claim actions 
       });
       options.onEvent?.({ type: 'error', data: `${specialist.name} failed: ${e.message}` });
       return `[${specialist.name} failed] ${e.message}`;
+    } finally {
+      options.signal?.removeEventListener('abort', interruptSub);
     }
     const output = chunks.join('\n') || `[${specialist.name}] No output generated.`;
     agentObserverBus.publish({
@@ -444,7 +450,7 @@ Return your specialist result only. Use tools when needed; do not claim actions 
     return output;
   }
 
-  private async runJudge(userMessage: string, outputs: Record<string, string>): Promise<string> {
+  private async runJudge(userMessage: string, outputs: Record<string, string>, signal?: AbortSignal): Promise<string> {
     const outputBlocks = Object.entries(outputs)
       .map(([id, out]) => `### ${SPECIALISTS[id]?.name || id}\n${out}`)
       .join('\n\n---\n\n');
@@ -455,7 +461,7 @@ Return your specialist result only. Use tools when needed; do not claim actions 
         role: 'user',
         content: `USER REQUEST: ${userMessage}\n\nSPECIALIST OUTPUTS:\n\n${outputBlocks}\n\n${STRUCTURED_OUTPUT_PROMPT}\n\nSynthesize these into one final answer. Use only what is supported by the specialist outputs.`,
       },
-    ]);
+    ], undefined, signal);
     return response.text;
   }
 
