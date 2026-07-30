@@ -25,6 +25,7 @@ export type CronJob = ScheduledJob;
 
 export class CronDaemon {
   private scheduledTasks = new Map<string, cron.ScheduledTask>();
+  private activeRuns = new Map<string, Promise<ScheduledJobRun>>();
   private ready: Promise<void> | null = null;
 
   constructor(
@@ -116,6 +117,18 @@ export class CronDaemon {
 
   async runJob(id: string, options: { deliver?: boolean } = {}): Promise<ScheduledJobRun> {
     await this.start();
+    const active = this.activeRuns.get(id);
+    if (active) return active;
+    const operation = this.executeJob(id, options);
+    this.activeRuns.set(id, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.activeRuns.get(id) === operation) this.activeRuns.delete(id);
+    }
+  }
+
+  private async executeJob(id: string, options: { deliver?: boolean }): Promise<ScheduledJobRun> {
     const store = await getSessionStore();
     const job = store.listScheduledJobs(true).find((j) => j.id === id);
     if (!job) throw new Error(`Cron job not found: ${id}`);

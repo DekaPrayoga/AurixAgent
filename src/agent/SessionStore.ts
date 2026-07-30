@@ -854,6 +854,37 @@ export class SessionStore {
     return out;
   }
 
+  loadToolEvents(sessionId: string): StoredToolEvent[] {
+    this.refreshForRead();
+    const stmt = this.db.prepare(`
+      SELECT session_id, turn_id, tool_call_id, tool_name, phase, args_json, result_preview,
+             result_path, status, duration_ms, error_type
+      FROM tool_events
+      WHERE session_id = ? AND phase IN ('start', 'end')
+      ORDER BY id
+    `);
+    stmt.bind([sessionId]);
+    const events: StoredToolEvent[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      events.push({
+        sessionId: String(row.session_id || sessionId),
+        turnId: String(row.turn_id || ''),
+        toolCallId: row.tool_call_id ? String(row.tool_call_id) : undefined,
+        toolName: String(row.tool_name || 'tool'),
+        phase: String(row.phase) as StoredToolEvent['phase'],
+        args: parseJson<Record<string, unknown> | undefined>(row.args_json, undefined),
+        result: row.result_preview ? String(row.result_preview) : undefined,
+        resultPath: row.result_path ? String(row.result_path) : undefined,
+        status: row.status ? String(row.status) as StoredToolEvent['status'] : undefined,
+        durationMs: row.duration_ms == null ? undefined : Number(row.duration_ms),
+        errorType: row.error_type ? String(row.error_type) : undefined,
+      });
+    }
+    stmt.free();
+    return events;
+  }
+
   getToolUsageStats(limit = 15): ToolUsageStat[] {
     this.refreshForRead();
     const stmt = this.db.prepare(`

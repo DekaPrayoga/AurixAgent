@@ -21,8 +21,8 @@ import { ConnectModal } from './ConnectModal.js';
 import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { CommandPalette } from './CommandPalette.js';
 import { ModelPicker } from './ModelPicker.js';
+import { McpLoginPicker, selectMcpLoginCandidates, type McpLoginPickerItem } from './McpLoginPicker.js';
 import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
-import { WhatsAppModal } from './WhatsAppModal.js';
 import { OutputPanel } from './OutputPanel.js';
 import {
   theme,
@@ -57,6 +57,7 @@ import { loadSkillsFromDir } from '../skills/SkillRegistry.js';
 import { getAurixVersion, getRuntimeInfo } from '../utils/RuntimeInfo.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import { mcpManager } from '../mcp/McpRegistry.js';
+import { createMcpTool, registerMcpTools, unregisterMcpTools } from '../mcp/McpToolAdapter.js';
 import {
   loadTodos as loadTodosFromFile,
   addTodo as addTodoToFile,
@@ -179,7 +180,6 @@ const HANDLED_COMMANDS = new Set([
   'vision',
   'voice',
   'warp',
-  'whatsapp',
   'whoami',
   'yolo',
 ]);
@@ -256,14 +256,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   );
   const [sessionName, setSessionName] = useState('New session');
   const sessionNameRef = React.useRef('New session');
+
+  useEffect(() => {
+    const title = sessionName === 'New session' ? 'Conversation' : sessionName;
+    process.title = `ARX • ${title}`;
+    if (process.stdout.isTTY) process.stdout.write(`\x1b]0;ARX • ${title}\x07`);
+  }, [sessionName]);
   const [showLogin, setShowLogin] = useState(false);
   const [connectModal, setConnectModal] = useState<'discord' | 'telegram' | null>(null);
-  const [whatsappQR, setWhatsappQR] = useState<string | null>(null);
-  const [whatsappStatus, setWhatsappStatus] = useState<
-    'initializing' | 'waiting' | 'connected' | 'error'
-  >('initializing');
-  const [whatsappError, setWhatsappError] = useState<string | undefined>();
-  const [showWhatsApp, setShowWhatsApp] = useState(false);
   const gatewayRef = React.useRef<any>(null);
   const [permissionMode, setPermissionMode] = useState<'ask' | 'bypass' | 'deny'>(
     registry.getPermissionMode()
@@ -277,6 +277,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     loading: boolean;
     error?: string;
     initialQuery?: string;
+  } | null>(null);
+  const [mcpLoginPicker, setMcpLoginPicker] = useState<{
+    action: 'login' | 'reauth';
+    items: McpLoginPickerItem[];
   } | null>(null);
   const modelPickerRequestRef = React.useRef(0);
   const modelPickerOpenRef = React.useRef(false);
@@ -424,7 +428,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         const store = await agentRef.current?.getSessionStore();
         const page = store?.loadSessionPage(resumeId, { limit: 80 });
         const pageMessages = page?.messages || (agentRef.current?.getMessages() || []).filter((m: any) => m.role !== 'system').slice(-80);
-        const display = buildResumedDisplayMessages(pageMessages, resumeId, { startIndex: count - pageMessages.length, maxMessages: 80 });
+        const display = buildResumedDisplayMessages(pageMessages, resumeId, { startIndex: count - pageMessages.length, maxMessages: 80, toolEvents: store?.loadToolEvents(resumeId) });
+        const summary = (await agentRef.current?.listDurableSessions(100))?.find((session) => session.id === resumeId);
+        const title = summary?.title || resumeId;
+        setSessionName(title);
+        sessionNameRef.current = title;
         resumePageRef.current = createResumePageState(resumeId, page?.oldestCursor, Boolean(page?.hasMore));
         presentationStateRef.current = createPresentationState(display);
         setMessages(display);
@@ -636,18 +644,6 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       return;
     }
 
-    if (name === 'up' && !isProcessing) {
-      evt.preventDefault();
-      setScrollOffset((prev) => { const next = Math.min(prev + 1, Math.max(0, messages.length - 1)); if (next >= Math.max(0, messages.length - 1)) void loadOlderResumedMessages(); return next; });
-      return;
-    }
-
-    if (name === 'down' && !isProcessing) {
-      evt.preventDefault();
-      setScrollOffset((prev) => Math.max(0, prev - 1));
-      return;
-    }
-
     if (name === 'pageup' && !isProcessing) {
       evt.preventDefault();
       setScrollOffset((prev) => { const next = Math.min(prev + 20, Math.max(0, messages.length - 5)); if (next >= Math.max(0, messages.length - 5)) void loadOlderResumedMessages(); return next; });
@@ -660,7 +656,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       return;
     }
 
-    if (name === 'end' && scrollOffset > 0) {
+    if ((name === 'end' || (evt.ctrl && name === 'j')) && scrollOffset > 0) {
       evt.preventDefault();
       setScrollOffset(0);
       return;
@@ -670,31 +666,45 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const handleRewind = useCallback(
     async (checkpointId: string, mode: RewindMode) => {
       setShowRewind(false);
-      let restoredText = '';
-      // 1. Restore conversation: truncate messages back to the chosen checkpoint.
-      if (mode === 'both' || mode === 'conversation') {
-        setMessages((prev) => {
-          const idx = prev.findIndex((m) => m.checkpointId === checkpointId);
-          if (idx < 0) return prev;
-          restoredText = prev[idx].content;
-          return prev.slice(0, idx);
-        });
-        try {
-          const trimmed = agent.getMessages();
-          const cut = trimmed.findIndex((m: any) => m.content && m.content.includes(restoredText));
-          if (cut > 0) agent.setMessages?.(trimmed.slice(0, cut));
-        } catch {}
+      if (activeAgentRunRef.current) {
+        setMessages((previous) => [...previous, { role: 'system', content: 'Rewind is unavailable while an agent run is active.', timestamp: new Date() }]);
+        return;
       }
-      // 2. Restore code: replay the file snapshot to disk.
+      const needsConversation = mode === 'both' || mode === 'conversation';
+      const checkpointIndex = needsConversation ? messages.findIndex((message) => message.checkpointId === checkpointId) : -1;
+      const retainedDisplay = checkpointIndex >= 0 ? messages.slice(0, checkpointIndex) : [];
+      const laterUserCount = checkpointIndex >= 0 ? messages.slice(checkpointIndex + 1).filter((message) => message.role === 'user').length : 0;
+      const internal = agent.getMessages();
+      const internalUserIndexes = internal.map((message, index) => message.role === 'user' ? index : -1).filter((index) => index >= 0);
+      const targetPosition = internalUserIndexes.length - laterUserCount - 1;
+      const cut = targetPosition >= 0 ? internalUserIndexes[targetPosition] : -1;
+      if (needsConversation && (checkpointIndex < 0 || cut < 0)) {
+        setMessages((previous) => [...previous, { role: 'system', content: 'Rewind failed: matching conversation checkpoint is unavailable.', timestamp: new Date() }]);
+        return;
+      }
       let fileNote = '';
       if (mode === 'both' || mode === 'code') {
         try {
           const { getCheckpointEngine } = await import('../agent/Checkpoint.js');
-          const changed = getCheckpointEngine()?.restore(checkpointId) || [];
-          fileNote = changed.length
-            ? ` Restored ${changed.length} file(s).`
-            : ' No file changes to restore.';
-        } catch {}
+          const engine = getCheckpointEngine();
+          if (!engine?.hasSnapshot(checkpointId)) throw new Error('Checkpoint snapshot is unavailable.');
+          const changed = engine.restore(checkpointId);
+          fileNote = changed.length ? ` Restored ${changed.length} file(s).` : ' No file changes required.';
+        } catch (error) {
+          setMessages((previous) => [...previous, {
+            role: 'system',
+            content: `Rewind failed: ${error instanceof Error ? error.message : String(error)}`,
+            timestamp: new Date(),
+          }]);
+          return;
+        }
+      }
+      if (needsConversation) {
+        agent.setMessages(internal.slice(0, cut));
+        const rewound = createPresentationState(retainedDisplay);
+        presentationStateRef.current = rewound;
+        setMessages(retainedDisplay);
+        setScrollOffset(0);
       }
       setMessages((prev) => [
         ...prev,
@@ -705,7 +715,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         },
       ]);
     },
-    [agent]
+    [agent, messages]
   );
 
   const flushLiveToolOutput = useCallback(() => {
@@ -797,8 +807,45 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     [config]
   );
 
+  const runMcpOAuth = useCallback(
+    async (name: string) => {
+      setMessages((previous) => [
+        ...previous,
+        { role: 'assistant', content: `Starting OAuth for ${name}...`, timestamp: new Date() },
+      ]);
+      try {
+        const tools = await mcpManager.login(name, (url) => {
+          setMessages((previous) => [
+            ...previous,
+            {
+              role: 'assistant',
+              content: `Open this OAuth URL if the browser did not open:\n${url}\n\nRemote/SSH fallback: /mcp callback ${name} <redirect-url>`,
+              timestamp: new Date(),
+            },
+          ]);
+        });
+        const client = mcpManager.getClient(name);
+        for (const schema of client?.tools || []) registry.register(createMcpTool(name, schema));
+        setMessages((previous) => [
+          ...previous,
+          { role: 'assistant', content: `MCP authenticated: ${name} · ${tools} tools available`, timestamp: new Date() },
+        ]);
+      } catch (error) {
+        setMessages((previous) => [
+          ...previous,
+          {
+            role: 'assistant',
+            content: `MCP OAuth failed for ${name}: ${error instanceof Error ? error.message : String(error)}`,
+            timestamp: new Date(),
+          },
+        ]);
+      }
+    },
+    [registry]
+  );
+
   const handleSubmit = useCallback(
-    async (text: string) => {
+    async (text: string, pastedImages?: string[]) => {
       if (AskUserManager.isWaiting('default')) {
         setMessages((prev) => [...prev, { role: 'user', content: text, timestamp: new Date() }]);
         AskUserManager.submitAnswer('default', text);
@@ -1238,37 +1285,6 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
         if (commandName === 'telegram') {
           setConnectModal('telegram');
-          return;
-        }
-
-        if (commandName === 'whatsapp') {
-          setShowWhatsApp(true);
-          setWhatsappQR(null);
-          setWhatsappStatus('initializing');
-          setWhatsappError(undefined);
-          (async () => {
-            try {
-              const { WhatsAppPlatform } = await import('../gateway/WhatsApp.js');
-              const wa = new WhatsAppPlatform({
-                onQR: (qr: string) => {
-                  setWhatsappQR(qr);
-                  setWhatsappStatus('waiting');
-                },
-                onConnected: () => {
-                  setWhatsappStatus('connected');
-                },
-              });
-              await wa.connect();
-              if (!gatewayRef.current) {
-                const { Gateway } = await import('../gateway/Gateway.js');
-                gatewayRef.current = new Gateway(config, registry, cronDaemon);
-              }
-              gatewayRef.current.register(wa);
-            } catch (e: any) {
-              setWhatsappStatus('error');
-              setWhatsappError(e.message);
-            }
-          })();
           return;
         }
 
@@ -1898,16 +1914,23 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             const count = await agent.loadSessionAsync(target);
             if (count > 0) {
               resumeSessionIdRef.current = target;
+              const summary = (await agent.listDurableSessions(100)).find((session) => session.id === target);
+              const title = summary?.title || target;
+              setSessionName(title);
+              sessionNameRef.current = title;
               let page: ReturnType<Awaited<ReturnType<typeof agent.getSessionStore>>['loadSessionPage']> | undefined;
+              let toolEvents: ReturnType<Awaited<ReturnType<typeof agent.getSessionStore>>['loadToolEvents']> = [];
               try {
                 const store = await agent.getSessionStore();
                 page = store.loadSessionPage(target, { limit: 80 });
+                toolEvents = store.loadToolEvents(target);
               } catch {}
               const fallbackLoaded = agent.getMessages().filter((m: any) => m.role !== 'system').slice(-80);
               const pageMessages = page?.messages || fallbackLoaded;
               const display = buildResumedDisplayMessages(pageMessages, target, {
                 startIndex: count - pageMessages.length,
                 maxMessages: 80,
+                toolEvents,
               });
               resumePageRef.current = createResumePageState(target, page?.oldestCursor, Boolean(page?.hasMore));
               presentationStateRef.current = createPresentationState(display);
@@ -2136,8 +2159,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           }
           return;
         } else if (commandName === 'reload-mcp') {
+          unregisterMcpTools((name) => registry.unregister(name));
           await mcpManager.stopAll();
           await mcpManager.startAll();
+          await registerMcpTools((tool) => registry.register(tool));
           const status = mcpManager.getStatus();
           const running = status.filter((s) => s.running).length;
           const tools = mcpManager.getToolCount();
@@ -2259,7 +2284,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           return;
         } else if (commandName === 'platform' || commandName === 'platforms') {
           addAssistant(
-            'Gateway platforms: not configured.\nUse aurix setup to configure Discord/Telegram/WhatsApp.'
+            'Gateway platforms: not configured.\nUse aurix setup to configure Discord/Telegram.'
           );
           return;
         } else if (commandName === 'restart') {
@@ -2272,9 +2297,28 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('No pending denials.');
           return;
         } else if (commandName === 'background' || commandName === 'bg') {
-          addAssistant(
-            slash.args ? `Background task queued: "${slash.args}"` : 'Usage: /background <prompt>'
-          );
+          if (!slash.args) {
+            addAssistant('Usage: /background <prompt>');
+            return;
+          }
+          const spawnTool = registry.get('spawn_agent');
+          if (!spawnTool) {
+            addAssistant('Background agent runtime is unavailable.');
+            return;
+          }
+          const prompt = slash.args;
+          addAssistant(`Background task queued: "${prompt}"`);
+          void spawnTool.execute({ tasks: [prompt], _sessionKey: 'default' }).then((result) => {
+            setMessages((previous) => [
+              ...previous,
+              { role: 'tool', toolName: 'background_agent', toolStatus: 'success', content: result, timestamp: new Date() },
+            ]);
+          }).catch((error) => {
+            setMessages((previous) => [
+              ...previous,
+              { role: 'tool', toolName: 'background_agent', toolStatus: 'error', content: error instanceof Error ? error.message : String(error), timestamp: new Date() },
+            ]);
+          });
           return;
         } else if (commandName === 'profile') {
           addAssistant(`Active profile: default\nHome: ~/.aurix/`);
@@ -2623,14 +2667,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               );
             } else {
               const lines = status.map((s) => {
-                const icon = s.running ? '●' : s.enabled ? '○' : '⊘';
-                const state = s.running ? 'running' : s.enabled ? 'stopped' : 'disabled';
+                const icon = s.running ? '●' : s.state === 'authentication-required' ? '◐' : s.enabled ? '○' : '⊘';
+                const state = s.state;
                 const toolInfo = s.toolCount > 0 ? ` (${s.toolCount} tools)` : '';
                 const desc = s.description ? ` — ${s.description}` : '';
                 return `  ${icon} ${s.name}: ${state}${toolInfo}${desc}`;
               });
               addAssistant(
-                `MCP Servers: ${total} configured, ${running} running, ${tools} tools\n\n${lines.join('\n')}\n\nCommands: /mcp list · /mcp presets · /mcp add <name> · /mcp remove <name> · /mcp toggle <name> · /mcp restart <name> · /mcp catalog`
+                `MCP Servers: ${total} configured, ${running} running, ${tools} tools\n\n${lines.join('\n')}\n\nCommands: /mcp login [name] · /mcp tools <name> · /mcp logout <name> · /mcp restart <name> · /mcp list · /mcp presets`
               );
             }
           } else if (action === 'list') {
@@ -2639,8 +2683,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               addAssistant('No MCP servers configured. Use /mcp presets to see available servers.');
             } else {
               const lines = status.map((s) => {
-                const icon = s.running ? '●' : s.enabled ? '○' : '⊘';
-                const state = s.running ? 'running' : s.enabled ? 'stopped' : 'disabled';
+                const icon = s.running ? '●' : s.state === 'authentication-required' ? '◐' : s.enabled ? '○' : '⊘';
+                const state = s.state;
                 const toolInfo = s.toolCount > 0 ? ` (${s.toolCount} tools)` : '';
                 const err = s.error ? ` [error: ${s.error.slice(0, 50)}]` : '';
                 return `  ${icon} ${s.name}: ${state}${toolInfo}${err}`;
@@ -2653,7 +2697,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             const existing = new Set(config.servers.map((s) => s.name));
             const lines = Object.entries(PRESET_SERVERS).map(([name, p]) => {
               const added = existing.has(name) ? ' [added]' : '';
-              const envHint = p.env ? ` (env: ${Object.keys(p.env).join(', ')})` : '';
+              const envHint = p.type === 'stdio' && p.env ? ` (env: ${Object.keys(p.env).join(', ')})` : '';
               return `  ${name}: ${p.description || 'No description'}${envHint}${added}`;
             });
             addAssistant(`Available presets:\n\n${lines.join('\n')}\n\nUse: /mcp add <name>`);
@@ -2666,8 +2710,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               const { PRESET_SERVERS, addMcpServer } = await import('../mcp/McpRegistry.js');
               const preset = PRESET_SERVERS[arg];
               if (preset) {
-                addMcpServer({ name: arg, ...preset, enabled: true });
-                const envHint = preset.env
+                addMcpServer({ name: arg, ...preset, enabled: true } as import('../mcp/McpRegistry.js').McpServerConfig);
+                const envHint = preset.type === 'stdio' && preset.env
                   ? `\n\nSet environment variables:\n${Object.entries(preset.env)
                       .map(([k, v]) => `  export ${k}="${v}"`)
                       .join('\n')}`
@@ -2677,7 +2721,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 );
               } else {
                 addAssistant(
-                  `Unknown preset "${arg}". Use /mcp presets to see available servers.\n\nTo add a custom server, edit ~/.aurix/mcp/servers.json directly.`
+                  `Unknown preset "${arg}". Use /mcp presets to see available servers.\n\nTo add a custom server, edit ~/.aurix/mcp.json directly.`
                 );
               }
             }
@@ -2704,14 +2748,53 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 );
               }
             }
+          } else if (action === 'login' || action === 'reauth') {
+            if (!arg) {
+              const { loadMcpConfig } = await import('../mcp/McpRegistry.js');
+              const items = selectMcpLoginCandidates(loadMcpConfig().servers, mcpManager.getStatus());
+              if (!items.length) {
+                addAssistant('No enabled OAuth MCP servers are configured. Add one with /mcp add <name> or edit ~/.aurix/mcp.json.');
+              } else {
+                setMcpLoginPicker({ action, items });
+              }
+            } else {
+              await runMcpOAuth(arg);
+            }
+          } else if (action === 'callback') {
+            const [name, ...redirectParts] = subcmd.slice(1);
+            const redirectUrl = redirectParts.join(' ');
+            if (!name || !redirectUrl) addAssistant('Usage: /mcp callback <name> <redirect-url>');
+            else {
+              try { await mcpManager.completeCallback(name, redirectUrl); addAssistant(`OAuth callback accepted for ${name}.`); }
+              catch (error) { addAssistant(`OAuth callback failed: ${error instanceof Error ? error.message : String(error)}`); }
+            }
+          } else if (action === 'logout') {
+            if (!arg) addAssistant('Usage: /mcp logout <name>');
+            else {
+              const previous = mcpManager.getClient(arg);
+              for (const schema of previous?.tools || []) registry.unregister(`mcp_${arg}_${schema.name}`);
+              await mcpManager.logout(arg);
+              addAssistant(`MCP logged out: ${arg}`);
+            }
+          } else if (action === 'tools') {
+            if (!arg) addAssistant('Usage: /mcp tools <name>');
+            else {
+              const client = mcpManager.getClient(arg);
+              if (!client?.running) addAssistant(`${arg} is not connected. Use /mcp login ${arg} or /mcp restart ${arg}.`);
+              else if (!client.tools.length) addAssistant(`${arg} provides no tools.`);
+              else addAssistant(`External commands from ${arg}:\n\n${client.tools.map((tool) => `  ${tool.name}\n    ${tool.description || 'No description'}\n    Agent name: mcp_${arg}_${tool.name}`).join('\n\n')}`);
+            }
           } else if (action === 'restart') {
             if (!arg) {
               addAssistant('Usage: /mcp restart <name>');
             } else {
+              const previous = mcpManager.getClient(arg);
+              for (const schema of previous?.tools || []) registry.unregister(`mcp_${arg}_${schema.name}`);
               const ok = await mcpManager.restartServer(arg);
               const client = mcpManager.getClient(arg);
+              for (const schema of client?.tools || []) registry.register(createMcpTool(arg, schema));
               const tools = client?.tools.length || 0;
-              addAssistant(`${arg}: ${ok ? `running (${tools} tools)` : 'failed to start'}`);
+              addAssistant(`${arg}: ${ok ? `running (${tools} tools)` : mcpManager.getStatus().find((server) => server.name === arg)?.state || 'failed to start'}`);
             }
           } else if (action === 'catalog') {
             addAssistant('Fetching MCP catalog...');
@@ -2730,7 +2813,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             }
           } else {
             addAssistant(
-              `Unknown MCP command: ${action}\n\nCommands: list, presets, add, remove, toggle, restart, catalog, status`
+              `Unknown MCP command: ${action}\n\nCommands: list, login, reauth, callback, logout, tools, presets, add, remove, toggle, restart, catalog, status`
             );
           }
           return;
@@ -2997,8 +3080,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           }
         };
 
-        const images =
-          pendingImagesRef.current.length > 0 ? [...pendingImagesRef.current] : undefined;
+        const images = pastedImages?.length
+          ? pastedImages
+          : pendingImagesRef.current.length > 0
+            ? [...pendingImagesRef.current]
+            : undefined;
         pendingImagesRef.current = [];
 
         for await (const rawEvent of currentAgent.run(outboundText, images)) {
@@ -3066,6 +3152,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       allCommands,
       doExit,
       openModelPicker,
+      runMcpOAuth,
       flushLiveToolOutput,
       queueLiveToolOutput,
       clearLiveToolOutput,
@@ -3096,7 +3183,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     showPalette ||
     !!sessionList ||
     !!connectModal ||
-    showWhatsApp;
+    !!mcpLoginPicker;
   const isHome = showBanner && messages.length === 0 && !isProcessing && !modalOpen;
   const ctxStats = agent.getContextStats();
   const tokenStats = agent.getTokenStats(ctxStats);
@@ -3161,6 +3248,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 disabled={false}
                 blocked={!!modelPicker}
                 commands={commands}
+                initialHistory={messages.filter((message) => message.role === 'user').slice(-100).map((message) => message.content)}
                 home
                 model={agent.getModel()}
                 contextPct={ctxStats.estimatedPct}
@@ -3168,6 +3256,13 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 mode={mode}
                 onModeCycle={cycleMode}
                 onExit={doExit}
+                onBackground={() => {
+                  if (activeAgentRunRef.current) {
+                    setMessages((previous) => [...previous, { role: 'system', content: 'Backgrounding is available for /background prompts; the active run cannot be detached safely.', timestamp: new Date() }]);
+                  } else {
+                    showToast('No active run to background. Use /background <prompt>.');
+                  }
+                }}
                 onRewind={() => {
                   if (messages.some((m) => m.role === 'user' && m.checkpointId)) {
                     setShowRewind(true);
@@ -3307,7 +3402,13 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                           const count = await agent.loadSessionAsync(id);
                           if (count > 0) {
                             const loaded = agent.getMessages();
-                            const display = buildResumedDisplayMessages(loaded, id);
+                            const store = await agent.getSessionStore();
+                            const display = buildResumedDisplayMessages(loaded, id, { toolEvents: store.loadToolEvents(id) });
+                            const summary = (await agent.listDurableSessions(100)).find((session) => session.id === id);
+                            const title = summary?.title || id;
+                            setSessionName(title);
+                            sessionNameRef.current = title;
+                            resumeSessionIdRef.current = id;
                             presentationStateRef.current = createPresentationState(display);
                             setMessages(display);
                             setShowBanner(false);
@@ -3399,41 +3500,30 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                     onCancel={() => setConnectModal(null)}
                   />
                 )}
-                {showWhatsApp && (
-                  <WhatsAppModal
-                    qrData={whatsappQR}
-                    status={whatsappStatus}
-                    errorMsg={whatsappError}
-                    onClose={() => {
-                      setShowWhatsApp(false);
-                      if (whatsappStatus === 'connected') {
-                        if (!config.gateway) config.gateway = {};
-                        config.gateway.whatsapp = { enabled: true };
-                        saveConfig(config);
-                        setMessages((prev) => [
-                          ...prev,
-                          {
-                            role: 'assistant',
-                            content: 'WhatsApp connected and saved!',
-                            timestamp: new Date(),
-                          },
-                        ]);
-                      }
-                    }}
-                  />
-                )}
                 <InputBox
                   onSubmit={handleSubmit}
-                  disabled={!!permissionPrompt || showLogin || !!connectModal || showWhatsApp}
+                  disabled={!!permissionPrompt || showLogin || !!connectModal}
                   blocked={!!modelPicker}
                   commands={commands}
+                  initialHistory={messages.filter((message) => message.role === 'user').slice(-100).map((message) => message.content)}
                   model={agent.getModel()}
                   contextPct={ctxStats.estimatedPct}
                   cwd={process.cwd()}
                   mode={mode}
                   onModeCycle={cycleMode}
                   onExit={doExit}
+                  onBackground={() => {
+                    if (activeAgentRunRef.current) {
+                      setMessages((previous) => [...previous, { role: 'system', content: 'The active run cannot be detached safely. Use /background <prompt> to launch independent work.', timestamp: new Date() }]);
+                    } else {
+                      showToast('No active run to background. Use /background <prompt>.');
+                    }
+                  }}
                   onRewind={() => {
+                    if (activeAgentRunRef.current) {
+                      showToast('Finish or cancel the active run before rewinding.');
+                      return false;
+                    }
                     if (messages.some((m) => m.role === 'user' && m.checkpointId)) {
                       setShowRewind(true);
                       return true;
@@ -3584,6 +3674,17 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           </box>
         )}
       </box>
+      {mcpLoginPicker && (
+        <McpLoginPicker
+          action={mcpLoginPicker.action}
+          items={mcpLoginPicker.items}
+          onSelect={(name) => {
+            setMcpLoginPicker(null);
+            void runMcpOAuth(name);
+          }}
+          onCancel={() => setMcpLoginPicker(null)}
+        />
+      )}
       {modelPicker && (
         <ModelPicker
           items={modelPicker.items}

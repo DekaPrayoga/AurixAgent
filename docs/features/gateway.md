@@ -8,7 +8,6 @@ It connects the same agent loop, tools, durable sessions, scheduled automations,
 
 - Discord
 - Telegram
-- WhatsApp
 
 The goal is cross-platform continuity.
 A user should be able to start work in chat, resume it later, and still use the same memory, tools, and state as the CLI.
@@ -41,10 +40,6 @@ gateway:
     token: "..."
     allowedUsers:
       - "123456789"
-  whatsapp:
-    enabled: true
-    allowedUsers:
-      - "+6281234567890"
 ```
 
 Setup path:
@@ -57,7 +52,7 @@ If no platforms are configured, gateway mode should show setup guidance instead 
 
 ## Command prefixes
 
-Discord and Telegram use slash-style commands:
+Gateway commands use slash-style commands:
 
 ```txt
 /start
@@ -67,15 +62,6 @@ Discord and Telegram use slash-style commands:
 /history-search geetest
 /resume latest geetest
 /cron
-```
-
-WhatsApp uses the `!ai` prefix:
-
-```txt
-!ai start
-!ai status
-!ai history-search geetest
-!ai resume latest geetest
 ```
 
 Plain non-command text becomes an agent prompt when the platform parser allows it.
@@ -88,8 +74,6 @@ Primary files:
 - `src/gateway-entry.ts`
 - `src/gateway/Discord.ts`
 - `src/gateway/Telegram.ts`
-- `src/gateway/WhatsApp.ts`
-- `src/gateway/WASessionStore.ts`
 
 Related files:
 
@@ -135,7 +119,7 @@ interface GatewayPlatform {
 
 Keep adapters thin.
 
-Do not put core agent behavior in Discord, Telegram, or WhatsApp adapters.
+Do not put core agent behavior in Discord or Telegram adapters.
 Gateway orchestration belongs in `Gateway.ts`.
 Agent reasoning belongs in `AgentLoop.ts`.
 
@@ -204,7 +188,6 @@ Feature commands:
 When command behavior changes, update:
 
 - `COMMAND_GUIDE`
-- `WA_COMMAND_GUIDE`
 - `KNOWN_COMMANDS`
 - CLI command docs if there is CLI parity
 
@@ -263,19 +246,6 @@ Do not assume every platform supports files equally.
 
 Generated file delivery should not block the final text answer when a platform attachment API fails.
 
-## WhatsApp session store
-
-WhatsApp uses Baileys and stores auth/session state through `WASessionStore.ts`.
-
-That store is separate from Aurix conversation state.
-
-Do not confuse:
-
-- WhatsApp auth/session persistence.
-- Aurix durable conversation/session persistence.
-
-WhatsApp auth state must remain stable across restarts or the user will need to scan QR repeatedly.
-
 ## Security and access control
 
 Gateway bots can be exposed to groups and public chats.
@@ -287,7 +257,7 @@ Preserve these rules:
 - Do not echo `/apikey` values back to chat.
 - Do not store raw secrets in searchable session text.
 - Do not let unauthorized users control tools through group chats.
-- Treat platform user ids and phone numbers as identity inputs.
+- Treat platform user IDs as identity inputs.
 
 If `allowedUsers` is empty, the bot is open to anyone who can message it.
 
@@ -314,7 +284,7 @@ See `docs/features/cron-automation.md` for scheduler details.
 - `/resume` must interrupt old work before loading a new session.
 - `/history-search` must use durable session search.
 - Gateway and CLI sessions must share the same persistence layer.
-- Status formatting must not break Discord/Telegram/WhatsApp rendering.
+- Status formatting must not break Discord/Telegram rendering.
 - Platform shutdown must stop adapters cleanly.
 
 ## What not to break
@@ -325,7 +295,6 @@ Do not duplicate full CLI logic into every platform adapter.
 
 Do not create platform-specific command behavior unless the platform requires it.
 
-Do not remove WhatsApp prefix handling.
 
 Do not send raw stack traces to gateway users unless debug mode is explicit.
 
@@ -366,13 +335,6 @@ Expected behavior:
 - Summarize chunks.
 - Preserve final answer clarity.
 
-### WhatsApp auth lost
-
-Expected behavior:
-
-- Check `WASessionStore.ts` persistence.
-- Do not delete auth DB during conversation cleanup.
-
 ## Verification checklist
 
 Run static checks:
@@ -398,13 +360,6 @@ Command smoke in a platform chat:
 /tools
 /agents
 /cron
-```
-
-WhatsApp smoke:
-
-```txt
-!ai status
-!ai history-search test
 ```
 
 File smoke:

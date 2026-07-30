@@ -33,7 +33,7 @@ export function createImageGeneratorTool(config: AurixConfig, gateway: Gateway):
     name: 'image_generator',
     displayName: 'Image Generator',
     description:
-      'Image Generator: generate an image from a text description in Discord or Telegram gateway chats. Use this when the user asks to create/generate/draw an image. This is gateway-only and unsupported in CLI or WhatsApp.',
+      'Image Generator: generate an image from a text description in Discord or Telegram gateway chats. Use this when the user asks to create/generate/draw an image. This is gateway-only and unsupported in CLI.',
     parameters: {
       type: 'object',
       properties: {

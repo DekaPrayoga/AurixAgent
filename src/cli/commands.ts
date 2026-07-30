@@ -174,12 +174,6 @@ const baseCommands: SlashCommand[] = [
     source: 'aurix',
   },
   {
-    name: 'whatsapp',
-    description: 'Connect WhatsApp via QR code scan',
-    group: 'connect',
-    source: 'aurix',
-  },
-  {
     name: 'setup',
     argumentHint: '[--continue]',
     description: 'Run the interactive setup wizard, optionally from the last checkpoint',

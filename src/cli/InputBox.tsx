@@ -15,7 +15,7 @@ import { filterFiles } from './fileList.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 
 interface InputBoxProps {
-  onSubmit: (value: string) => void;
+  onSubmit: (value: string, images?: string[]) => void;
   disabled: boolean;
   blocked?: boolean;
   commands?: SlashCommand[];
@@ -27,6 +27,8 @@ interface InputBoxProps {
   onModeCycle?: () => void;
   onExit?: () => void;
   onRewind?: () => boolean;
+  onBackground?: () => void;
+  initialHistory?: string[];
 }
 
 const MODE_LABEL: Record<'auto' | 'ask' | 'deny', string> = {
@@ -166,10 +168,14 @@ export function InputBox({
   onModeCycle,
   onExit,
   onRewind,
+  onBackground,
+  initialHistory = [],
 }: InputBoxProps) {
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
+  const [imageBadges, setImageBadges] = useState<{ marker: string; dataUrl: string }[]>([]);
+  const nextImageIdRef = React.useRef(1);
   const valueRef = React.useRef('');
   const editorRef = React.useRef<TextareaRenderable | null>(null);
   const submitCurrentRef = React.useRef<() => void>(() => {});
@@ -215,18 +221,27 @@ export function InputBox({
   );
 
   const insertClipboardImage = React.useCallback(
-    (imgPath: string) => {
-      const summary = `[image: ${imgPath}]`;
+    (image: { mime: string; base64: string }) => {
+      const marker = `[Image ${nextImageIdRef.current++}]`;
       lastPasteStart = getEditorCursorOffset(editorRef.current);
-      lastPasteLen = summary.length;
-      replaceSelectionOrInsert(summary);
+      lastPasteLen = marker.length + 1;
+      setImageBadges((current) => [...current, { marker, dataUrl: `data:${image.mime};base64,${image.base64}` }]);
+      replaceSelectionOrInsert(`${marker} `);
     },
     [replaceSelectionOrInsert]
   );
 
-  const [history, setHistory] = useState<string[]>([]);
+  const [history, setHistory] = useState<string[]>(initialHistory);
   const [historyIdx, setHistoryIdx] = useState(-1);
+  const historyDraftRef = React.useRef('');
+  const initialHistoryKey = initialHistory.join('\u0000');
   const [selectedCommand, setSelectedCommand] = useState(0);
+
+  useEffect(() => {
+    setHistory(initialHistory);
+    setHistoryIdx(-1);
+    historyDraftRef.current = '';
+  }, [initialHistoryKey]);
   const submittingRef = React.useRef(false);
 
   useEffect(() => {
@@ -255,9 +270,9 @@ export function InputBox({
     }
     Promise.allSettled([readClipboardImage(), readClipboard()])
       .then(([imageResult, textResult]) => {
-        const imgPath = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
-        if (imgPath) {
-          insertClipboardImage(imgPath);
+        const image = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
+        if (image) {
+          insertClipboardImage(image);
           return;
         }
         insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
@@ -327,16 +342,26 @@ export function InputBox({
     });
     const expanded = expandPastedPlaceholders(trimmed, pastedBlocks);
     pastedBlocks.clear();
-    onSubmit(expanded);
+    const images = imageBadges
+      .filter((badge) => trimmed.includes(badge.marker))
+      .map((badge) => badge.dataUrl);
+    onSubmit(expanded, images.length ? images : undefined);
     setHistory((prev) => [...prev, trimmed]);
+    setImageBadges([]);
     setInputState('', 0);
     setHistoryIdx(-1);
-  }, [commands, onSubmit, selectedCommand, setInputState]);
+  }, [commands, imageBadges, onSubmit, selectedCommand, setInputState]);
   submitCurrentRef.current = submitCurrent;
 
   useKeyboard((evt) => {
     const name = evt.name;
     if (name === 'escape') return;
+    if (evt.ctrl && name === 'b') {
+      evt.preventDefault();
+      evt.stopPropagation();
+      onBackground?.();
+      return;
+    }
     if (disabled || blocked || pasteInProgress) return;
 
     if (name === 'return') {
@@ -355,6 +380,12 @@ export function InputBox({
     }
     // Ctrl+P belongs to App's command palette. Handling it here too made both fire:
     // the palette opened and a stray "/" was written into the editor.
+    if (evt.ctrl && name === 'r' && onRewind) {
+      evt.preventDefault();
+      evt.stopPropagation();
+      onRewind();
+      return;
+    }
     if (evt.ctrl && name === 'c') {
       evt.preventDefault();
       evt.stopPropagation();
@@ -389,8 +420,8 @@ export function InputBox({
       evt.preventDefault();
       Promise.allSettled([readClipboardImage(), readClipboard()])
         .then(([imageResult, textResult]) => {
-          const imgPath = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
-          if (imgPath) return insertClipboardImage(imgPath);
+          const image = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
+          if (image) return insertClipboardImage(image);
           insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
         })
         .catch(() => {});
@@ -401,6 +432,8 @@ export function InputBox({
       const currentValue = getEditorText(editorRef.current) || valueRef.current;
       if (name === 'backspace' && lastPasteStart >= 0 && currentCursor === lastPasteStart + lastPasteLen) {
         evt.preventDefault();
+        const removed = currentValue.slice(lastPasteStart, currentCursor).trim();
+        setImageBadges((badges) => badges.filter((badge) => badge.marker !== removed));
         setInputState(currentValue.slice(0, lastPasteStart) + currentValue.slice(currentCursor), lastPasteStart);
         lastPasteStart = -1;
         lastPasteLen = 0;
@@ -435,23 +468,33 @@ export function InputBox({
       return;
     }
     if (!suggestionsVisible && !fileSuggestionsVisible && name === 'up') {
-      if (history.length === 0 || (historyIdx < 0 && valueRef.current === '')) return;
+      if (history.length === 0) return;
+      const editor = editorRef.current;
+      const cursor = editor?.editBuffer.getCursorPosition();
+      if (historyIdx < 0 && cursor && cursor.row > 0) return;
       evt.preventDefault();
       evt.stopPropagation();
+      if (historyIdx < 0) historyDraftRef.current = getEditorText(editor) || valueRef.current;
       const nextIdx = historyIdx < 0 ? history.length - 1 : Math.max(0, historyIdx - 1);
       const next = history[nextIdx] || '';
       setHistoryIdx(nextIdx);
-      setInputState(next, next.length);
+      setInputState(next, 0);
       return;
     }
     if (!suggestionsVisible && !fileSuggestionsVisible && name === 'down') {
       if (historyIdx < 0) return;
+      const editor = editorRef.current;
+      const cursor = editor?.editBuffer.getCursorPosition();
+      const lineCount = getEditorText(editor).split('\n').length;
+      if (cursor && cursor.row < lineCount - 1) return;
       evt.preventDefault();
       evt.stopPropagation();
       const nextIdx = historyIdx + 1;
       if (nextIdx >= history.length) {
         setHistoryIdx(-1);
-        setInputState('', 0);
+        const draft = historyDraftRef.current;
+        historyDraftRef.current = '';
+        setInputState(draft, draft.length);
         return;
       }
       const next = history[nextIdx] || '';
@@ -473,23 +516,15 @@ export function InputBox({
   if (disabled) {
     return (
       <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-        {/* Sibling <text> needs an explicit row direction — OpenTUI/Yoga boxes
-            default to column and would stack each fragment on its own line. */}
-        <box
-          flexDirection="row"
-          backgroundColor={theme.bgElement}
-          paddingX={2}
-          paddingTop={1}
-          paddingBottom={1}
-          minHeight={3}
-        >
-          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
-          {/* This branch renders while a modal owns the input, not while the agent
-              runs, so it must not claim to be thinking. */}
-          <text fg={theme.textMuted}>{'  '}esc to cancel</text>
-        </box>
-        <box flexDirection="row" marginTop={1} paddingX={1}>
-          <text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text><text fg={theme.border}>{' · '}</text><text fg={theme.textMuted}>{homeDir}</text>
+        <box flexDirection="row" backgroundColor={theme.bgElement} minHeight={4}>
+          <box width={1} backgroundColor={theme.uiBlue} />
+          <box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+            <text fg={theme.textMuted}>esc to cancel</text>
+            <box flexDirection="row" marginTop={1} justifyContent="space-between">
+              <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+              <box flexDirection="row"><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
+            </box>
+          </box>
         </box>
       </box>
     );
@@ -511,7 +546,9 @@ export function InputBox({
     const boxWidth = Math.max(24, Math.min(termWidth - 8, 72));
     return (
       <box flexDirection="column" alignItems="center" backgroundColor={theme.bg}>
-        <box flexDirection="column" border={suggestionsVisible || fileSuggestionsVisible ? ['top', 'left', 'right'] : undefined} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.border : undefined} backgroundColor={theme.bgElement} width={boxWidth}>
+        <box flexDirection="row" backgroundColor={theme.bgElement} width={boxWidth}>
+          <box width={1} backgroundColor={theme.uiBlue} />
+          <box flexDirection="column" flexGrow={1}>
           {suggestionsVisible && (
             <CommandSuggestions
               suggestions={suggestions}
@@ -530,9 +567,11 @@ export function InputBox({
           )}
           {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
           <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
-          <box paddingX={2} paddingBottom={1} flexDirection="row" justifyContent="flex-end">
-            <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text>
           </box>
+        </box>
+        <box width={boxWidth} paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
+          <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+          <box flexDirection="row"><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
         </box>
       </box>
     );
@@ -540,7 +579,9 @@ export function InputBox({
 
   return (
     <box flexDirection="column" paddingX={2} backgroundColor={theme.bg} flexShrink={0}>
-      <box flexDirection="column" border={['left', 'top', 'right']} borderColor={suggestionsVisible || fileSuggestionsVisible ? theme.borderActive : theme.primary} backgroundColor={theme.bgElement}>
+      <box flexDirection="row" backgroundColor={theme.bgElement}>
+        <box width={1} backgroundColor={theme.uiBlue} />
+        <box flexDirection="column" flexGrow={1}>
         {suggestionsVisible && (
           <CommandSuggestions
             suggestions={suggestions}
@@ -558,11 +599,17 @@ export function InputBox({
           />
         )}
         {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
+        {imageBadges.length > 0 && (
+          <box flexDirection="row" paddingLeft={2} paddingTop={1}>
+            {imageBadges.map((badge) => <text key={badge.marker} fg={theme.bg} bg={theme.primary}> {badge.marker} </text>)}
+          </box>
+        )}
         <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
+        </box>
       </box>
       <box paddingX={1} marginTop={1} flexDirection="row" justifyContent="space-between">
-        <box flexDirection="row"><text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text><text fg={theme.textMuted}>{'  '}</text><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
-        <box><text fg={theme.textMuted}>{homeDir}</text></box>
+        <text fg={MODE_COLOR[mode]} attributes={TextAttributes.BOLD}>{MODE_LABEL[mode]}</text>
+        <box flexDirection="row"><text fg={theme.text}>{model || 'aurix'}</text><text fg={theme.textMuted}>{' · ctx '}</text><text fg={barColor}>{ctxBar}</text><text fg={theme.textMuted}>{` ${Math.round(contextPct)}%`}</text></box>
       </box>
     </box>
   );

@@ -3,6 +3,7 @@ import type { AurixConfig } from '../agent/Config.js';
 export const theme = {
   primary: '#fab283',
   secondary: '#5c9cf5',
+  uiBlue: '#5c9cf5',
   accent: '#9d7cd8',
 
   text: '#eeeeee',

@@ -1,7 +1,5 @@
 import { execFile, execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 function runCmd(
   cmd: string,
@@ -220,86 +218,53 @@ export function writeClipboard(text: string): void {
   })().catch(() => {});
 }
 
-export function readClipboardImage(): Promise<string | undefined> {
+export interface ClipboardImage {
+  mime: string;
+  base64: string;
+  byteLength: number;
+}
+
+const MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024;
+
+function clipboardImage(buffer: Buffer): ClipboardImage | undefined {
+  if (!buffer.length || buffer.length > MAX_CLIPBOARD_IMAGE_BYTES) return undefined;
+  return { mime: 'image/png', base64: buffer.toString('base64'), byteLength: buffer.length };
+}
+
+export function readClipboardImage(): Promise<ClipboardImage | undefined> {
   return (async () => {
-    const sp = nodeSpawn;
-    const tmpFile = `/tmp/aurix-paste-${Date.now()}.png`;
     const env = xclipEnv();
     const fullEnv = env ? { ...process.env, ...env } : undefined;
-
     if (isMac) {
-      return new Promise<string | undefined>((resolve) => {
-        const script = `set theFile to (POSIX file "${tmpFile}")
-try
-  set theClip to the clipboard as «class PNGf»
-  set fRef to open for access theFile with write permission
-  write theClip to fRef
-  close access fRef
-on error
-  try
-    close access theFile
-  end try
-  return ""
-end try
-return "ok"`;
-        const child = sp('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
-        let out = '';
-        child.stdout?.on('data', (d: Buffer) => {
-          out += d;
-        });
-        child.on('close', () => resolve(out.includes('ok') ? tmpFile : undefined));
-        child.on('error', () => resolve(undefined));
-      });
-    }
-
-    if (isWindows) {
-      const tmpFileWin = path.join(os.tmpdir(), `aurix-paste-${Date.now()}.png`);
-      return new Promise<string | undefined>((resolve) => {
-        const escapedPath = tmpFileWin.replace(/'/g, "''");
-        const psScript = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($null -ne $img) { $img.Save('${escapedPath}', [System.Drawing.Imaging.ImageFormat]::Png); [Console]::Out.Write('ok') }`;
-        const child = sp('powershell.exe', ['-NoProfile', '-Sta', '-Command', psScript], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          windowsHide: true,
-        });
-        let out = '';
-        child.stdout?.on('data', (d: Buffer) => {
-          out += d;
-        });
-        child.on('close', () => resolve(out.includes('ok') ? tmpFileWin : undefined));
-        child.on('error', () => resolve(undefined));
-      });
-    }
-
-    if (process.env.WAYLAND_DISPLAY) {
-      return new Promise<string | undefined>((resolve) => {
-        const child = sp('wl-paste', ['--type', 'image/png'], {
-          stdio: ['ignore', 'pipe', 'ignore'],
-        });
+      return new Promise<ClipboardImage | undefined>((resolve) => {
+        const script = 'try\nset pngData to the clipboard as «class PNGf»\nreturn pngData\non error\nreturn ""\nend try';
+        const child = nodeSpawn('osascript', ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
         const chunks: Buffer[] = [];
-        child.stdout?.on('data', (d: Buffer) => chunks.push(d));
-        child.on('close', (code: number) => {
-          if (code === 0 && chunks.length > 0) {
-            fs.writeFileSync(tmpFile, Buffer.concat(chunks));
-            resolve(tmpFile);
-          } else resolve(undefined);
+        child.stdout?.on('data', (data: Buffer) => chunks.push(data));
+        child.on('close', () => resolve(clipboardImage(Buffer.concat(chunks))));
+        child.on('error', () => resolve(undefined));
+      });
+    }
+    if (isWindows) {
+      return new Promise<ClipboardImage | undefined>((resolve) => {
+        const script = "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img=[System.Windows.Forms.Clipboard]::GetImage(); if($null-ne $img){$ms=New-Object IO.MemoryStream; $img.Save($ms,[Drawing.Imaging.ImageFormat]::Png); [Console]::Out.Write([Convert]::ToBase64String($ms.ToArray()))}";
+        const child = nodeSpawn('powershell.exe', ['-NoProfile', '-Sta', '-Command', script], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+        let base64 = '';
+        child.stdout?.on('data', (data: Buffer) => base64 += data.toString());
+        child.on('close', () => {
+          try { resolve(clipboardImage(Buffer.from(base64.trim(), 'base64'))); } catch { resolve(undefined); }
         });
         child.on('error', () => resolve(undefined));
       });
     }
-
-    return new Promise<string | undefined>((resolve) => {
-      const child = sp('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], {
-        stdio: ['ignore', 'pipe', 'ignore'],
-        env: fullEnv,
-      });
+    const command = process.env.WAYLAND_DISPLAY
+      ? ['wl-paste', ['--type', 'image/png']] as const
+      : ['xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o']] as const;
+    return new Promise<ClipboardImage | undefined>((resolve) => {
+      const child = nodeSpawn(command[0], [...command[1]], { stdio: ['ignore', 'pipe', 'ignore'], env: fullEnv });
       const chunks: Buffer[] = [];
-      child.stdout?.on('data', (d: Buffer) => chunks.push(d));
-      child.on('close', (code: number) => {
-        if (code === 0 && chunks.length > 0) {
-          fs.writeFileSync(tmpFile, Buffer.concat(chunks));
-          resolve(tmpFile);
-        } else resolve(undefined);
-      });
+      child.stdout?.on('data', (data: Buffer) => chunks.push(data));
+      child.on('close', (code) => resolve(code === 0 ? clipboardImage(Buffer.concat(chunks)) : undefined));
       child.on('error', () => resolve(undefined));
     });
   })();

@@ -176,51 +176,11 @@ const COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
   Use /depth to control thoroughness.
   Journal/scientific answers include sources.`;
 
-const WA_COMMAND_GUIDE = `⏳ *AURIX Agent* — Multi-Agent AI Assistant
 
-📋 *ALL COMMANDS:*
-
-*Session:*
-  !ai start — Show this guide
-  !ai help — Quick help
-  !ai reset — Clear conversation
-  !ai cancel — Stop current task
-  !ai status — Model, provider, uptime
-  !ai history — Message count
-  !ai history-search <query> — Search durable sessions
-
-*Configuration:*
-  !ai model <name> — Switch AI model
-  !ai depth <level> — Research depth
-  !ai goal <text|clear> — Set session goal
-  !ai rules [add|remove|clear] — Manage session rules
-
-*Tools & Skills:*
-  !ai tools — List available tools
-  !ai skills — List available skills
-
-*AI Features:*
-  !ai review — AI code review
-  !ai plan — Planning mode
-  !ai research <topic> — Deep research
-  !ai research-forums <topic> — Research on Reddit, X, YouTube
-  !ai summarize — Summarize text
-
-*Documents:*
-  !ai pdf <content> — Generate PDF
-  !ai pptx <topic> — Generate PowerPoint
-  !ai xlsx <topic> — Generate Excel
-
-💡 Just type your question after !ai
-Example: !ai make a python loop script`;
 
 const MINI_GUIDE = `Hi! I'm AURIX Agent ⏳
 Type /start for all commands, or just ask me anything.
 Research: /depth low|medium|high|xhigh|max|ultra`;
-
-const WA_MINI_GUIDE = `Hi! I'm AURIX Agent ⏳
-Type !ai start for all commands.
-Example: !ai make me a python script`;
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const KNOWN_COMMANDS = new Set([
@@ -721,7 +681,6 @@ export class Gateway extends EventEmitter {
     let allowed: string[] | undefined;
     if (msg.platform === 'telegram') allowed = gw.telegram?.allowedUsers;
     else if (msg.platform === 'discord') allowed = gw.discord?.allowedUsers;
-    else if (msg.platform === 'whatsapp') allowed = gw.whatsapp?.allowedUsers;
     if (!allowed || allowed.length === 0) return true;
     return allowed.includes(msg.authorId);
   }
@@ -734,10 +693,6 @@ export class Gateway extends EventEmitter {
     if (h > 0) return `${h}h ${m}m`;
     if (m > 0) return `${m}m ${s}s`;
     return `${s}s`;
-  }
-
-  private isWhatsApp(msg: IncomingMessage): boolean {
-    return msg.platform === 'whatsapp';
   }
 
   private normalizeImageEndpoint(value: string):
@@ -1139,17 +1094,6 @@ export class Gateway extends EventEmitter {
 
   private normalizeCommand(text: string, platform: string): { cmd: string; args: string } {
     const trimmed = text.trim();
-    if (platform === 'whatsapp') {
-      if (trimmed.toLowerCase().startsWith('!ai')) {
-        const rest = trimmed.slice(3).trim();
-        const parts = rest.split(/\s+/);
-        const first = (parts[0] || '').toLowerCase();
-        const canonical = KNOWN_COMMANDS.has(first) ? first : first.replace(/_/g, '-');
-        if (!first || !KNOWN_COMMANDS.has(canonical)) return { cmd: '', args: rest };
-        return { cmd: canonical, args: parts.slice(1).join(' ') };
-      }
-      return { cmd: '', args: trimmed };
-    }
     const parts = trimmed.split(/\s+/);
     if (parts[0].startsWith('/')) {
       const raw = parts[0].toLowerCase().slice(1).split('@')[0];
@@ -1166,7 +1110,6 @@ export class Gateway extends EventEmitter {
     if (!platform) return;
 
     let text = msg.content.trim();
-    const isWA = this.isWhatsApp(msg);
     const { cmd, args } = this.normalizeCommand(text, msg.platform);
 
     // Telegram callbacks are button replies, not normal chat prompts. If the
@@ -1385,47 +1328,25 @@ export class Gateway extends EventEmitter {
 
       this.emit('message', msg);
 
-      if (isWA && !text.toLowerCase().startsWith('!ai')) {
-        return;
-      }
-
       if (cmd === 'start') {
-        await platform.send(
-          stripMarkdown(isWA ? WA_COMMAND_GUIDE : COMMAND_GUIDE),
-          msg.channelId,
-          msg.replyTo
-        );
+        await platform.send(stripMarkdown(COMMAND_GUIDE), msg.channelId, msg.replyTo);
         this.firstTimeUsers.add(agentKey);
         return;
       }
 
       if (cmd === 'help') {
-        const helpText = isWA
-          ? `⏳ AURIX Quick Help\n\n!ai start — Full guide\n!ai reset — Clear context\n!ai model <name> — Switch model\n!ai depth <level> — Research depth\n!ai tools — List tools\n!ai status — Show status\n\nOr just type: !ai <your question>`
-          : `⏳ AURIX Quick Help\n\n/start — Full guide\n/reset — Clear context\n/model <name> — Switch model\n/depth <level> — Research depth (low/medium/high/xhigh/max/ultra)\n/tools — List tools\n/skills — List skills\n/status — Show status\n/history — Message count\n\nOr just type your question!`;
+        const helpText = `⏳ AURIX Quick Help\n\n/start — Full guide\n/reset — Clear context\n/model <name> — Switch model\n/depth <level> — Research depth (low/medium/high/xhigh/max/ultra)\n/tools — List tools\n/skills — List skills\n/status — Show status\n/history — Message count\n\nOr just type your question!`;
         await platform.send(stripMarkdown(helpText), msg.channelId, msg.replyTo);
         return;
       }
 
       if (!this.firstTimeUsers.has(agentKey)) {
         this.firstTimeUsers.add(agentKey);
-        await platform.send(
-          stripMarkdown(isWA ? WA_MINI_GUIDE : MINI_GUIDE),
-          msg.channelId,
-          msg.replyTo
-        );
+        await platform.send(stripMarkdown(MINI_GUIDE), msg.channelId, msg.replyTo);
       }
 
       if (cmd === 'image:gen' || cmd === 'image-gen' || cmd === 'image') {
         const description = args.trim();
-        if (msg.platform === 'whatsapp') {
-          await platform.send(
-            'Image generation is only supported in Discord and Telegram.',
-            msg.channelId,
-            msg.replyTo
-          );
-          return;
-        }
         if (msg.platform !== 'discord' && msg.platform !== 'telegram') {
           await platform.send(
             'Image generation is only supported in Discord and Telegram.',
@@ -2361,7 +2282,7 @@ export class Gateway extends EventEmitter {
         return;
       }
 
-      const userPrompt = isWA ? args || text.replace(/^!ai\s*/i, '').trim() : text;
+      const userPrompt = text;
       if (!userPrompt) return;
       console.log(
         `[Gateway] Processing message from ${msg.platform} user=${msg.authorId}: "${userPrompt.slice(0, 80)}"`
@@ -2372,10 +2293,9 @@ export class Gateway extends EventEmitter {
         /\b(table|tabel|comparison|compare|perbandingan|harga|pricing|price|biaya|spec|specs|benchmark)\b/i.test(
           userPrompt
         );
-      const tableFormatTag =
-        wantsTable && msg.platform !== 'whatsapp'
-          ? ' [format requirement: user requested structured comparison/table; output a compact markdown pipe table with headers and rows, not bullet-card sections]'
-          : '';
+      const tableFormatTag = wantsTable
+        ? ' [format requirement: user requested structured comparison/table; output a compact markdown pipe table with headers and rows, not bullet-card sections]'
+        : '';
       const forwardTag = msg.forwardedFrom ? ` [forwarded from ${msg.forwardedFrom}]` : '';
       const imagePaths: string[] = [];
       const archivePaths: string[] = [];

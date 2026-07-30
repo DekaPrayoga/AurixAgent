@@ -53,7 +53,6 @@ export interface AurixConfig {
   gateway?: {
     discord?: { enabled: boolean; token: string; allowedUsers?: string[] };
     telegram?: { enabled: boolean; token: string; allowedUsers?: string[] };
-    whatsapp?: { enabled: boolean; allowedUsers?: string[] };
   };
   imageGeneration?: {
     baseUrl?: string;

@@ -95,8 +95,6 @@ gateway:
   discord:
     enabled: true
     token: "..."
-  whatsapp:
-    enabled: true
 ```
 
 Other fields:

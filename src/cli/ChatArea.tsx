@@ -6,6 +6,7 @@ import { useThinkingAnimation, useScanner, useElapsedSeconds } from './animation
 import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import { expandAurixHighlights } from './MarkdownExtensions.js';
 import {
 } from '../utils/StructuredOutputFormat.js';
 
@@ -154,17 +155,6 @@ function ThinkingIndicator() {
   );
 }
 
-function outputLineColor(line: string, fallback: string): string {
-  const lower = line.toLowerCase();
-  if (/\b(error|failed|exception|traceback|fatal|denied)\b/.test(lower)) return theme.error;
-  if (/\b(warn|warning|caution|skipped)\b/.test(lower)) return theme.warn;
-  if (/\b(success|done|written|deleted|created|updated|passed|built|published)\b/.test(lower))
-    return theme.ok;
-  if (/^(\s*(>|\$|npm|bun|node|python|git|pm2)\b)|\b(file|saved|path|output)\b/.test(lower))
-    return theme.info;
-  return fallback;
-}
-
 function stripIncompleteControlTail(content: string): string {
   const starts = [
     content.lastIndexOf('\x1b]'),
@@ -211,8 +201,8 @@ function truncateRawPreview(
   return bounded;
 }
 
-function sanitizeToolPreview(content: string): string {
-  return safeDisplayText(truncateOutput(content));
+function sanitizeToolPreview(content: string, maxLines = 50): string {
+  return safeDisplayText(truncateOutput(content, maxLines));
 }
 
 function previewToolArgs(
@@ -247,16 +237,13 @@ function ToolOutputText({
   const lines = useMemo(() => sanitizeToolPreview(content).split('\n'), [content]);
   return (
     <box flexDirection="column">
-      {lines.map((line, i) => {
-        const lineColor = outputLineColor(line, i === 0 ? color : theme.textMuted);
-        return markdown ? (
-          <InlineText key={i} text={line} baseFg={lineColor} />
-        ) : (
-          <text key={i} fg={lineColor} wrapMode="word">
-            {line}
-          </text>
-        );
-      })}
+      {lines.map((line, i) => markdown ? (
+        <InlineText key={i} text={line} baseFg={color} />
+      ) : (
+        <text key={i} fg={i === 0 ? color : theme.textMuted} wrapMode="word">
+          {line}
+        </text>
+      ))}
     </box>
   );
 }
@@ -285,8 +272,8 @@ function ToolSpinner({ name, args }: { name: string; args?: Record<string, unkno
   );
 }
 
-function truncateOutput(content: string, maxLines: number = 5, maxChars: number = 4_000): string {
-  const bounded = truncateRawPreview(content, maxLines, maxChars);
+function truncateOutput(content: string, maxLines: number = 50): string {
+  const bounded = truncateRawPreview(content, maxLines, Number.MAX_SAFE_INTEGER);
   const lines = content.split('\n');
   if (lines.length <= maxLines) return bounded;
   const head = lines.slice(0, Math.max(2, maxLines - 2));
@@ -338,7 +325,9 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
       'markup.heading.1': { fg: theme.primary, bold: true },
       'markup.heading.2': { fg: theme.markdownHeading, bold: true },
       'markup.bold': { fg: theme.markdownStrong, bold: true },
-      'markup.italic': { fg: theme.markdownEmphasis, italic: true },
+      'markup.strong': { fg: theme.markdownStrong, bold: true },
+      'markup.italic': { fg: theme.markdownEmphasis, italic: false },
+      'markup.emphasis': { fg: theme.markdownEmphasis, italic: false },
       'markup.link': { fg: theme.markdownLink, underline: true },
       'markup.link.url': { fg: theme.markdownLinkText, underline: true },
       'markup.raw': { fg: theme.markdownCode },
@@ -418,9 +407,9 @@ const AssistantMessage = React.memo(function AssistantMessage({
 }) {
   if (!msg.content) return null;
   return (
-    <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0} border={['left']} borderColor={theme.borderSubtle}>
+    <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
       <markdown
-        content={msg.content}
+        content={expandAurixHighlights(msg.content)}
         syntaxStyle={getMarkdownSyntax(themeVersion)}
         fg={theme.markdownText}
         streaming={streaming}
@@ -432,12 +421,68 @@ const AssistantMessage = React.memo(function AssistantMessage({
   );
 });
 
+function isTerminalTool(name?: string): boolean {
+  return /^(terminal|bash|shell|code_exec|terminal_)/i.test(name || '');
+}
+
+function TerminalToolMessage({ msg }: { msg: ChatMessage }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const status = msg.toolStatus || (msg.errorType ? 'error' : 'success');
+  const stateColor = statusColor(status);
+  const command = typeof msg.toolArgs?.command === 'string' ? msg.toolArgs.command : toolSummary(msg.toolName, msg.toolArgs);
+  const workdir = typeof msg.toolArgs?.workdir === 'string' ? msg.toolArgs.workdir : undefined;
+  const duration = formatDuration(msg.durationMs);
+  const commandOverflow = (command || '').split('\n').length > 50;
+  const outputOverflow = msg.content.split('\n').length > 50;
+  const overflow = commandOverflow || outputOverflow;
+  const visibleCommand = expanded ? safeDisplayText(command || '') : safeDisplayText((command || '').split('\n').slice(0, 50).join('\n'));
+  const output = expanded ? safeDisplayText(msg.content) : sanitizeToolPreview(msg.content, 50);
+  return (
+    <box
+      flexDirection="column"
+      marginTop={1}
+      marginLeft={2}
+      marginRight={2}
+      paddingTop={1}
+      paddingBottom={1}
+      paddingLeft={2}
+      paddingRight={2}
+      border={['left']}
+      borderColor={stateColor}
+      backgroundColor={theme.bgPanel}
+      flexShrink={0}
+      onMouseDown={(event) => {
+        if (event.button !== 0 || !overflow) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setExpanded((value) => !value);
+      }}
+    >
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={theme.textMuted}>{workdir ? `Running in ${safeDisplayText(workdir)}` : 'Terminal'}</text>
+        <text fg={stateColor}>{duration ? `${duration}  ` : ''}{statusIcon(status)}</text>
+      </box>
+      <box flexDirection="row" marginTop={1}>
+        <text fg={theme.primary}>$ </text>
+        <text fg={theme.info}>{visibleCommand}</text>
+      </box>
+      {output && output !== '(no output)' && (
+        <box marginTop={1} paddingLeft={2} border={['left']} borderColor={theme.borderSubtle}>
+          <text fg={status === 'error' || status === 'timeout' ? theme.error : theme.textMuted}>{output}</text>
+        </box>
+      )}
+      {overflow && <text fg={theme.textMuted}>{expanded ? 'Click box to collapse' : 'Click box to show full output'}</text>}
+    </box>
+  );
+}
+
 const ToolMessage = React.memo(function ToolMessage({
   msg,
 }: {
   msg: ChatMessage;
   themeVersion: number;
 }) {
+  if (isTerminalTool(msg.toolName)) return <TerminalToolMessage msg={msg} />;
   const color = toolColor(msg.toolName);
   const status = msg.toolStatus || (msg.errorType ? 'error' : 'success');
   const stateColor = statusColor(status);
@@ -496,7 +541,7 @@ const SystemMessage = React.memo(function SystemMessage({
   msg: ChatMessage;
   themeVersion: number;
 }) {
-  const completion = /^Model: .* · Duration: .* · Tools: \d+$/.test(msg.content);
+  const completion = msg.content.match(/^Model: (.+?) · Duration: (.+?) · Tools: (\d+)$/);
   return (
     <box
       flexDirection="row"
@@ -505,14 +550,16 @@ const SystemMessage = React.memo(function SystemMessage({
       marginTop={completion ? 1 : 0}
       flexShrink={0}
     >
-      {completion && <text fg={theme.primary}>{'▣ '}</text>}
-      <text
-        fg={completion ? theme.textMuted : theme.warn}
-        attributes={completion ? TextAttributes.DIM : TextAttributes.NONE}
-        wrapMode="word"
-      >
-        {safeDisplayText(msg.content)}
-      </text>
+      {completion ? (
+        <box flexDirection="row">
+          <text fg={theme.secondary}>{'▣ '}</text>
+          <text fg={theme.secondary}>Model: </text>
+          <text fg={theme.textBright}>{safeDisplayText(completion[1])}</text>
+          <text fg={theme.textMuted}>{` · Duration: ${safeDisplayText(completion[2])} · Tools: ${completion[3]}`}</text>
+        </box>
+      ) : (
+        <text fg={theme.warn} wrapMode="word">{safeDisplayText(msg.content)}</text>
+      )}
     </box>
   );
 });

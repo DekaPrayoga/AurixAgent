@@ -79,7 +79,7 @@ Most AI coding tools stop at suggestions. AURIX is built to **operate**.
 | Research that goes beyond one search result | Web search, scraping, forum/social research, synthesis, reports, and depth-based review/debate. |
 | Trading and market analysis workflows | Stock/crypto/DeFi skills plus a `trading` tool for analysis, technical indicators, news, portfolio, comparison, and risk views. |
 | Decisions that need disagreement | Council/debate patterns, supporter/skeptic/judge research agents, and native multi-agent routing. |
-| An agent you can reach outside the terminal | Discord, Telegram, and WhatsApp gateway support. |
+| An agent you can reach outside the terminal | Discord and Telegram gateway support. |
 | No lock-in to one hosted model | OpenAI-compatible, Anthropic-compatible, and custom endpoint configuration. |
 | Extensible tools | MCP server manager plus a large local skill system. |
 
@@ -245,7 +245,6 @@ AURIX is not locked to one terminal window. Run it as a bot and keep working fro
 | **Lite mode** | Fast prompt-only sessions. |
 | **Discord** | Server/team workflows and remote task control. |
 | **Telegram** | Mobile control and personal automation. |
-| **WhatsApp** | Always-on assistant access through a familiar chat app. |
 
 ```bash
 aurix gateway
@@ -279,7 +278,7 @@ The local `skills/` tree currently contains **330+ skill files**, including Bug 
 aurix              # Launch full TUI
 aurix --lite       # Launch lite prompt mode
 aurix setup        # Configure provider/model/key
-aurix gateway      # Start Discord/Telegram/WhatsApp gateway
+aurix gateway      # Start Discord/Telegram gateway
 aurix api          # Start local Reddit research API on :3001 (normal CLI/gateway auto-start it)
 aurix --continue   # Continue latest session
 aurix --resume ID  # Resume a specific session
@@ -357,8 +356,6 @@ gateway:
   telegram:
     enabled: false
     token: ""
-  whatsapp:
-    enabled: false
 ```
 
 Environment variables override config values.
@@ -407,7 +404,7 @@ Environment variables override config values.
 src/
   agent/       Agent loop, context, config, memory, research pipeline, multi-agent runtime
   cli/         OpenTUI React interface, command palette, input/output panels
-  gateway/     Discord / Telegram / WhatsApp gateway
+  gateway/     Discord / Telegram gateway
   mcp/         MCP client, registry, catalog, tool adapter
   providers/   OpenAI-compatible, Anthropic-compatible, and custom provider adapters
   skills/      Local skill registry and loader

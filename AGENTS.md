@@ -72,7 +72,7 @@ src/
   tools/         — Tool implementations (TypeScript)
   agent/         — Core agent loop, context, memory
   cli/           — Terminal UI (OpenTUI React)
-  gateway/       — Discord/Telegram/WhatsApp integration
+  gateway/       — Discord/Telegram integration
   providers/     — LLM API providers
   skills/        — Skill registry
 skills/          — Skill definitions (SKILL.md + scripts)

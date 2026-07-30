@@ -9,7 +9,7 @@ Examples:
 - Send a daily AI news digest.
 - Run a scheduled repository health check.
 - Summarize gateway/channel activity.
-- Run periodic research and deliver the result to Telegram, Discord, or WhatsApp.
+- Run periodic research and deliver the result to Telegram or Discord.
 
 This feature is part of the autonomy spine. It is deliberately built on durable state so jobs survive process restarts.
 
@@ -31,12 +31,6 @@ Gateway:
 /cron add <cron expr> | <prompt>
 /cron run <id>
 /cron remove <id>
-```
-
-WhatsApp command style may be prefixed through the platform adapter, for example:
-
-```txt
-!ai cron list
 ```
 
 ## Examples

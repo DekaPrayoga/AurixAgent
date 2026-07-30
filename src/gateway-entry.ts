@@ -67,11 +67,6 @@ export async function startGateway(registry: ToolRegistry) {
     gateway.register(new TelegramPlatform(gw.telegram.token));
   }
 
-  if (gw?.whatsapp?.enabled) {
-    const { WhatsAppPlatform } = await import('./gateway/WhatsApp.js');
-    gateway.register(new WhatsAppPlatform());
-  }
-
   if (gateway.getPlatforms().length === 0) {
     console.error(`
   No gateway platforms configured.
@@ -85,8 +80,6 @@ export async function startGateway(registry: ToolRegistry) {
     telegram:
       enabled: true
       token: YOUR_TELEGRAM_BOT_TOKEN
-    whatsapp:
-      enabled: true
 `);
     process.exit(1);
   }

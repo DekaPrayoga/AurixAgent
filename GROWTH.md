@@ -31,14 +31,13 @@ Open-source terminal AI agent for coding, deep research, automation, and multi-p
 - anthropic
 - discord-bot
 - telegram-bot
-- whatsapp-bot
 
 ## Pinned value bullets
 
 - Executes real tasks, not just chat responses
 - Built for terminal-native developer workflows
 - Includes cited deep research and document generation
-- Accessible from terminal, Discord, Telegram, and WhatsApp
+- Accessible from terminal, Discord, and Telegram
 
 ## README hero subheading alternatives
 
@@ -56,7 +55,7 @@ An extensible terminal AI command center with tools, memory, research workflows,
 1. Ask AURIX to audit a repo and patch a file
 2. Ask AURIX to research a topic and export a PDF
 3. Ask AURIX to automate a browser task and extract structured data
-4. Use AURIX from WhatsApp or Telegram to trigger a real task remotely
+4. Use AURIX from Discord or Telegram to trigger a real task remotely
 
 ## Positioning sentence
 

@@ -1,4 +1,5 @@
 import type { Message } from '../providers/index.js';
+import type { StoredToolEvent } from '../agent/SessionStore.js';
 import type { ChatMessage } from './ChatArea.js';
 
 export const RESUME_DISPLAY_PAGE_SIZE = 80;
@@ -20,7 +21,7 @@ export function stableMessageId(message: Message, sessionId: string, originalInd
 export function buildResumedDisplayMessages(
   messages: Message[],
   sessionId: string,
-  options: { startIndex?: number; maxMessages?: number } = {}
+  options: { startIndex?: number; maxMessages?: number; toolEvents?: StoredToolEvent[] } = {}
 ): ChatMessage[] {
   const maxMessages = options.maxMessages ?? RESUME_DISPLAY_PAGE_SIZE;
   const baseIndex = options.startIndex ?? 0;
@@ -28,12 +29,32 @@ export function buildResumedDisplayMessages(
     .map((message, offset) => ({ message, originalIndex: baseIndex + offset }))
     .filter(({ message }) => message.role !== 'system')
     .slice(-maxMessages)
-    .map(({ message, originalIndex }) => ({
-      id: stableMessageId(message, sessionId, originalIndex),
-      role: message.role as ChatMessage['role'],
-      content: message.content || '',
-      timestamp: new Date(),
-    }));
+    .map(({ message, originalIndex }) => {
+      const toolEvent = message.role === 'tool'
+        ? options.toolEvents?.find((event) =>
+            event.phase === 'end' &&
+            (message.toolCallId ? event.toolCallId === message.toolCallId : event.result === message.content)
+          )
+        : undefined;
+      const toolStart = toolEvent
+        ? options.toolEvents?.find((event) =>
+            event.phase === 'start' &&
+            (toolEvent.toolCallId ? event.toolCallId === toolEvent.toolCallId : event.turnId === toolEvent.turnId && event.toolName === toolEvent.toolName)
+          )
+        : undefined;
+      return {
+        id: stableMessageId(message, sessionId, originalIndex),
+        role: message.role as ChatMessage['role'],
+        content: message.content || '',
+        toolName: toolEvent?.toolName,
+        toolArgs: toolStart?.args || toolEvent?.args,
+        toolCallId: message.toolCallId || toolEvent?.toolCallId,
+        toolStatus: toolEvent?.status,
+        durationMs: toolEvent?.durationMs,
+        errorType: toolEvent?.errorType,
+        timestamp: new Date(),
+      };
+    });
 }
 
 export function createResumePageState(sessionId: string, oldestCursor: number | undefined, hasMore: boolean): ResumeDisplayPageState {

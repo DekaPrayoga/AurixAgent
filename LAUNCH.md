@@ -9,7 +9,7 @@ AURIX can:
 - run shell commands
 - do deep research with citations
 - generate PDFs and reports
-- work from Terminal, Discord, Telegram, and WhatsApp
+- work from Terminal, Discord, and Telegram
 
 It is basically an AI workspace for technical users.
 
@@ -32,7 +32,7 @@ AURIX can:
 - perform cited research
 - generate PDFs and reports
 - automate browser tasks
-- run through Terminal, Discord, Telegram, and WhatsApp
+- run through Terminal, Discord, and Telegram
 
 I wanted something that feels closer to an AI command center than a normal chatbot.
 

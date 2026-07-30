@@ -39,14 +39,6 @@ Gateway commands:
 /status
 ```
 
-WhatsApp equivalents use the `!ai` prefix:
-
-```txt
-!ai depth high
-!ai agents
-!ai fast
-```
-
 Model-facing tool:
 
 ```txt

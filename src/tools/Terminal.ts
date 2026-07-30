@@ -50,10 +50,16 @@ function emitLines(
 ) {
   if (!context?.onEvent) return;
   buffer.value += chunk.toString();
+  const maxPartialLineChars = 64 * 1024;
   const lines = buffer.value.split(/\r\n|\n|\r/);
   buffer.value = lines.pop() || '';
   for (const line of lines) {
     if (line.trim()) context.onEvent({ type: 'chunk', stream, data: line });
+  }
+  while (buffer.value.length > maxPartialLineChars) {
+    const segment = buffer.value.slice(0, maxPartialLineChars);
+    buffer.value = buffer.value.slice(maxPartialLineChars);
+    context.onEvent({ type: 'chunk', stream, data: `${segment}\n[continued]` });
   }
 }
 
@@ -102,6 +108,10 @@ async function runCommand(
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
+    const maxCapturedBytes = 5 * 1024 * 1024;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let outputTruncated = false;
     const stdoutLine = { value: '' };
     const stderrLine = { value: '' };
     let timedOut = false;
@@ -134,11 +144,21 @@ async function runCommand(
         : undefined;
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutChunks.push(chunk);
+      if (stdoutBytes < maxCapturedBytes) {
+        const remaining = maxCapturedBytes - stdoutBytes;
+        stdoutChunks.push(chunk.subarray(0, remaining));
+        stdoutBytes += Math.min(chunk.length, remaining);
+        if (chunk.length > remaining) outputTruncated = true;
+      } else outputTruncated = true;
       emitLines(context, 'stdout', chunk, stdoutLine);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderrChunks.push(chunk);
+      if (stderrBytes < maxCapturedBytes) {
+        const remaining = maxCapturedBytes - stderrBytes;
+        stderrChunks.push(chunk.subarray(0, remaining));
+        stderrBytes += Math.min(chunk.length, remaining);
+        if (chunk.length > remaining) outputTruncated = true;
+      } else outputTruncated = true;
       emitLines(context, 'stderr', chunk, stderrLine);
     });
 
@@ -159,6 +179,7 @@ async function runCommand(
       const output = [];
       if (stdout) output.push(stdout);
       if (stderr) output.push(`[stderr] ${stderr}`);
+      if (outputTruncated) output.push('[output truncated after 5MB per stream]');
       if (aborted) output.push('[cancelled] Command terminated');
       else if (timedOut) output.push('[timeout] Command killed after timeout');
       else if (code && code !== 0) output.push(`[exit ${code}]`);

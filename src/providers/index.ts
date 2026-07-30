@@ -86,7 +86,7 @@ function bypassProxyIfLocal(url: string) {
   }
 }
 
-function imageToBase64(filePath: string): { data: string; mediaType: string } | null {
+export function imageToBase64(filePath: string): { data: string; mediaType: string } | null {
   try {
     const dataUrl = filePath.match(/^data:(image\/[^;]+);base64,(.+)$/);
     if (dataUrl) {

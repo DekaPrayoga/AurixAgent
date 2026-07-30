@@ -6,7 +6,7 @@ import type { Gateway } from '../gateway/Gateway.js';
 export function createSendFileTool(gateway: Gateway): Tool {
   return {
     name: 'send_file',
-    description: 'Send a file to the user via their connected platform (WhatsApp, Telegram, Discord). Use this when the user asks to download, generate, or send files, images, audio, documents, videos, etc. Automatically detects the user\'s platform from the conversation context.',
+    description: 'Send a file to the user via their connected platform (Telegram or Discord). Use this when the user asks to download, generate, or send files, images, audio, documents, videos, etc. Automatically detects the user\'s platform from the conversation context.',
     parameters: {
       type: 'object',
       properties: {
@@ -20,7 +20,7 @@ export function createSendFileTool(gateway: Gateway): Tool {
         },
         platform: {
           type: 'string',
-          description: 'Target platform (telegram, discord, whatsapp). Auto-detects from last message if omitted.',
+          description: 'Target platform (telegram or discord). Auto-detects from last message if omitted.',
         },
       },
       required: ['file_path'],

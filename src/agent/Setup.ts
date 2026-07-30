@@ -689,7 +689,6 @@ async function stepGateway(
     existingList.push(
       `Telegram (${existing.telegram.token.slice(0, 8)}...${existing.telegram.token.slice(-4)})`,
     );
-  if (existing?.whatsapp?.enabled) existingList.push('WhatsApp (QR paired)');
 
   const extra =
     existingList.length > 0
@@ -718,13 +717,6 @@ async function stepGateway(
         desc: existing?.telegram?.token
           ? 'Update token'
           : 'Connect via Bot API',
-      },
-      {
-        id: 'whatsapp',
-        label: 'WhatsApp',
-        desc: existing?.whatsapp?.enabled
-          ? 'Update settings'
-          : 'Connect via Baileys (QR code)',
       },
     ],
     allowSkip: true,
@@ -789,22 +781,6 @@ async function stepGateway(
             .map((s) => s.trim())
             .filter(Boolean);
         }
-      }
-    }
-    if (platform === 'whatsapp') {
-      gateway.whatsapp = { enabled: true };
-      drawInfo('WhatsApp will pair via QR code on first run');
-      const phoneIds = await drawInputScreen({
-        title: 'WhatsApp — Allowed Phone Numbers (Optional)',
-        hint: 'Comma-separated phone numbers with country code (e.g. +6281234567890).\nOnly these numbers can control the bot. Leave blank to allow everyone.',
-        label: 'Phone numbers:',
-        masked: false,
-      });
-      if (phoneIds && phoneIds !== '__back__') {
-        gateway.whatsapp.allowedUsers = phoneIds
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
       }
     }
   }

@@ -12,6 +12,7 @@ __pycache__/
 *.pyc
 skills/research/last30days/scripts/__pycache__/
 skills/research/last30days/tests/
+/tests/
 
 # Build artifacts
 hello
