@@ -26,7 +26,6 @@ export interface ToolLifecyclePart {
   toolName?: string;
   args?: Record<string, unknown>;
   content: string;
-  chunks: string[];
   status: 'running' | 'success' | 'error' | 'timeout' | 'cancelled';
   startedAt: Date;
   endedAt?: Date;
@@ -79,6 +78,21 @@ export interface ApplyEventOptions {
   renderToolEnd?: (event: AgentEvent) => string;
 }
 
+const MAX_LIVE_TOOL_CHARS = 16_000;
+const MAX_LIVE_TOOL_LINES = 80;
+
+export function boundedLiveToolPreview(content: string): string {
+  const clippedChars = content.length > MAX_LIVE_TOOL_CHARS ? content.slice(-MAX_LIVE_TOOL_CHARS) : content;
+  const lines = clippedChars.split('\n');
+  const visible = lines.length > MAX_LIVE_TOOL_LINES ? lines.slice(-MAX_LIVE_TOOL_LINES) : lines;
+  const omittedChars = Math.max(0, content.length - clippedChars.length);
+  const omittedLines = Math.max(0, lines.length - visible.length);
+  const prefix = omittedChars || omittedLines
+    ? `… live output trimmed (${omittedLines} lines, ${omittedChars} chars omitted)\n`
+    : '';
+  return prefix + visible.join('\n');
+}
+
 const DEFAULT_TOOL_END_RENDERER = (event: AgentEvent): string => {
   const name = event.toolName || 'tool';
   const status = event.status || (event.errorType ? 'error' : 'success');
@@ -94,9 +108,7 @@ function cloneState(state: PresentationState): PresentationState {
     currentTurn: state.currentTurn
       ? {
           ...state.currentTurn,
-          parts: state.currentTurn.parts.map((part) =>
-            part.kind === 'tool' ? { ...part, chunks: part.chunks.slice() } : { ...part }
-          ),
+          parts: state.currentTurn.parts.map((part) => ({ ...part })),
           activeToolIds: state.currentTurn.activeToolIds.slice(),
           completed: state.currentTurn.completed ? { ...state.currentTurn.completed } : undefined,
         }
@@ -158,7 +170,6 @@ function upsertTool(turn: PresentationTurnState, event: AgentEvent, now: Date): 
     toolName: event.toolName,
     args: event.toolArgs,
     content: '',
-    chunks: [],
     status: 'running',
     startedAt: now,
   };
@@ -189,13 +200,12 @@ export function startUserTurn(
   return next;
 }
 
-export function applyAgentEvent(
-  state: PresentationState,
+function applyEventMutable(
+  next: PresentationState,
   event: AgentEvent,
-  options: ApplyEventOptions = {}
-): PresentationState {
-  const next = cloneState(state);
-  const now = options.now || new Date();
+  options: ApplyEventOptions,
+  now: Date
+): void {
   const turn = ensureTurn(next, event, now);
   const renderToolEnd = options.renderToolEnd || DEFAULT_TOOL_END_RENDERER;
 
@@ -217,15 +227,15 @@ export function applyAgentEvent(
     case 'tool_chunk': {
       const tool = upsertTool(turn, event, now);
       if (event.data) {
-        tool.chunks.push(event.data);
-        tool.content += event.data;
+        const next = `${tool.content}${tool.content ? '\n' : ''}${event.data}`;
+        tool.content = boundedLiveToolPreview(next);
       }
       break;
     }
     case 'tool_end': {
       const tool = upsertTool(turn, event, now);
-      if (event.data && !tool.content.endsWith(event.data)) {
-        tool.content = tool.content ? `${tool.content}\n${event.data}` : event.data;
+      if (event.data) {
+        tool.content = event.data;
       }
       tool.status = event.status || (event.errorType ? 'error' : 'success');
       tool.durationMs = event.durationMs;
@@ -252,8 +262,27 @@ export function applyAgentEvent(
   }
 
   turn.updatedAt = now;
-  next.messages = flattenPresentationState(next, { model: options.model, renderToolEnd });
+}
+
+export function applyAgentEvents(
+  state: PresentationState,
+  events: AgentEvent[],
+  options: ApplyEventOptions = {}
+): PresentationState {
+  if (events.length === 0) return state;
+  const next = cloneState(state);
+  const now = options.now || new Date();
+  for (const event of events) applyEventMutable(next, event, options, now);
+  next.messages = flattenPresentationState(next, options);
   return next;
+}
+
+export function applyAgentEvent(
+  state: PresentationState,
+  event: AgentEvent,
+  options: ApplyEventOptions = {}
+): PresentationState {
+  return applyAgentEvents(state, [event], options);
 }
 
 export function flattenPresentationState(

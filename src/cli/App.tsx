@@ -5,8 +5,8 @@ import { useKeyboard, useTerminalDimensions, useRenderer } from '@opentui/react'
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { ChatArea, type ChatMessage } from './ChatArea.js';
-import { applyAgentEvent, createPresentationState, startUserTurn } from './TurnState.js';
+import { ChatArea, type ChatMessage, type ChatScrollControls } from './ChatArea.js';
+import { applyAgentEvent, applyAgentEvents, createPresentationState, startUserTurn } from './TurnState.js';
 import type { PresentationState } from './TurnState.js';
 import { writeClipboard } from './Clipboard.js';
 import { InputBox } from './InputBox.js';
@@ -22,6 +22,7 @@ import { RewindPicker, type RewindMode } from './RewindPicker.js';
 import { CommandPalette } from './CommandPalette.js';
 import { ModelPicker } from './ModelPicker.js';
 import { McpLoginPicker, selectMcpLoginCandidates, type McpLoginPickerItem } from './McpLoginPicker.js';
+import { pendingSidebarTodos } from './TuiPresentation.js';
 import { SessionBrowser, type SessionInfo } from './SessionBrowser.js';
 import { OutputPanel } from './OutputPanel.js';
 import {
@@ -244,7 +245,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     { name: string; args?: Record<string, unknown> } | undefined
   >();
   const [showBanner, setShowBanner] = useState(true);
-  const [scrollOffset, setScrollOffset] = useState(0);
+  const chatScrollRef = React.useRef<ChatScrollControls | null>(null);
+  const resumeAnchorRef = React.useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
   const resumePageRef = React.useRef<ResumeDisplayPageState | null>(null);
   const [baseUrl, setBaseUrl] = useState<string>(config.baseUrl || '');
   const [permissionPrompt, setPermissionPrompt] = useState<{
@@ -293,6 +295,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const [sessionRules, setSessionRules] = useState<string[]>([]);
   const [sessionGoal, setSessionGoal] = useState<string | null>(null);
   const [todos, setTodos] = useState<{ text: string; done: boolean }[]>([]);
+  const sidebarTodos = useMemo(() => pendingSidebarTodos(todos), [todos]);
   const [btwMessages, setBtwMessages] = useState<string[]>([]);
   const [showOutputPanel, setShowOutputPanel] = useState(false);
   const [themeVersion, setThemeVersion] = useState(getThemeVersion());
@@ -346,9 +349,19 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     };
 
     refreshTodos();
-    const interval = setInterval(refreshTodos, 2000);
+    const interval = setInterval(refreshTodos, 5000);
+    const todoFile = path.join(process.cwd(), 'aurix.md');
+    let watcher: fs.FSWatcher | undefined;
+    try {
+      watcher = fs.watch(process.cwd(), (_event, filename) => {
+        if (!filename || filename.toString() === path.basename(todoFile)) refreshTodos();
+      });
+    } catch {}
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      watcher?.close();
+    };
   }, []);
 
   const showToast = useCallback((msg: string) => {
@@ -470,7 +483,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       if (older.length > 0) {
         setMessages((prev) => [...older, ...prev]);
         presentationStateRef.current = createPresentationState([...older, ...presentationStateRef.current.messages]);
-        setScrollOffset((prev) => prev + older.length);
+        const anchor = resumeAnchorRef.current;
+        resumeAnchorRef.current = null;
+        if (anchor) chatScrollRef.current?.restoreAfterPrepend(anchor, presentationStateRef.current.messages.length);
       }
     } catch {
       const latest = resumePageRef.current;
@@ -590,7 +605,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       presentationStateRef.current = cleared;
       setMessages([]);
       setShowBanner(true);
-      setScrollOffset(0);
+      chatScrollRef.current?.bottom();
       return;
     }
 
@@ -644,21 +659,27 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       return;
     }
 
-    if (name === 'pageup' && !isProcessing) {
+    if (name === 'pageup') {
       evt.preventDefault();
-      setScrollOffset((prev) => { const next = Math.min(prev + 20, Math.max(0, messages.length - 5)); if (next >= Math.max(0, messages.length - 5)) void loadOlderResumedMessages(); return next; });
+      chatScrollRef.current?.pageUp();
       return;
     }
 
-    if (name === 'pagedown' && !isProcessing) {
+    if (name === 'pagedown') {
       evt.preventDefault();
-      setScrollOffset((prev) => Math.max(0, prev - 20));
+      chatScrollRef.current?.pageDown();
       return;
     }
 
-    if ((name === 'end' || (evt.ctrl && name === 'j')) && scrollOffset > 0) {
+    if (name === 'home' && !evt.ctrl) {
       evt.preventDefault();
-      setScrollOffset(0);
+      chatScrollRef.current?.top();
+      return;
+    }
+
+    if (name === 'end' || (evt.ctrl && name === 'j')) {
+      evt.preventDefault();
+      chatScrollRef.current?.bottom();
       return;
     }
   });
@@ -704,7 +725,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         const rewound = createPresentationState(retainedDisplay);
         presentationStateRef.current = rewound;
         setMessages(retainedDisplay);
-        setScrollOffset(0);
+        chatScrollRef.current?.bottom();
       }
       setMessages((prev) => [
         ...prev,
@@ -937,7 +958,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           clearLiveToolOutput();
           setMessages([]);
           setShowBanner(true);
-          setScrollOffset(0);
+          chatScrollRef.current?.bottom();
           return;
         }
 
@@ -1246,7 +1267,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               timestamp: new Date(),
             },
           ]);
-          setScrollOffset(0);
+          chatScrollRef.current?.bottom();
           return;
         }
 
@@ -1936,7 +1957,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               presentationStateRef.current = createPresentationState(display);
               setMessages(display);
               setShowBanner(false);
-              setScrollOffset(0);
+              chatScrollRef.current?.bottom();
               addAssistant(`Resumed session: ${target} (${count} messages)`);
             } else {
               addAssistant(`Session not found: ${target}`);
@@ -1958,7 +1979,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           setMessages([
             { role: 'assistant', content: 'New session started.', timestamp: new Date() },
           ]);
-          setScrollOffset(0);
+          chatScrollRef.current?.bottom();
           setShowBanner(true);
           return;
         } else if (commandName === 'stop') {
@@ -3008,7 +3029,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       } catch {}
 
       if (showBanner) setShowBanner(false);
-      setScrollOffset(0);
+      chatScrollRef.current?.bottom();
 
       setIsProcessing(true);
       setActiveTool(undefined);
@@ -3053,7 +3074,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
               coalesced.push({ ...event });
             }
           }
-          for (const event of coalesced) applyPresentationEvent(event);
+          if (coalesced.length > 0 && streamBatchRef.current.runId === runId) {
+            setPresentationState(
+              applyAgentEvents(presentationStateRef.current, coalesced, {
+                model: agent.getModel(),
+                renderToolEnd: (event) => renderToolEnd(event, { markdown: false }),
+              }),
+            );
+          }
         };
         const cancelStreamBatch = () => {
           const batch = streamBatchRef.current;
@@ -3286,8 +3314,11 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                   messages={messages}
                   isProcessing={isProcessing}
                   activeTool={activeTool}
-                  scrollOffset={scrollOffset}
-                  onJumpToBottom={() => setScrollOffset(0)}
+                  onScrollRef={(controls) => { chatScrollRef.current = controls; }}
+                  onReachTop={(anchor) => {
+                    resumeAnchorRef.current = anchor;
+                    void loadOlderResumedMessages();
+                  }}
                   themeVersion={themeVersion}
                 />
                 {permissionPrompt && (
@@ -3412,7 +3443,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                             presentationStateRef.current = createPresentationState(display);
                             setMessages(display);
                             setShowBanner(false);
-                            setScrollOffset(0);
+                            chatScrollRef.current?.bottom();
                           } else {
                             setMessages((prev) => [
                               ...prev,
@@ -3615,30 +3646,27 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 </box>
               </box>
 
-              {todos.length > 0 && (
+              {sidebarTodos.pending > 0 && (
                 <box flexDirection="column" marginTop={1}>
                   <box flexDirection="row" justifyContent="space-between">
                     <text fg={theme.accent} attributes={TextAttributes.BOLD}>Todo</text>
-                    <text fg={theme.textMuted}>{todos.filter((todo) => todo.done).length}/{todos.length}</text>
+                    <text fg={theme.textMuted}>{sidebarTodos.pending} pending</text>
                   </box>
                   <box flexDirection="column" marginTop={1}>
-                    {todos.slice(0, 8).map((todo, index) => {
-                      const active = !todo.done && index === todos.findIndex((item) => !item.done);
+                    {sidebarTodos.visible.map((todo, index) => {
+                      const active = index === 0;
                       return (
                         <box key={`${index}:${todo.text}`} flexDirection="row">
-                          <text fg={todo.done ? theme.ok : active ? theme.running : theme.textMuted}>
-                            {todo.done ? '● ' : active ? '◉ ' : '○ '}
+                          <text fg={active ? theme.running : theme.textMuted}>
+                            {active ? '◉ ' : '○ '}
                           </text>
-                          <text
-                            fg={todo.done ? theme.textMuted : active ? theme.text : theme.textSecondary}
-                            attributes={todo.done ? TextAttributes.STRIKETHROUGH : TextAttributes.NONE}
-                          >
+                          <text fg={active ? theme.text : theme.textSecondary}>
                             {todo.text.length > 21 ? `${todo.text.slice(0, 20)}…` : todo.text}
                           </text>
                         </box>
                       );
                     })}
-                    {todos.length > 8 && <text fg={theme.textMuted}>+ {todos.length - 8} more</text>}
+                    {sidebarTodos.hidden > 0 && <text fg={theme.textMuted}>+ {sidebarTodos.hidden} more</text>}
                   </box>
                 </box>
               )}

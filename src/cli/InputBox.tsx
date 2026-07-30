@@ -13,6 +13,14 @@ import type { SlashCommand } from './commands.js';
 import { filterSlashCommands, resolveCommandAction } from './commands.js';
 import { filterFiles } from './fileList.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import {
+  expandTextAttachments,
+  layoutCommandRows,
+  makePasteMarker,
+  reconcilePasteAttachments,
+  removeTouchedPasteAttachment,
+  type PasteAttachment,
+} from './TuiPresentation.js';
 
 interface InputBoxProps {
   onSubmit: (value: string, images?: string[]) => void;
@@ -46,25 +54,18 @@ const MAX_VISIBLE_SUGGESTIONS = 8;
 const EXIT_HINT = 'press Ctrl+C again to exit';
 
 let pasteInProgress = false;
-let lastPasteStart = -1;
-let lastPasteLen = 0;
 let lastCtrlCEmpty = 0;
-const pastedBlocks = new Map<string, string>();
 
 export function shouldCompactPaste(text: string): boolean {
   return text.split('\n').length >= 2 || text.length > 200;
 }
 
 export function makePastedPlaceholder(index: number): string {
-  return `[pasted-${index}]`;
+  return makePasteMarker('text', index);
 }
 
 export function expandPastedPlaceholders(value: string, blocks: ReadonlyMap<string, string>): string {
-  let expanded = value;
-  for (const [placeholder, fullText] of blocks) {
-    expanded = expanded.split(placeholder).join(fullText);
-  }
-  return expanded;
+  return expandTextAttachments(value, [...blocks].map(([marker, payload], id) => ({ id, kind: 'text', marker, payload })));
 }
 
 export function extractCommandQuery(value: string): string | null {
@@ -174,15 +175,29 @@ export function InputBox({
   const { width: termWidth } = useTerminalDimensions();
 
   const [value, setValue] = useState('');
-  const [imageBadges, setImageBadges] = useState<{ marker: string; dataUrl: string }[]>([]);
-  const nextImageIdRef = React.useRef(1);
+  const [attachments, setAttachments] = useState<PasteAttachment[]>([]);
+  const attachmentsRef = React.useRef<PasteAttachment[]>([]);
+  const nextAttachmentIdRef = React.useRef(0);
   const valueRef = React.useRef('');
   const editorRef = React.useRef<TextareaRenderable | null>(null);
   const submitCurrentRef = React.useRef<() => void>(() => {});
+  const pasteGenerationRef = React.useRef(0);
+  const draftRevisionRef = React.useRef(0);
 
   const syncValue = React.useCallback((next: string) => {
-    valueRef.current = next;
-    setValue(next);
+    const previous = valueRef.current;
+    const reconciled = removeTouchedPasteAttachment(previous, next, attachmentsRef.current);
+    if (reconciled.value !== previous) draftRevisionRef.current++;
+    valueRef.current = reconciled.value;
+    attachmentsRef.current = reconciled.attachments;
+    setAttachments(reconciled.attachments);
+    setValue(reconciled.value);
+    if (reconciled.value !== next && editorRef.current) {
+      const cursor = Math.min(getEditorCursorOffset(editorRef.current), reconciled.value.length);
+      editorRef.current.setText(reconciled.value);
+      const position = editorRef.current.editBuffer.offsetToPosition(cursor);
+      if (position) editorRef.current.setCursor(position.row, position.col);
+    }
   }, []);
 
   const setInputState = React.useCallback(
@@ -210,9 +225,12 @@ export function InputBox({
       const clean = normalizeClipboardText(safeDisplayText(rawText || '')).trimEnd();
       if (!clean) return;
       if (shouldCompactPaste(clean)) {
-        const placeholder = makePastedPlaceholder(pastedBlocks.size + 1);
-        pastedBlocks.set(placeholder, clean);
-        replaceSelectionOrInsert(placeholder);
+        const id = nextAttachmentIdRef.current++;
+        const marker = makePasteMarker('text', id);
+        const attachment: PasteAttachment = { id, kind: 'text', marker, payload: clean };
+        attachmentsRef.current = [...attachmentsRef.current, attachment];
+        setAttachments(attachmentsRef.current);
+        replaceSelectionOrInsert(`${marker} `);
         return;
       }
       replaceSelectionOrInsert(clean);
@@ -222,10 +240,16 @@ export function InputBox({
 
   const insertClipboardImage = React.useCallback(
     (image: { mime: string; base64: string }) => {
-      const marker = `[Image ${nextImageIdRef.current++}]`;
-      lastPasteStart = getEditorCursorOffset(editorRef.current);
-      lastPasteLen = marker.length + 1;
-      setImageBadges((current) => [...current, { marker, dataUrl: `data:${image.mime};base64,${image.base64}` }]);
+      const id = nextAttachmentIdRef.current++;
+      const marker = makePasteMarker('image', id);
+      const attachment: PasteAttachment = {
+        id,
+        kind: 'image',
+        marker,
+        payload: `data:${image.mime};base64,${image.base64}`,
+      };
+      attachmentsRef.current = [...attachmentsRef.current, attachment];
+      setAttachments(attachmentsRef.current);
       replaceSelectionOrInsert(`${marker} `);
     },
     [replaceSelectionOrInsert]
@@ -256,6 +280,25 @@ export function InputBox({
     };
   }, []);
 
+  const readClipboardForCurrentDraft = React.useCallback(() => {
+    const generation = ++pasteGenerationRef.current;
+    const revision = draftRevisionRef.current;
+    Promise.allSettled([readClipboardImage(), readClipboard()])
+      .then(([imageResult, textResult]) => {
+        if (generation !== pasteGenerationRef.current || revision !== draftRevisionRef.current || disabled || blocked) return;
+        const image = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
+        if (image) {
+          insertClipboardImage(image);
+          return;
+        }
+        insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
+      })
+      .catch(() => {});
+  }, [blocked, disabled, insertClipboardImage, insertPastedText]);
+
+  useEffect(() => () => { pasteGenerationRef.current++; }, []);
+  useEffect(() => { if (disabled || blocked) pasteGenerationRef.current++; }, [disabled, blocked]);
+
   usePaste((event) => {
     if (disabled || blocked) return;
     const pasteEvent = event as typeof event & { preventDefault?: () => void; stopPropagation?: () => void };
@@ -268,16 +311,7 @@ export function InputBox({
       insertPastedText(text);
       return;
     }
-    Promise.allSettled([readClipboardImage(), readClipboard()])
-      .then(([imageResult, textResult]) => {
-        const image = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
-        if (image) {
-          insertClipboardImage(image);
-          return;
-        }
-        insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
-      })
-      .catch(() => {});
+    readClipboardForCurrentDraft();
   });
 
   const commandQuery = extractCommandQuery(value);
@@ -313,8 +347,6 @@ export function InputBox({
   }
 
   const submitCurrent = React.useCallback(() => {
-    lastPasteStart = -1;
-    lastPasteLen = 0;
     const currentValue = getEditorText(editorRef.current) || valueRef.current;
     const commandCompletion = resolveCommandCompletion(commands, currentValue, selectedCommand);
     if (commandCompletion) {
@@ -337,20 +369,22 @@ export function InputBox({
     const trimmed = currentValue.trim();
     if (!trimmed || submittingRef.current) return;
     submittingRef.current = true;
+    pasteGenerationRef.current++;
     queueMicrotask(() => {
       submittingRef.current = false;
     });
-    const expanded = expandPastedPlaceholders(trimmed, pastedBlocks);
-    pastedBlocks.clear();
-    const images = imageBadges
-      .filter((badge) => trimmed.includes(badge.marker))
-      .map((badge) => badge.dataUrl);
+    const activeAttachments = reconcilePasteAttachments(trimmed, attachmentsRef.current);
+    const expanded = expandTextAttachments(trimmed, activeAttachments);
+    const images = activeAttachments
+      .filter((attachment) => attachment.kind === 'image')
+      .map((attachment) => attachment.payload);
     onSubmit(expanded, images.length ? images : undefined);
     setHistory((prev) => [...prev, trimmed]);
-    setImageBadges([]);
+    attachmentsRef.current = [];
+    setAttachments([]);
     setInputState('', 0);
     setHistoryIdx(-1);
-  }, [commands, imageBadges, onSubmit, selectedCommand, setInputState]);
+  }, [commands, onSubmit, selectedCommand, setInputState]);
   submitCurrentRef.current = submitCurrent;
 
   useKeyboard((evt) => {
@@ -418,28 +452,30 @@ export function InputBox({
     }
     if (isPasteKey(evt)) {
       evt.preventDefault();
-      Promise.allSettled([readClipboardImage(), readClipboard()])
-        .then(([imageResult, textResult]) => {
-          const image = imageResult.status === 'fulfilled' ? imageResult.value : undefined;
-          if (image) return insertClipboardImage(image);
-          insertPastedText(textResult.status === 'fulfilled' ? textResult.value : undefined);
-        })
-        .catch(() => {});
+      readClipboardForCurrentDraft();
       return;
     }
     if (name === 'backspace' || name === 'delete') {
-      const currentCursor = getEditorCursorOffset(editorRef.current);
-      const currentValue = getEditorText(editorRef.current) || valueRef.current;
-      if (name === 'backspace' && lastPasteStart >= 0 && currentCursor === lastPasteStart + lastPasteLen) {
+      const editor = editorRef.current;
+      const currentValue = getEditorText(editor) || valueRef.current;
+      const cursor = getEditorCursorOffset(editor);
+      const selected = editor?.getSelectedText() || '';
+      const touched = attachmentsRef.current.find((attachment) => {
+        const start = currentValue.indexOf(attachment.marker);
+        if (start < 0) return false;
+        const end = start + attachment.marker.length;
+        if (selected) return cursor <= end && cursor + selected.length >= start;
+        return name === 'backspace' ? cursor > start && cursor <= end : cursor >= start && cursor < end;
+      });
+      if (touched) {
         evt.preventDefault();
-        const removed = currentValue.slice(lastPasteStart, currentCursor).trim();
-        setImageBadges((badges) => badges.filter((badge) => badge.marker !== removed));
-        setInputState(currentValue.slice(0, lastPasteStart) + currentValue.slice(currentCursor), lastPasteStart);
-        lastPasteStart = -1;
-        lastPasteLen = 0;
-      } else {
-        lastPasteStart = -1;
-        lastPasteLen = 0;
+        evt.stopPropagation();
+        const start = currentValue.indexOf(touched.marker);
+        const end = start + touched.marker.length;
+        const next = (currentValue.slice(0, start) + currentValue.slice(end)).replace(/^\s/, '');
+        attachmentsRef.current = attachmentsRef.current.filter((attachment) => attachment.id !== touched.id);
+        setAttachments(attachmentsRef.current);
+        setInputState(next, start);
       }
       return;
     }
@@ -566,6 +602,11 @@ export function InputBox({
             />
           )}
           {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
+          {attachments.length > 0 && (
+            <box flexDirection="row" paddingLeft={2} paddingTop={1}>
+              {attachments.map((attachment) => <PasteAttachmentBadge key={attachment.marker} attachment={attachment} />)}
+            </box>
+          )}
           <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
           </box>
         </box>
@@ -599,9 +640,9 @@ export function InputBox({
           />
         )}
         {fileSuggestionsVisible && <FileSuggestions files={fileSuggestions} selected={selectedCommand} />}
-        {imageBadges.length > 0 && (
+        {attachments.length > 0 && (
           <box flexDirection="row" paddingLeft={2} paddingTop={1}>
-            {imageBadges.map((badge) => <text key={badge.marker} fg={theme.bg} bg={theme.primary}> {badge.marker} </text>)}
+            {attachments.map((attachment) => <PasteAttachmentBadge key={attachment.marker} attachment={attachment} />)}
           </box>
         )}
         <box paddingX={2} paddingTop={1} paddingBottom={1} minHeight={3}>{editor}</box>
@@ -613,6 +654,14 @@ export function InputBox({
       </box>
     </box>
   );
+}
+
+function PasteAttachmentBadge({ attachment }: { attachment: PasteAttachment }) {
+  if (attachment.kind === 'image') {
+    const badge = attachment;
+    return <text fg={theme.bg} bg={theme.primary}> {badge.marker} </text>;
+  }
+  return <text fg={theme.bg} bg={theme.info}> {attachment.marker} </text>;
 }
 
 function FileSuggestions({ files, selected }: { files: string[]; selected: number }) {
@@ -659,6 +708,7 @@ function CommandSuggestions({
   selected: number;
   onSelect: (index: number) => void;
 }) {
+  const { width } = useTerminalDimensions();
   const start = Math.max(
     0,
     Math.min(
@@ -667,17 +717,26 @@ function CommandSuggestions({
     )
   );
   const visible = suggestions.slice(start, start + MAX_VISIBLE_SUGGESTIONS);
+  const rows = layoutCommandRows(
+    visible.map((command) => ({
+      command: `/${command.name}`,
+      description: safeDisplayText(command.description),
+      hint: command.argumentHint,
+    })),
+    Math.max(32, width - 8),
+    (text) => [...text].reduce((width, character) => width + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0)
+  );
 
   return (
     <box flexDirection="column" paddingX={1} paddingTop={1} paddingBottom={1}>
       {visible.map((command, offset) => {
         const index = start + offset;
         const isSelected = index === selected;
+        const row = rows[offset];
         return (
           <box
             key={command.name}
             flexDirection="row"
-            justifyContent="space-between"
             backgroundColor={isSelected ? theme.bgSelected : undefined}
             onMouseDown={(event) => {
               if (event.button !== 0) return;
@@ -686,14 +745,17 @@ function CommandSuggestions({
               onSelect(index);
             }}
           >
-            <box flexDirection="row">
-              <text fg={isSelected ? theme.primary : theme.textMuted}>{isSelected ? '▌' : ' '}</text>
-              <text fg={isSelected ? theme.textBright : theme.primary} attributes={isSelected ? TextAttributes.BOLD : TextAttributes.NONE}>
-                {` /${command.name} `}
-              </text>
-              <text fg={isSelected ? theme.text : theme.textMuted}> {safeDisplayText(command.description)}</text>
-            </box>
-            {command.argumentHint && <text fg={theme.accent}>{command.argumentHint} </text>}
+            <text fg={isSelected ? theme.primary : theme.textMuted}>{isSelected ? '▌' : ' '}</text>
+            <text
+              fg={isSelected ? theme.textBright : theme.primary}
+              attributes={isSelected ? TextAttributes.BOLD : TextAttributes.NONE}
+              wrapMode="none"
+            >
+              {row.command}
+            </text>
+            <text fg={isSelected ? theme.text : theme.textMuted} wrapMode="none">{row.commandPad}{row.description}</text>
+            <box flexGrow={1} />
+            {row.hint && <text fg={theme.accent} wrapMode="none">{row.hint}</text>}
           </box>
         );
       })}

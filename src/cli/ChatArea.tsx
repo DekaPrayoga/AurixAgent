@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { SyntaxStyle, TextAttributes, type ScrollAcceleration } from '@opentui/core';
+import { SyntaxStyle, TextAttributes, type ScrollAcceleration, type ScrollBoxRenderable } from '@opentui/core';
 import { theme } from './theme.js';
 import { formatDuration, humanToolName, statusColor, statusIcon, toolColor, toolIcon, toolSummary } from './visual.js';
 import { useThinkingAnimation, useScanner, useElapsedSeconds } from './animation/useThinking.js';
@@ -7,6 +7,7 @@ import { FileDiff, parseToolEditOutput } from './FileDiff.js';
 import { renderToolSpinnerText } from '../agent/ToolEventRenderer.js';
 import { safeDisplayText } from '../utils/terminal-sanitize.js';
 import { expandAurixHighlights } from './MarkdownExtensions.js';
+import { enrichAssistantMarkdown } from './TuiPresentation.js';
 import {
 } from '../utils/StructuredOutputFormat.js';
 
@@ -133,12 +134,21 @@ export interface ChatMessage {
   checkpointId?: string;
 }
 
+export interface ChatScrollControls {
+  pageUp(): void;
+  pageDown(): void;
+  top(): void;
+  bottom(): void;
+  snapshot(): { scrollTop: number; scrollHeight: number };
+  restoreAfterPrepend(anchor: { scrollTop: number; scrollHeight: number }, expectedMessages: number): void;
+}
+
 interface ChatAreaProps {
   messages: ChatMessage[];
   isProcessing: boolean;
   activeTool?: { name: string; args?: Record<string, unknown> };
-  scrollOffset: number;
-  onJumpToBottom?: () => void;
+  onScrollRef?: (controls: ChatScrollControls | null) => void;
+  onReachTop?: (anchor: { scrollTop: number; scrollHeight: number }) => void;
   themeVersion?: number;
 }
 
@@ -229,18 +239,30 @@ function ToolOutputText({
   content,
   color,
   markdown = false,
+  themeVersion = 0,
 }: {
   content: string;
   color: string;
   markdown?: boolean;
+  themeVersion?: number;
 }) {
-  const lines = useMemo(() => sanitizeToolPreview(content).split('\n'), [content]);
+  const preview = useMemo(() => sanitizeToolPreview(content), [content]);
+  if (markdown) {
+    return (
+      <markdown
+        content={preview}
+        syntaxStyle={getMarkdownSyntax(themeVersion)}
+        fg={theme.markdownText}
+        conceal={true}
+        concealCode={false}
+        tableOptions={getTableOptions(themeVersion)}
+      />
+    );
+  }
   return (
     <box flexDirection="column">
-      {lines.map((line, i) => markdown ? (
-        <InlineText key={i} text={line} baseFg={color} />
-      ) : (
-        <text key={i} fg={i === 0 ? color : theme.textMuted} wrapMode="word">
+      {preview.split('\n').map((line, index) => (
+        <text key={index} fg={index === 0 ? color : theme.textMuted} wrapMode="word">
           {line}
         </text>
       ))}
@@ -332,6 +354,12 @@ function getMarkdownSyntax(themeVersion: number): SyntaxStyle {
       'markup.link.url': { fg: theme.markdownLinkText, underline: true },
       'markup.raw': { fg: theme.markdownCode },
       'markup.quote': { fg: theme.markdownQuote, italic: true },
+      'markup.list': { fg: theme.primary, bold: true },
+      'markup.list.checked': { fg: theme.ok, bold: true },
+      'markup.list.unchecked': { fg: theme.warn },
+      'markup.raw.block': { fg: theme.markdownCode },
+      'markup.raw.inline': { fg: theme.markdownCode },
+      'markup.strikethrough': { fg: theme.textMuted },
       comment: { fg: theme.syntaxComment, italic: true },
       keyword: { fg: theme.syntaxKeyword },
       string: { fg: theme.syntaxString },
@@ -409,7 +437,7 @@ const AssistantMessage = React.memo(function AssistantMessage({
   return (
     <box flexDirection="column" paddingLeft={3} paddingRight={2} marginTop={1} flexShrink={0}>
       <markdown
-        content={expandAurixHighlights(msg.content)}
+        content={enrichAssistantMarkdown(expandAurixHighlights(msg.content))}
         syntaxStyle={getMarkdownSyntax(themeVersion)}
         fg={theme.markdownText}
         streaming={streaming}
@@ -478,6 +506,7 @@ function TerminalToolMessage({ msg }: { msg: ChatMessage }) {
 
 const ToolMessage = React.memo(function ToolMessage({
   msg,
+  themeVersion,
 }: {
   msg: ChatMessage;
   themeVersion: number;
@@ -528,7 +557,7 @@ const ToolMessage = React.memo(function ToolMessage({
       </box>
       {msg.content && (
         <box paddingLeft={2} border={['left']} borderColor={status === 'error' || status === 'timeout' ? theme.error : theme.borderSubtle}>
-          <ToolOutputText content={msg.content} color={stateColor} markdown={msg.toolName === 'memory'} />
+          <ToolOutputText content={msg.content} color={stateColor} markdown={msg.toolName === 'memory' || Boolean(msg.toolName?.startsWith('mcp_'))} themeVersion={themeVersion} />
         </box>
       )}
     </box>
@@ -568,37 +597,77 @@ export function ChatArea({
   messages,
   isProcessing,
   activeTool,
-  scrollOffset,
-  onJumpToBottom,
+  onScrollRef,
+  onReachTop,
   themeVersion = 0,
 }: ChatAreaProps) {
-  const { visible, start } = useMemo(
-    () => selectVisibleMessages(messages, scrollOffset),
-    [messages, scrollOffset]
-  );
+  const scrollRef = React.useRef<ScrollBoxRenderable | null>(null);
+  const [atBottom, setAtBottom] = React.useState(true);
+  const topRequestRef = React.useRef(false);
+  const pendingAnchorRef = React.useRef<{ anchor: { scrollTop: number; scrollHeight: number }; expectedMessages: number } | null>(null);
+  const visible = messages;
+  const start = 0;
+
+  const syncPosition = React.useCallback(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    const max = Math.max(0, scroll.scrollHeight - scroll.viewport.height);
+    const bottom = scroll.scrollTop >= max - 1;
+    setAtBottom(bottom);
+    if (scroll.scrollTop <= 0 && !topRequestRef.current) {
+      topRequestRef.current = true;
+      onReachTop?.({ scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight });
+    } else if (scroll.scrollTop > 0) {
+      topRequestRef.current = false;
+    }
+  }, [onReachTop]);
+
+  React.useLayoutEffect(() => {
+    const pending = pendingAnchorRef.current;
+    if (!pending || messages.length < pending.expectedMessages) return;
+    let cancelled = false;
+    const restore = () => {
+      if (cancelled) return;
+      const scroll = scrollRef.current;
+      if (!scroll) return;
+      const delta = scroll.scrollHeight - pending.anchor.scrollHeight;
+      if (delta <= 0) {
+        setTimeout(restore, 0);
+        return;
+      }
+      scroll.scrollTop = pending.anchor.scrollTop + delta;
+      pendingAnchorRef.current = null;
+      syncPosition();
+    };
+    const timer = setTimeout(restore, 0);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [messages.length, syncPosition]);
+
+  React.useEffect(() => {
+    const controls: ChatScrollControls = {
+      pageUp() { scrollRef.current?.scrollBy(-Math.max(5, Math.floor((scrollRef.current?.viewport.height || 20) * 0.8))); syncPosition(); },
+      pageDown() { scrollRef.current?.scrollBy(Math.max(5, Math.floor((scrollRef.current?.viewport.height || 20) * 0.8))); syncPosition(); },
+      top() { scrollRef.current?.scrollTo(0); syncPosition(); },
+      bottom() { const scroll = scrollRef.current; if (!scroll) return; scroll.stickyScroll = true; scroll.scrollTo(Math.max(0, scroll.scrollHeight)); setAtBottom(true); },
+      snapshot() { const scroll = scrollRef.current; return { scrollTop: scroll?.scrollTop || 0, scrollHeight: scroll?.scrollHeight || 0 }; },
+      restoreAfterPrepend(anchor, expectedMessages) { pendingAnchorRef.current = { anchor, expectedMessages }; },
+    };
+    onScrollRef?.(controls);
+    return () => onScrollRef?.(null);
+  }, [onScrollRef, syncPosition]);
 
   return (
     <box flexDirection="column" minHeight={0} backgroundColor={theme.bg}>
-      {scrollOffset > 0 && (
+      {!atBottom && (
         <box flexDirection="row" justifyContent="center" flexShrink={0}>
-          <box
-            backgroundColor={theme.bgSelected}
-            border={['left', 'right']}
-            borderColor={theme.primary}
-            paddingX={1}
-            onMouseDown={(event) => {
-              if (event.button !== 0) return;
-              event.preventDefault();
-              event.stopPropagation();
-              onJumpToBottom?.();
-            }}
-          >
+          <box backgroundColor={theme.bgSelected} border={['left', 'right']} borderColor={theme.primary} paddingX={1} onMouseDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.stopPropagation(); const scroll = scrollRef.current; if (scroll) { scroll.stickyScroll = true; scroll.scrollTo(scroll.scrollHeight); setAtBottom(true); } }}>
             <text fg={theme.primary} attributes={TextAttributes.BOLD}>↓ Jump to the bottom</text>
             <text fg={theme.textMuted}>  End</text>
           </box>
         </box>
       )}
       <scrollbox
+        ref={scrollRef as React.Ref<ScrollBoxRenderable>}
         stickyScroll={true}
         stickyStart="bottom"
         flexGrow={1}
@@ -606,6 +675,8 @@ export function ChatArea({
         // No `visible` flag: passing one pins the bar on or off forever. Left unset it
         // follows the content, appearing only once the transcript overflows. Forcing it
         // visible painted a full-height solid thumb over every short session.
+        onMouseDown={() => queueMicrotask(syncPosition)}
+        onMouseUp={() => queueMicrotask(syncPosition)}
         verticalScrollbarOptions={{
           showArrows: false,
           trackOptions: {

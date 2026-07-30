@@ -62,6 +62,7 @@
     "deploy:mac": "bash scripts/deploy-macos.sh",
     "deploy:win": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "test:tui": "bun scripts/tui-regression/run.ts",
     "format": "prettier --write \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {

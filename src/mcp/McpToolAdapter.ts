@@ -1,6 +1,7 @@
 import type { Tool } from '../tools/Registry.js';
 import { mcpManager } from './McpRegistry.js';
 import type { McpToolSchema } from './McpClient.js';
+import { formatMcpTextResult, withMcpToolDefaults } from './McpResultFormat.js';
 
 export function createMcpTool(serverName: string, schema: McpToolSchema): Tool {
   return {
@@ -13,14 +14,14 @@ export function createMcpTool(serverName: string, schema: McpToolSchema): Tool {
         return `Error: MCP server "${serverName}" is not running. Use /mcp to restart it.`;
       }
       try {
-        const result = await client.callTool(schema.name, args);
-        if (typeof result === 'string') return result;
+        const result = await client.callTool(schema.name, withMcpToolDefaults(schema.name, args));
+        if (typeof result === 'string') return formatMcpTextResult(result);
         if (result && typeof result === 'object') {
           const r = result as Record<string, unknown>;
           if (r.content) {
             if (Array.isArray(r.content)) {
               return r.content
-                .map((item: any) => item.type === 'text' ? item.text : JSON.stringify(item))
+                .map((item: any) => item.type === 'text' ? formatMcpTextResult(String(item.text || '')) : JSON.stringify(item, null, 2))
                 .join('\n');
             }
             return String(r.content);

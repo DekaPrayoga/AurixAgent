@@ -73,8 +73,15 @@ export function statusColor(status: ToolVisualStatus): string {
 }
 
 export function humanToolName(name?: string): string {
-  const raw = (name || 'tool').replace(/^mcp__/, '').replace(/[_-]+/g, ' ').trim();
-  return raw.replace(/\b\w/g, (char) => char.toUpperCase());
+  const original = name || 'tool';
+  const mcp = original.match(/^mcp_([^_]+)_(.+)$/i);
+  if (mcp) return `MCP ${labelWords(mcp[1])} · ${labelWords(mcp[2])}`;
+  const raw = original.replace(/^mcp__/, '').replace(/[_-]+/g, ' ').trim();
+  return labelWords(raw);
+}
+
+function labelWords(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function compactValue(value: unknown): string {
