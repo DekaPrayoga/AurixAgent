@@ -24,20 +24,21 @@ export const todoTool: Tool = {
   },
   async execute(args) {
     const action = args.action as string;
+    const sessionId = typeof args._sessionId === 'string' ? args._sessionId : typeof args._sessionKey === 'string' ? args._sessionKey : undefined;
 
     switch (action) {
       case 'add': {
         const text = args.text as string;
         if (!text) return 'Error: provide task text';
-        const todo = addTodo(text.trim().slice(0, 100));
-        const stats = getTodoStats();
+        const todo = addTodo(text.trim().slice(0, 100), sessionId);
+        const stats = getTodoStats(sessionId);
         return `Added #${todo.id}: ${todo.text}\nProgress: ${stats.done}/${stats.total} complete`;
       }
 
       case 'list': {
-        const todos = loadTodos();
+        const todos = loadTodos(sessionId);
         if (todos.length === 0) return 'No tasks. Add one with action "add".';
-        const stats = getTodoStats();
+        const stats = getTodoStats(sessionId);
         const list = todos.map(t =>
           `${t.done ? '[x]' : '[ ]'} #${t.id}: ${t.text}`
         ).join('\n');
@@ -47,28 +48,28 @@ export const todoTool: Tool = {
       case 'done': {
         const id = args.id as number;
         if (!id || typeof id !== 'number') return 'Error: valid id required';
-        const success = completeTodo(id);
+        const success = completeTodo(id, sessionId);
         if (!success) return `Task #${id} not found`;
-        const todos = loadTodos();
+        const todos = loadTodos(sessionId);
         const todo = todos.find(t => t.id === id);
-        const stats = getTodoStats();
+        const stats = getTodoStats(sessionId);
         return `Completed #${id}: ${todo?.text}\nProgress: ${stats.done}/${stats.total} complete`;
       }
 
       case 'delete': {
         const id = args.id as number;
-        const todos = loadTodos();
+        const todos = loadTodos(sessionId);
         const idx = todos.findIndex(t => t.id === id);
         if (idx === -1) return `Task #${id} not found`;
         todos.splice(idx, 1);
         // Re-save without the deleted item
         const { saveTodos } = await import('../utils/TodoManager.js');
-        saveTodos(todos);
+        saveTodos(todos, sessionId);
         return `Deleted #${id}`;
       }
 
       case 'clear': {
-        const todos = loadTodos();
+        const todos = loadTodos(sessionId);
         const count = todos.length;
         const { saveTodos } = await import('../utils/TodoManager.js');
         saveTodos([]);

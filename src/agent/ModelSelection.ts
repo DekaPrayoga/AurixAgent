@@ -44,7 +44,12 @@ export function toModelPickerItems(
       category: inferCategory(model),
       current: model.id.toLowerCase() === currentModel?.toLowerCase(),
     }))
-    .sort((a, b) => naturalModelCompare(a.id, b.id));
+    .sort((a, b) => {
+      const aPromoted = a.id.toLowerCase().startsWith('aurix/');
+      const bPromoted = b.id.toLowerCase().startsWith('aurix/');
+      if (aPromoted !== bPromoted) return aPromoted ? -1 : 1;
+      return naturalModelCompare(a.id, b.id);
+    });
 }
 
 function normalizeSearchText(value: string): string {

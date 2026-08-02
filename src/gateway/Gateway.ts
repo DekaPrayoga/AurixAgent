@@ -896,14 +896,14 @@ export class Gateway extends EventEmitter {
     query = ''
   ): Promise<void> {
     const result = await fetchConfiguredModels(this.config);
-    if (!result.models.length) {
+    const providerModels = result.models.filter((model) => !model.id.toLowerCase().startsWith('aurix/'));
+    if (!providerModels.length) {
       const failure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
       await platform.send(
-        `Could not load /models${failure ? `: ${failure.status ? `HTTP ${failure.status} ` : ''}${failure.error || failure.url}` : '.'}\nUse /model <exact-id> to switch manually.`,
+        `Could not load configured /models${failure ? `: ${failure.status ? `HTTP ${failure.status} ` : ''}${failure.error || failure.url}` : '.'}\nAurix Free remains available below.`,
         msg.channelId,
         msg.replyTo
       );
-      return;
     }
     this.pendingModelInteractions.set(agentKey, {
       token: cryptoRandomId().slice(0, 10),

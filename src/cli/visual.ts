@@ -15,7 +15,7 @@ const TOOL_ICONS: { match: string[]; icon: string; ascii: string }[] = [
   { match: ['delete', 'recovery', 'trash'], icon: '␥', ascii: 'x' },
   { match: ['terminal', 'bash', 'shell', 'code_exec'], icon: '$', ascii: '$' },
   { match: ['browser', 'captcha', 'signup', 'signin'], icon: '◈', ascii: '#' },
-  { match: ['web', 'fetch', 'research', 'search_web'], icon: '%', ascii: '%' },
+  { match: ['web', 'fetch', 'research', 'search_web'], icon: '⌁', ascii: 'W' },
   { match: ['git', 'github'], icon: '⑂', ascii: 'Y' },
   { match: ['osint', 'cybersec', 'scan'], icon: '◉', ascii: 'o' },
   { match: ['ask', 'question'], icon: '?', ascii: '?' },

@@ -627,7 +627,8 @@ async function stepModel(
     while (true) {
       drawInfo('Loading the complete provider model catalog from /models…');
       const result = await fetchConfiguredModels(discoveryConfig);
-      if (result.models.length > 0) {
+      const providerModels = result.models.filter((model) => !model.id.toLowerCase().startsWith('aurix/'));
+      if (providerModels.length > 0) {
         const items = toModelPickerItems(result.models, existingModel).map((item) => ({
           id: item.id,
           label: item.current ? `● ${item.label}` : item.label,
@@ -637,7 +638,7 @@ async function stepModel(
           title: 'Select model',
           items,
           extra: [
-            `Imported ${items.length} models from ${result.sourceUrl || '/models'}`,
+            `Imported ${providerModels.length} provider models from ${result.sourceUrl || '/models'} · Aurix Free included`,
             ...(existingModel ? [`Current model: ${existingModel}`] : []),
           ],
         });
@@ -645,7 +646,7 @@ async function stepModel(
         return choice;
       }
 
-      drawWarning('No models could be imported from /models.');
+      drawWarning('No provider models could be imported from /models. Aurix Free is still available from the model picker.');
       const failureChoice = await drawSelector({
         title: 'Model import failed',
         items: [

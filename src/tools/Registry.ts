@@ -58,6 +58,7 @@ export type PermissionHandler = (request: ToolPermissionRequest) => Promise<Perm
 
 import { askInputUserTool, askUserTool } from './AskUser.js';
 import {
+  parseRoutableDeleteCommand,
   requiresManualDeleteApproval,
   requiresManualDependencyInstallApproval,
   requiresManualSensitiveToolApproval,
@@ -172,6 +173,13 @@ export class ToolRegistry {
     args: Record<string, unknown>,
     context?: ToolExecutionContext
   ): Promise<string> {
+    if (name === 'terminal' && typeof args.command === 'string') {
+      const routed = parseRoutableDeleteCommand(args.command);
+      if (routed) {
+        const { command: _command, ...forwarded } = args;
+        return this.runTool(routed.tool, { ...forwarded, path: routed.path }, context);
+      }
+    }
     const throwIfAborted = () => {
       if (context?.signal?.aborted) throw context.signal.reason || new DOMException('Aborted', 'AbortError');
     };

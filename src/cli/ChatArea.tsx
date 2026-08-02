@@ -262,7 +262,7 @@ function ToolOutputText({
   return (
     <box flexDirection="column">
       {preview.split('\n').map((line, index) => (
-        <text key={index} fg={index === 0 ? color : theme.textMuted} wrapMode="word">
+        <text key={index} fg={theme.textBright || theme.text} wrapMode="word">
           {line}
         </text>
       ))}
@@ -496,10 +496,33 @@ function TerminalToolMessage({ msg }: { msg: ChatMessage }) {
       </box>
       {output && output !== '(no output)' && (
         <box marginTop={1} paddingLeft={2} border={['left']} borderColor={theme.borderSubtle}>
-          <text fg={status === 'error' || status === 'timeout' ? theme.error : theme.textMuted}>{output}</text>
+          <text fg={status === 'error' || status === 'timeout' ? theme.error : theme.textBright}>{output}</text>
         </box>
       )}
       {overflow && <text fg={theme.textMuted}>{expanded ? 'Click box to collapse' : 'Click box to show full output'}</text>}
+    </box>
+  );
+}
+
+function readFileLanguage(filePath?: string): string {
+  const extension = filePath?.split('.').pop()?.toLowerCase();
+  const aliases: Record<string, string> = { ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', py: 'python', rs: 'rust', rb: 'ruby', yml: 'yaml', md: 'markdown', sh: 'bash' };
+  return aliases[extension || ''] || extension || 'text';
+}
+
+function ReadFileOutput({ msg, themeVersion }: { msg: ChatMessage; themeVersion: number }) {
+  const lines = sanitizeToolPreview(msg.content).split('\n');
+  const parsed = lines.map((line) => {
+    const match = line.match(/^\s*(\d+)\s*[|\t]\s?(.*)$/);
+    return match ? { number: match[1], content: match[2] } : { number: '', content: line };
+  });
+  const gutter = parsed.map((line) => line.number.padStart(4)).join('\n');
+  const content = parsed.map((line) => line.content).join('\n');
+  const filePath = String(msg.toolArgs?.file_path || msg.toolArgs?.path || '');
+  return (
+    <box flexDirection="row">
+      {gutter.trim() && <text fg={theme.text} selectable={false}>{gutter}{'  '}</text>}
+      <code content={content} filetype={readFileLanguage(filePath)} syntaxStyle={getMarkdownSyntax(themeVersion)} selectable={true} drawUnstyledText={true} />
     </box>
   );
 }
@@ -557,7 +580,9 @@ const ToolMessage = React.memo(function ToolMessage({
       </box>
       {msg.content && (
         <box paddingLeft={2} border={['left']} borderColor={status === 'error' || status === 'timeout' ? theme.error : theme.borderSubtle}>
-          <ToolOutputText content={msg.content} color={stateColor} markdown={msg.toolName === 'memory' || Boolean(msg.toolName?.startsWith('mcp_'))} themeVersion={themeVersion} />
+          {msg.toolName === 'read_file'
+            ? <ReadFileOutput msg={msg} themeVersion={themeVersion} />
+            : <ToolOutputText content={msg.content} color={stateColor} markdown={msg.toolName === 'memory' || Boolean(msg.toolName?.startsWith('mcp_'))} themeVersion={themeVersion} />}
         </box>
       )}
     </box>
@@ -622,6 +647,11 @@ export function ChatArea({
     }
   }, [onReachTop]);
 
+  React.useEffect(() => {
+    const timer = setInterval(syncPosition, 50);
+    return () => clearInterval(timer);
+  }, [syncPosition]);
+
   React.useLayoutEffect(() => {
     const pending = pendingAnchorRef.current;
     if (!pending || messages.length < pending.expectedMessages) return;
@@ -648,7 +678,7 @@ export function ChatArea({
       pageUp() { scrollRef.current?.scrollBy(-Math.max(5, Math.floor((scrollRef.current?.viewport.height || 20) * 0.8))); syncPosition(); },
       pageDown() { scrollRef.current?.scrollBy(Math.max(5, Math.floor((scrollRef.current?.viewport.height || 20) * 0.8))); syncPosition(); },
       top() { scrollRef.current?.scrollTo(0); syncPosition(); },
-      bottom() { const scroll = scrollRef.current; if (!scroll) return; scroll.stickyScroll = true; scroll.scrollTo(Math.max(0, scroll.scrollHeight)); setAtBottom(true); },
+      bottom() { const scroll = scrollRef.current; if (!scroll) return; scroll.stickyScroll = true; scroll.scrollTo(Math.max(0, scroll.scrollHeight - scroll.viewport.height)); queueMicrotask(syncPosition); },
       snapshot() { const scroll = scrollRef.current; return { scrollTop: scroll?.scrollTop || 0, scrollHeight: scroll?.scrollHeight || 0 }; },
       restoreAfterPrepend(anchor, expectedMessages) { pendingAnchorRef.current = { anchor, expectedMessages }; },
     };
@@ -660,9 +690,9 @@ export function ChatArea({
     <box flexDirection="column" minHeight={0} backgroundColor={theme.bg}>
       {!atBottom && (
         <box flexDirection="row" justifyContent="center" flexShrink={0}>
-          <box backgroundColor={theme.bgSelected} border={['left', 'right']} borderColor={theme.primary} paddingX={1} onMouseDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.stopPropagation(); const scroll = scrollRef.current; if (scroll) { scroll.stickyScroll = true; scroll.scrollTo(scroll.scrollHeight); setAtBottom(true); } }}>
+          <box backgroundColor={theme.bgSelected} border={['left', 'right']} borderColor={theme.primary} paddingX={1} onMouseDown={(event) => { if (event.button !== 0) return; event.preventDefault(); event.stopPropagation(); const scroll = scrollRef.current; if (scroll) { scroll.stickyScroll = true; scroll.scrollTo(Math.max(0, scroll.scrollHeight - scroll.viewport.height)); queueMicrotask(syncPosition); } }}>
             <text fg={theme.primary} attributes={TextAttributes.BOLD}>↓ Jump to the bottom</text>
-            <text fg={theme.textMuted}>  End</text>
+            <text fg={theme.text}>  Ctrl+End</text>
           </box>
         </box>
       )}

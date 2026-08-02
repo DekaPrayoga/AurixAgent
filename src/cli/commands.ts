@@ -73,6 +73,13 @@ const baseCommands: SlashCommand[] = [
     source: 'claude-code',
   },
   {
+    name: 'setcontext',
+    argumentHint: '<tokens|500k|1m>',
+    description: 'Set the fallback model context window',
+    group: 'session',
+    source: 'aurix',
+  },
+  {
     name: 'compact',
     description: 'Compact long context on the next model turn',
     group: 'session',

@@ -16,8 +16,9 @@ interface JsonSpan {
   raw: string;
 }
 
-const XML_CALL = /<function=([a-zA-Z0-9_]+)>([\s\S]*?)<\/function>/g;
-const XML_PARAMETER = /<parameter=([a-zA-Z0-9_]+)>([\s\S]*?)<\/parameter>/g;
+const XML_CALL = /<function=([a-zA-Z0-9_-]+)>([\s\S]*?)<\/function(?:=[a-zA-Z0-9_-]+)?>/g;
+const XML_PARAMETER = /<parameter=([a-zA-Z0-9_-]+)>([\s\S]*?)<\/parameter(?:=[a-zA-Z0-9_-]+)?>/g;
+const PROTOCOL_MARKER = /<\/?(?:tool_call|function(?:=[a-zA-Z0-9_-]+)?|parameter(?:=[a-zA-Z0-9_-]+)?)(?:\s[^>]*)?>/i;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -139,7 +140,13 @@ export function parseTextToolCalls(
     ).replace(/<tool_call>|<\/tool_call>/g, '').trim();
   }
 
-  if (!xmlSpans.length) {
+  if (!xmlSpans.length && PROTOCOL_MARKER.test(text)) {
+    recognizedProtocol = true;
+    requiresRepair = true;
+    visibleText = text.replace(/<tool_call>[\s\S]*$/i, '').trim();
+  }
+
+  if (!xmlSpans.length && !recognizedProtocol) {
     const spans = findTopLevelJsonSequence(text);
     const accepted: JsonSpan[] = [];
     for (const span of spans) {

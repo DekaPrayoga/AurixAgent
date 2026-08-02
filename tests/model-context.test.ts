@@ -3,7 +3,9 @@ import {
   fallbackModelContextLimit,
   parseContextMarker,
   registryModelLimits,
+  resolveModelContextInfo,
 } from '../src/agent/ModelContext.js';
+import { AURIX_FREE_MODEL_ID } from '../src/agent/AurixFreeModel.js';
 
 const M = 1_000_000;
 const K200 = 200_000;
@@ -43,6 +45,12 @@ describe('context catalog', () => {
     expect(fallbackModelContextLimit('gpt-4.1')).toBe(M);
     expect(fallbackModelContextLimit('gpt-4o')).toBe(128_000);
     expect(fallbackModelContextLimit('gemini-2-flash')).toBe(M);
+  });
+
+  test('uses a deterministic budget for the built-in Aurix free model', async () => {
+    const info = await resolveModelContextInfo({ provider: 'openai', apiKey: '', model: AURIX_FREE_MODEL_ID });
+    expect(info.context).toBe(1_000_000);
+    expect(info.source).toBe('catalog');
   });
 
   test('an unknown model falls back rather than guessing', () => {

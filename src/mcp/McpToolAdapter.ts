@@ -3,6 +3,32 @@ import { mcpManager } from './McpRegistry.js';
 import type { McpToolSchema } from './McpClient.js';
 import { formatMcpTextResult, withMcpToolDefaults } from './McpResultFormat.js';
 
+export function formatMcpToolResult(result: unknown): string {
+  if (typeof result === 'string') return formatMcpTextResult(result);
+  if (result && typeof result === 'object') {
+    const record = result as Record<string, unknown>;
+    if (record.content !== undefined) {
+      if (Array.isArray(record.content)) {
+        return record.content
+          .map((item: unknown) => {
+            if (item && typeof item === 'object') {
+              const entry = item as Record<string, unknown>;
+              if (entry.type === 'text') return formatMcpTextResult(String(entry.text || ''));
+            }
+            const serialized = JSON.stringify(item);
+            return serialized === undefined ? formatMcpTextResult(String(item)) : formatMcpTextResult(serialized);
+          })
+          .join('\n');
+      }
+      return typeof record.content === 'string'
+        ? formatMcpTextResult(record.content)
+        : formatMcpTextResult(JSON.stringify(record.content));
+    }
+    return formatMcpTextResult(JSON.stringify(result));
+  }
+  return String(result);
+}
+
 export function createMcpTool(serverName: string, schema: McpToolSchema): Tool {
   return {
     name: `mcp_${serverName}_${schema.name}`,
@@ -15,20 +41,7 @@ export function createMcpTool(serverName: string, schema: McpToolSchema): Tool {
       }
       try {
         const result = await client.callTool(schema.name, withMcpToolDefaults(schema.name, args));
-        if (typeof result === 'string') return formatMcpTextResult(result);
-        if (result && typeof result === 'object') {
-          const r = result as Record<string, unknown>;
-          if (r.content) {
-            if (Array.isArray(r.content)) {
-              return r.content
-                .map((item: any) => item.type === 'text' ? formatMcpTextResult(String(item.text || '')) : JSON.stringify(item, null, 2))
-                .join('\n');
-            }
-            return String(r.content);
-          }
-          return JSON.stringify(result, null, 2);
-        }
-        return String(result);
+        return formatMcpToolResult(result);
       } catch (e: any) {
         return `MCP tool error (${serverName}/${schema.name}): ${e.message}`;
       }

@@ -110,20 +110,16 @@ export function PermissionPrompt({ request, onResolve }: PermissionPromptProps) 
         <box flexDirection="column" marginTop={1}>
           {promptOptions.map((option, index) => (
             <box key={option.id} flexDirection="row" marginTop={index > 0 ? 1 : 0}>
-              <text
-                fg={index === active ? theme.bg : theme.text}
-                bg={index === active ? theme.primary : undefined}
-                attributes={index === active ? TextAttributes.BOLD : TextAttributes.NONE}
-              >
-                {` ${option.label} `}
+              <text fg={index === active ? theme.primary : theme.text} attributes={index === active ? TextAttributes.BOLD : TextAttributes.NONE}>
+                {`${index === active ? '>' : ' '} ${option.label}`}
               </text>
-              <text fg={theme.textMuted}>{`  ${option.hint}`}</text>
+              <text fg={theme.text}>{`  ${option.hint}`}</text>
             </box>
           ))}
         </box>
 
         <box marginTop={1}>
-          <text fg={theme.textMuted}>↑↓ tab · enter confirm · esc deny</text>
+          <text fg={theme.text}>arrows/tab select · enter runs selected action · esc/n deny</text>
         </box>
       </box>
     </box>

@@ -20,24 +20,47 @@ function run(cmd, args, opts = {}) {
   return spawnSync(cmd, args, { stdio: 'inherit', ...opts }).status === 0;
 }
 
-// ─── 1. Ensure native OpenTUI binary is installed (Windows only) ───────────
-if (process.platform === 'win32') {
-  const pkgName = process.arch === 'arm64'
-    ? '@opentui/core-win32-arm64'
-    : '@opentui/core-win32-x64';
-  const expected = join(projectRoot, 'node_modules', '@opentui', pkgName.replace('@opentui/', ''));
-
-  if (existsSync(expected)) {
-    log(`✓ ${pkgName} already installed`);
-  } else {
-    log(`⚠ ${pkgName} missing — installing (this optionalDependency is sometimes skipped by npm)`);
-    // shell:true needed on Windows so `npm` resolves through npm.cmd
-    const ok = run('npm', [
-      'install', '--no-save', '--no-audit', '--no-fund', `${pkgName}@0.4.1`,
-    ], { cwd: projectRoot, shell: true });
-    if (!ok) log(`⚠ failed to install ${pkgName} — TUI may fail to start`);
-    else log(`✓ ${pkgName} installed`);
+function openTuiNativePackage(platform = process.platform, arch = process.arch, report = process.report?.getReport?.()) {
+  if (!['x64', 'arm64'].includes(arch)) return null;
+  if (platform === 'darwin') return `@opentui/core-darwin-${arch}`;
+  if (platform === 'win32') return `@opentui/core-win32-${arch}`;
+  if (platform === 'linux') {
+    const glibc = report?.header?.glibcVersionRuntime;
+    return `@opentui/core-linux-${arch}${glibc ? '' : '-musl'}`;
   }
+  return null;
+}
+
+const corePackagePath = join(projectRoot, 'node_modules', '@opentui', 'core', 'package.json');
+if (existsSync(corePackagePath)) {
+  try {
+    const { readFileSync } = await import('fs');
+    const corePackage = JSON.parse(readFileSync(corePackagePath, 'utf8'));
+    const pkgName = openTuiNativePackage();
+    if (!pkgName) {
+      log(`⚠ unsupported OpenTUI target: ${process.platform}/${process.arch}`);
+    } else {
+      const version = corePackage.optionalDependencies?.[pkgName] || corePackage.version;
+      const expected = join(projectRoot, 'node_modules', '@opentui', pkgName.replace('@opentui/', ''));
+      if (existsSync(expected)) {
+        try {
+          await import(pkgName);
+          log(`✓ ${pkgName} already installed and loadable`);
+        } catch (error) {
+          log(`⚠ ${pkgName} exists but cannot load: ${error.message}`);
+        }
+      } else {
+        log(`⚠ ${pkgName} missing — installing ${version}`);
+        const ok = run('npm', ['install', '--no-save', '--no-audit', '--no-fund', `${pkgName}@${version}`], { cwd: projectRoot, shell: process.platform === 'win32' });
+        if (!ok) log(`⚠ failed to install ${pkgName}; install optional dependencies manually`);
+        else log(`✓ ${pkgName} installed`);
+      }
+    }
+  } catch (error) {
+    log(`⚠ Could not validate OpenTUI native dependency: ${error.message}`);
+  }
+} else {
+  log('⚠ @opentui/core is missing; native dependency validation skipped');
 }
 
 // ─── 2. Ensure Bun runtime is available ────────────────────────────────────
@@ -82,21 +105,20 @@ try {
 
 // ─── 4. Fix react-reconciler/constants ESM import ──────────────────────────
 try {
-  const { readFileSync, writeFileSync } = await import('fs');
-  const chunkPath = join(projectRoot, 'node_modules', '@opentui', 'react', 'chunk-fm0c65gm.js');
-  if (existsSync(chunkPath)) {
+  const { readFileSync, writeFileSync, readdirSync } = await import('fs');
+  const reactRoot = join(projectRoot, 'node_modules', '@opentui', 'react');
+  const chunks = existsSync(reactRoot)
+    ? readdirSync(reactRoot).filter((name) => name.endsWith('.js')).map((name) => join(reactRoot, name))
+    : [];
+  let patched = 0;
+  for (const chunkPath of chunks) {
     let content = readFileSync(chunkPath, 'utf8');
-    if (content.includes('from "react-reconciler/constants"')) {
-      content = content.replace(
-        /from "react-reconciler\/constants"/g,
-        'from "react-reconciler/constants.js"'
-      );
-      writeFileSync(chunkPath, content);
-      log('✓ Fixed react-reconciler/constants ESM import');
-    } else {
-      log('✓ react-reconciler/constants import already fixed');
-    }
+    if (!content.includes('from "react-reconciler/constants"')) continue;
+    content = content.replace(/from "react-reconciler\/constants"/g, 'from "react-reconciler/constants.js"');
+    writeFileSync(chunkPath, content);
+    patched++;
   }
+  log(patched ? `✓ Fixed react-reconciler/constants ESM import in ${patched} file(s)` : '✓ react-reconciler/constants import already compatible');
 } catch (e) {
   log(`⚠ Could not fix react-reconciler/constants import: ${e.message}`);
 }

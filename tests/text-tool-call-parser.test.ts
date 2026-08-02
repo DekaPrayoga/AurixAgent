@@ -53,4 +53,24 @@ describe('text tool-call parser', () => {
     expect(parseTextToolCalls(text, allowed).calls).toHaveLength(1);
     expect(parseTextToolCalls(text, allowed).calls).toHaveLength(1);
   });
+
+  test('supports alternate closers and hyphenated MCP tool names', () => {
+    const result = parseTextToolCalls(
+      '<tool_call><function=mcp-web-fetch>{"url":"https://example.com"}</function=mcp-web-fetch></tool_call>',
+      new Set(['mcp-web-fetch'])
+    );
+    expect(result.calls).toEqual([{ name: 'mcp-web-fetch', arguments: { url: 'https://example.com' } }]);
+    expect(result.visibleText).toBe('');
+  });
+
+  test('suppresses truncated XML and requests repair', () => {
+    const result = parseTextToolCalls(
+      'Checking now.\n<tool_call><function=terminal><parameter=command>pwd</parameter>',
+      allowed
+    );
+    expect(result.calls).toHaveLength(0);
+    expect(result.recognizedProtocol).toBe(true);
+    expect(result.requiresRepair).toBe(true);
+    expect(result.visibleText).toBe('Checking now.');
+  });
 });

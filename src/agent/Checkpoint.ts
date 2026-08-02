@@ -152,6 +152,10 @@ export class CheckpointEngine {
     this.save();
   }
 
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
   hasSnapshot(checkpointId: string): boolean {
     return this.state.snapshots.some(s => s.checkpointId === checkpointId);
   }

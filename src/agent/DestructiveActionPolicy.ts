@@ -4,6 +4,11 @@ export interface DestructiveCommandMatch {
   reason: string;
 }
 
+export interface RoutedDeleteCommand {
+  tool: 'delete_file' | 'delete_folder';
+  path: string;
+}
+
 export interface DependencyInstallCommandMatch {
   command: string;
   manager: string;
@@ -142,6 +147,17 @@ export function detectDependencyInstallCommand(
     }
   }
   return null;
+}
+
+export function parseRoutableDeleteCommand(command: string): RoutedDeleteCommand | null {
+  if (!command.trim() || /(?:&&|\|\||[|;\n`$*?{}[\]<>])/.test(command)) return null;
+  const match = command.trim().match(/^(?:\/bin\/)?rm\s+(-[rRfF]+\s+)?(?:--\s+)?("[^"]+"|'[^']+'|\S+)$/);
+  if (!match) return null;
+  const flags = match[1] || '';
+  const rawPath = match[2];
+  const target = rawPath.startsWith('"') || rawPath.startsWith("'") ? rawPath.slice(1, -1) : rawPath;
+  if (!target || target === '/' || target === '.' || target === '..' || target.startsWith('-')) return null;
+  return { tool: /[rR]/.test(flags) ? 'delete_folder' : 'delete_file', path: target };
 }
 
 export function formatBlockedDeleteCommand(match: DestructiveCommandMatch): string {

@@ -1,5 +1,6 @@
 import type { AurixConfig } from './Config.js';
 import { anthropicBaseUrl, openAIBaseUrl } from '../utils/base-url.js';
+import { mergeAurixFreeModel } from './AurixFreeModel.js';
 
 export type ModelEndpointStyle = 'openai' | 'anthropic';
 
@@ -254,7 +255,7 @@ export async function fetchConfiguredModels(
 
     if (collected.length > 0) {
       return {
-        models: collected,
+        models: mergeAurixFreeModel(collected),
         attempts,
         sourceUrl: candidate.url,
         style: candidate.style,
@@ -262,7 +263,7 @@ export async function fetchConfiguredModels(
     }
   }
 
-  return { models: [], attempts };
+  return { models: mergeAurixFreeModel([]), attempts };
 }
 
 export async function fetchModelPayload(

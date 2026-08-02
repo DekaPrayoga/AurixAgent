@@ -3,7 +3,7 @@ import { TextAttributes, decodePasteBytes, type TextareaRenderable } from '@open
 import { useKeyboard, useTerminalDimensions, usePaste } from '@opentui/react';
 import { theme } from './theme.js';
 import {
-  isPasteKey,
+  pasteIntent,
   normalizeClipboardText,
   readClipboard,
   readClipboardImage,
@@ -389,6 +389,7 @@ export function InputBox({
 
   useKeyboard((evt) => {
     const name = evt.name;
+    if (disabled || blocked || pasteInProgress) return;
     if (name === 'escape') return;
     if (evt.ctrl && name === 'b') {
       evt.preventDefault();
@@ -396,8 +397,6 @@ export function InputBox({
       onBackground?.();
       return;
     }
-    if (disabled || blocked || pasteInProgress) return;
-
     if (name === 'return') {
       evt.preventDefault();
       evt.stopPropagation();
@@ -450,11 +449,13 @@ export function InputBox({
       process.kill(process.pid, 'SIGTSTP');
       return;
     }
-    if (isPasteKey(evt)) {
+    const intent = pasteIntent(evt);
+    if (intent === 'image') {
       evt.preventDefault();
       readClipboardForCurrentDraft();
       return;
     }
+    if (intent === 'text') return;
     if (name === 'backspace' || name === 'delete') {
       const editor = editorRef.current;
       const currentValue = getEditorText(editor) || valueRef.current;

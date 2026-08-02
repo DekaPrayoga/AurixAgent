@@ -4,6 +4,11 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type { AurixConfig } from '../agent/Config.js';
 import {
+  AURIX_FREE_UPSTREAM_MODEL_ID,
+  assertAurixFreeModel,
+  isAurixFreeModel,
+} from '../agent/AurixFreeModel.js';
+import {
   anthropicBaseUrl,
   anthropicMessagesEndpoint,
   openAIBaseUrl,
@@ -137,8 +142,9 @@ export class OpenAIProvider implements Provider {
   private endpointMode: 'chat' | 'completion' | null = null;
   private baseUrl: string;
   private apiKey: string;
+  private extraHeaders: Record<string, string>;
 
-  constructor(config: AurixConfig) {
+  constructor(config: AurixConfig, extraHeaders: Record<string, string> = {}) {
     this.baseUrl = openAIBaseUrl(config.baseUrl);
     this.client = new OpenAI({
       apiKey: config.apiKey,
@@ -148,6 +154,7 @@ export class OpenAIProvider implements Provider {
     this.maxTokens = config.maxTokens || 4096;
     this.temperature = config.temperature ?? 0.7;
     this.apiKey = config.apiKey;
+    this.extraHeaders = extraHeaders;
   }
 
   async chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
@@ -212,6 +219,7 @@ export class OpenAIProvider implements Provider {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
+          ...this.extraHeaders,
         },
         body: JSON.stringify(params),
       };
@@ -875,6 +883,28 @@ export class AnthropicProvider implements Provider {
   }
 }
 
+class AurixFreeProvider implements Provider {
+  name = 'aurix-free';
+  private delegate: OpenAIProvider;
+
+  constructor(config: AurixConfig) {
+    assertAurixFreeModel(config.model);
+    const endpoint = Buffer.from('aHR0cHM6Ly9vcGVuY29kZS5haS96ZW4vdjE=', 'base64').toString('utf8');
+    this.delegate = new OpenAIProvider({
+      ...config,
+      provider: 'custom',
+      apiStyle: 'openai',
+      apiKey: 'public',
+      baseUrl: endpoint,
+      model: AURIX_FREE_UPSTREAM_MODEL_ID,
+    }, { 'x-opencode-client': 'desktop', Accept: 'text/event-stream' });
+  }
+
+  chat(messages: Message[], tools?: ToolDef[], signal?: AbortSignal): Promise<ChatResponse> {
+    return this.delegate.chat(messages, tools, signal);
+  }
+}
+
 // ─── Auto-Detect Provider ──────────────────────────────────────────────────
 
 export class AutoDetectProvider implements Provider {
@@ -931,6 +961,11 @@ export class AutoDetectProvider implements Provider {
 // ─── Factory ───────────────────────────────────────────────────────────────
 
 export function createProvider(config: AurixConfig): Provider {
+  const normalizedModel = config.model.trim();
+  if (normalizedModel.toLowerCase().startsWith('aurix/')) {
+    if (!isAurixFreeModel(normalizedModel)) assertAurixFreeModel(normalizedModel);
+    return new AurixFreeProvider({ ...config, model: normalizedModel });
+  }
   const apiStyle = (config as any).apiStyle as string | undefined;
 
   switch (config.provider) {

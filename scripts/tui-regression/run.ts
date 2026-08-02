@@ -12,6 +12,7 @@ import {
 import { theme } from "../../src/cli/theme.js";
 import { formatMcpTextResult } from "../../src/mcp/McpResultFormat.js";
 import { applyAgentEvents, boundedLiveToolPreview, createPresentationState } from "../../src/cli/TurnState.js";
+import { formatMcpToolResult } from "../../src/mcp/McpToolAdapter.js";
 
 const answer = `# Result
 
@@ -132,11 +133,27 @@ assert.match(searchTools, /scan · danger: active · async · plan: free · scor
 assert.match(searchTools, /Tags: `scan`, `web`, `redirect`/);
 assert.match(searchTools, /Call get_tool_info/);
 assert.ok(!searchTools.includes('"matches"'));
+const directSearchTools = formatMcpToolResult({
+  ok: true,
+  query: "auth",
+  count: 1,
+  matches: [{ name: "search_auth", title: "Search Auth", category: "scan" }],
+  hint: "inspect first",
+});
+assert.match(directSearchTools, /# MCP Search Results/);
+assert.match(directSearchTools, /Search Auth/);
+assert.ok(!directSearchTools.includes('"matches"'));
 
 const chatAreaSource = await Bun.file(new URL("../../src/cli/ChatArea.tsx", import.meta.url)).text();
+const appSource = await Bun.file(new URL("../../src/cli/App.tsx", import.meta.url)).text();
 assert.match(chatAreaSource, /stickyScroll=\{true\}/);
 assert.ok(!chatAreaSource.includes("scroll.stickyScroll = false"));
 assert.ok(!chatAreaSource.includes("stickyScroll={atBottom}"));
+assert.ok(chatAreaSource.includes("Ctrl+End"));
+assert.ok(chatAreaSource.includes("setInterval(syncPosition, 50)"));
+assert.ok(chatAreaSource.includes("? theme.error : theme.textBright}>{output}"));
+assert.ok(!chatAreaSource.includes("? theme.error : theme.textMuted}>{output}"));
+assert.ok(appSource.includes("evt.ctrl && name === 'end'"));
 
 const chunkEvents = [
   { type: "tool_start", data: "", toolName: "terminal", toolCallId: "call-1", turnId: "turn-1" },

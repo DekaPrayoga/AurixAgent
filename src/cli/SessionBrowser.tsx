@@ -1,13 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { TextAttributes } from '@opentui/core';
 import { useKeyboard, useTerminalDimensions } from '@opentui/react';
 import { theme } from './theme.js';
+import { safeDisplayText } from '../utils/terminal-sanitize.js';
+import { sessionCardLines } from './SessionPresentation.js';
 
 export interface SessionInfo {
   id: string;
   savedAt: string;
   messageCount: number;
   preview: string;
+  platform?: string;
 }
 
 interface SessionBrowserProps {
@@ -16,7 +19,11 @@ interface SessionBrowserProps {
   onCancel: () => void;
 }
 
-const MAX_VISIBLE = 10;
+const CARD_HEIGHT = 4;
+
+export function visibleSessionCount(terminalHeight: number): number {
+  return Math.max(1, Math.min(8, Math.floor((terminalHeight - 8) / CARD_HEIGHT)));
+}
 
 function relTime(iso: string): string {
   if (!iso) return '';
@@ -33,9 +40,14 @@ export function SessionBrowser({ sessions, onSelect, onCancel }: SessionBrowserP
   const { width: termWidth, height: termHeight } = useTerminalDimensions();
   const [selected, setSelected] = useState(0);
 
+  useEffect(() => {
+    setSelected((value) => Math.min(value, Math.max(0, sessions.length - 1)));
+  }, [sessions.length]);
+
   useKeyboard((evt) => {
     const name = evt.name;
     evt.preventDefault();
+    evt.stopPropagation();
     if (name === 'escape') {
       onCancel();
       return;
@@ -54,16 +66,32 @@ export function SessionBrowser({ sessions, onSelect, onCancel }: SessionBrowserP
     }
   });
 
-  const boxW = Math.min(76, termWidth - 4);
-  const start = Math.max(0, Math.min(selected - Math.floor(MAX_VISIBLE / 2), Math.max(0, sessions.length - MAX_VISIBLE)));
-  const visible = sessions.slice(start, start + MAX_VISIBLE);
+  const boxW = Math.max(32, Math.min(82, termWidth - 4));
+  const visibleCount = visibleSessionCount(termHeight);
+  const modalHeight = Math.min(termHeight - 2, visibleCount * CARD_HEIGHT + 7);
+  const start = Math.max(0, Math.min(selected - Math.floor(visibleCount / 2), Math.max(0, sessions.length - visibleCount)));
+  const visible = sessions.slice(start, start + visibleCount);
 
   return (
     <box
       position="absolute"
-      top={Math.max(1, Math.floor((termHeight - 18) / 2))}
+      top={0}
+      left={0}
+      width={termWidth}
+      height={termHeight}
+      backgroundColor={theme.bg}
+      zIndex={199}
+      onMouseDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+    <box
+      position="absolute"
+      top={Math.max(1, Math.floor((termHeight - modalHeight) / 2))}
       left={Math.max(2, Math.floor((termWidth - boxW) / 2))}
       width={boxW}
+      height={modalHeight}
       flexDirection="column"
       backgroundColor={theme.bgPanel}
       border
@@ -74,22 +102,43 @@ export function SessionBrowser({ sessions, onSelect, onCancel }: SessionBrowserP
       paddingTop={1}
       paddingBottom={1}
     >
-      <text fg={theme.primary} attributes={TextAttributes.BOLD}>⎘ Sessions — pick one to resume</text>
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={theme.primary} attributes={TextAttributes.BOLD}>Sessions</text>
+        <text fg={theme.text}>{sessions.length ? `${selected + 1}/${sessions.length}` : '0/0'}</text>
+      </box>
       <box height={1} />
-      {sessions.length === 0 && <text fg={theme.textMuted}>No saved sessions yet.</text>}
-      {visible.map((s, i) => {
-        const idx = start + i;
-        const isSel = idx === selected;
-        const meta = `${s.messageCount} msg · ${relTime(s.savedAt)}`;
+      {sessions.length === 0 && <text fg={theme.text}>No saved sessions yet.</text>}
+      {visible.map((session, index) => {
+        const absoluteIndex = start + index;
+        const selectedCard = absoluteIndex === selected;
+        const lines = sessionCardLines(session, Math.max(12, boxW - 8), relTime(session.savedAt));
         return (
-          <text key={s.id} fg={isSel ? theme.primary : theme.text}>
-            {isSel ? '> ' : '  '}{s.preview}
-            <span style={{ fg: theme.textMuted }}>  ({meta})</span>
-          </text>
+          <box
+            key={session.id}
+            flexDirection="column"
+            backgroundColor={selectedCard ? theme.bgSelected : undefined}
+            border={selectedCard ? ['left'] : undefined}
+            borderColor={selectedCard ? theme.primary : undefined}
+            paddingLeft={1}
+            paddingRight={1}
+            marginBottom={1}
+            onMouseDown={(event) => {
+              if (event.button !== 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onSelect(session.id);
+            }}
+          >
+            <text fg={selectedCard ? theme.primary : theme.textBright} attributes={selectedCard ? TextAttributes.BOLD : TextAttributes.NONE}>
+              {selectedCard ? '> ' : '  '}{safeDisplayText(lines.id)}
+            </text>
+            <text fg={theme.text}>  {safeDisplayText(lines.preview)}</text>
+            <text fg={theme.text}>  {safeDisplayText(lines.metadata)}</text>
+          </box>
         );
       })}
-      <box height={1} />
-      <text fg={theme.textMuted}>↑/↓ navigate · Enter resume · Esc cancel</text>
+      <text fg={theme.text}>arrows navigate · Enter resume · Esc cancel</text>
+    </box>
     </box>
   );
 }

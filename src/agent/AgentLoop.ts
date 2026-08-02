@@ -89,14 +89,15 @@ function buildPersistedMessage(
   result: { filepath: string; preview: string; hasMore: boolean },
   originalSize: number
 ): string {
-  let msg = `<persisted-output>\n`;
-  msg += `Output too large (${originalSize} chars). Full output saved to: ${result.filepath}\n\n`;
-  msg += `Preview (first 2000 chars):\n`;
-  msg += result.preview;
-  msg += result.hasMore ? '\n...\n' : '\n';
-  msg += `Read the full output with: read_file(file_path="${result.filepath}")\n`;
-  msg += `</persisted-output>`;
-  return msg;
+  const omitted = Math.max(0, originalSize - result.preview.length);
+  return [
+    `Output too large (${originalSize} chars). Full output saved to: ${result.filepath}`,
+    '',
+    'Preview:',
+    result.preview,
+    result.hasMore ? `... ${omitted} chars omitted` : '',
+    `Read the full output with: read_file(file_path="${result.filepath}")`,
+  ].filter((line, index) => line || index === 1).join('\n');
 }
 
 const WRITE_TOOLS = new Set([
@@ -1136,28 +1137,30 @@ export class AgentLoop {
           toolDefs,
           this.abortController.signal
         );
-        if (response.toolCalls.length === 0 && response.text && toolDefs?.length) {
-          const allowedToolNames = new Set(toolDefs.map((tool) => tool.function.name));
+        if (response.text) {
+          const allowedToolNames = new Set(toolDefs?.map((tool) => tool.function.name) || []);
           const normalized = parseTextToolCalls(response.text, allowedToolNames);
           if (normalized.calls.length > 0) {
+            const nativeKeys = new Set(response.toolCalls.map((call) => `${call.name}:${JSON.stringify(call.arguments)}`));
+            const textualCalls = normalized.calls
+              .filter((call) => !nativeKeys.has(`${call.name}:${JSON.stringify(call.arguments)}`))
+              .map((call) => ({ id: randomUUID(), name: call.name, arguments: call.arguments }));
             response = {
               ...response,
               text: normalized.visibleText,
-              toolCalls: normalized.calls.map((call) => ({
-                id: randomUUID(),
-                name: call.name,
-                arguments: call.arguments,
-              })),
+              toolCalls: [...response.toolCalls, ...textualCalls],
             };
           } else if (normalized.recognizedProtocol) {
-            response = { ...response, text: '', toolCalls: [] };
-            this.messages.push({
-              role: 'user',
-              content:
-                '[System] Your previous tool call used malformed or unavailable textual protocol. Re-emit exactly one valid tool call using the structured tool interface. Do not print tool-call JSON or source payloads as assistant text.',
-            });
-            consecutiveEmpty++;
-            if (consecutiveEmpty < MAX_EMPTY) continue;
+            response = { ...response, text: normalized.visibleText, toolCalls: response.toolCalls };
+            if (normalized.requiresRepair && response.toolCalls.length === 0) {
+              this.messages.push({
+                role: 'user',
+                content:
+                  '[System] Your previous tool call used malformed or unavailable textual protocol. Re-emit exactly one valid tool call using the structured tool interface. Do not print tool-call JSON or source payloads as assistant text.',
+              });
+              consecutiveEmpty++;
+              if (consecutiveEmpty < MAX_EMPTY) continue;
+            }
           }
         }
         if (

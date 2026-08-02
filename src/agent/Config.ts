@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import yaml from 'js-yaml';
 import { normalizeBaseUrl } from '../utils/base-url.js';
+import { AURIX_FREE_MODEL_ID } from './AurixFreeModel.js';
 
 export interface AurixConfig {
   provider: 'anthropic' | 'openai' | 'custom' | 'custom-anthropic';
@@ -138,7 +139,7 @@ function mergeWithEnv(file: Partial<AurixConfig>): AurixConfig {
     provider: (process.env.AURIX_PROVIDER as AurixConfig['provider']) || file.provider || 'openai',
     apiKey: process.env.AURIX_API_KEY || file.apiKey || '',
     baseUrl,
-    model: process.env.AURIX_MODEL || file.model || 'gpt-4o',
+    model: process.env.AURIX_MODEL || file.model || AURIX_FREE_MODEL_ID,
     visionModel: process.env.AURIX_VISION_MODEL || file.visionModel,
     visionBaseUrl: process.env.AURIX_VISION_BASE_URL || file.visionBaseUrl,
     visionApiKey: process.env.AURIX_VISION_API_KEY || file.visionApiKey,

@@ -10,6 +10,7 @@ import {
 } from './ModelDiscovery.js';
 
 import MODEL_REGISTRY from './model-registry.json' with { type: 'json' };
+import { AURIX_FREE_CONTEXT_LIMIT, isAurixFreeModel } from './AurixFreeModel.js';
 
 /**
  * Shape of model-registry.json: id -> [maxInputTokens, maxOutputTokens?].
@@ -238,12 +239,7 @@ export function parseContextMarker(model: string): number | undefined {
 }
 
 export function fallbackModelContextLimit(model: string): number {
-  return (
-    parseContextMarker(model) ||
-    familyCatalogContext(model) ||
-    registryModelLimits(model)?.input ||
-    FALLBACK_CONTEXT_LIMIT
-  );
+  return parseContextMarker(model) || familyCatalogContext(model) || registryModelLimits(model)?.input || FALLBACK_CONTEXT_LIMIT;
 }
 
 /**
@@ -314,7 +310,14 @@ export function registryModelLimits(model: string): { input: number; output?: nu
     const hit = table[key];
     if (hit && hit[0] > 0) return { input: hit[0], output: hit[1] };
   }
-  return undefined;
+  const basename = model.trim().toLowerCase().split('/').filter(Boolean).pop()?.replace(/[._]/g, '-');
+  if (!basename) return undefined;
+  const matches = Object.entries(table).filter(([key, limits]) =>
+    limits[0] > 0 && key.toLowerCase().split('/').pop()?.replace(/[._]/g, '-') === basename
+  );
+  if (matches.length !== 1) return undefined;
+  const limits = matches[0][1];
+  return { input: limits[0], output: limits[1] };
 }
 
 function normalizeModelId(model: string): string {
@@ -399,9 +402,15 @@ export async function resolveModelContextInfo(
   config: AurixConfig,
   options: ModelContextResolveOptions = {}
 ): Promise<ModelContextInfo> {
-  const explicit = configInfo(config);
-  if (explicit) return explicit;
-
+  if (isAurixFreeModel(config.model)) {
+    return {
+      context: AURIX_FREE_CONTEXT_LIMIT,
+      input: AURIX_FREE_CONTEXT_LIMIT,
+      source: 'catalog',
+      confidence: 'high',
+      updatedAt: Date.now(),
+    };
+  }
   if (options.preferFreshModels) {
     const fresh = await resolveFreshModelsContext(config, options.timeoutMs);
     if (fresh) return fresh;
@@ -415,10 +424,6 @@ export async function resolveModelContextInfo(
     if (fresh) return fresh;
   }
 
-  const marker = parseContextMarker(config.model);
-  if (marker) return { context: marker, source: 'marker', confidence: 'medium', updatedAt: Date.now() };
-  const catalog = familyCatalogContext(config.model);
-  if (catalog) return { context: catalog, source: 'catalog', confidence: 'medium', updatedAt: Date.now() };
   const registry = registryModelLimits(config.model);
   if (registry)
     return {
@@ -429,6 +434,12 @@ export async function resolveModelContextInfo(
       confidence: 'medium',
       updatedAt: Date.now(),
     };
+  const explicit = configInfo(config);
+  if (explicit) return explicit;
+  const catalog = familyCatalogContext(config.model);
+  if (catalog) return { context: catalog, source: 'catalog', confidence: 'medium', updatedAt: Date.now() };
+  const marker = parseContextMarker(config.model);
+  if (marker) return { context: marker, source: 'marker', confidence: 'medium', updatedAt: Date.now() };
   return { context: FALLBACK_CONTEXT_LIMIT, source: 'fallback', confidence: 'low', updatedAt: Date.now() };
 }
 

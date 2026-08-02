@@ -64,7 +64,11 @@ import {
   addTodo as addTodoToFile,
   completeTodo as completeTodoInFile,
   getTodoStats,
+  setActiveTodoSession,
 } from '../utils/TodoManager.js';
+import { emptySessionState, loadSessionState, saveSessionState } from '../agent/SessionState.js';
+import { initCheckpointEngine } from '../agent/Checkpoint.js';
+import { isOverlayOpen } from './OverlayState.js';
 
 const VALID_DEPTHS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 type ResearchDepth = (typeof VALID_DEPTHS)[number];
@@ -142,6 +146,7 @@ const HANDLED_COMMANDS = new Set([
   'research-forums',
   'replay',
   'reset',
+  'setcontext',
   'restart',
   'resume',
   'retry',
@@ -286,6 +291,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   } | null>(null);
   const modelPickerRequestRef = React.useRef(0);
   const modelPickerOpenRef = React.useRef(false);
+  const overlayOpenRef = React.useRef(false);
   const [subagents, setSubagents] = useState<{ status: string }[] | null>(null);
   const [showVisionConfig, setShowVisionConfig] = useState(false);
   const [sessionList, setSessionList] = useState<SessionInfo[] | null>(null);
@@ -297,6 +303,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   const [todos, setTodos] = useState<{ text: string; done: boolean }[]>([]);
   const sidebarTodos = useMemo(() => pendingSidebarTodos(todos), [todos]);
   const [btwMessages, setBtwMessages] = useState<string[]>([]);
+  const activeSessionStateIdRef = React.useRef(resumeId || 'pending');
+  const sessionTransitionGenerationRef = React.useRef(0);
   const [showOutputPanel, setShowOutputPanel] = useState(false);
   const [themeVersion, setThemeVersion] = useState(getThemeVersion());
   const liveToolOutputRef = React.useRef<{
@@ -337,31 +345,9 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         setIsAskingUser(true);
       }
     });
-
-    let lastTodoSnapshot = '';
-    const refreshTodos = () => {
-      const fileTodos = loadTodosFromFile();
-      const next = fileTodos.map((t) => ({ text: t.text, done: t.done }));
-      const snapshot = JSON.stringify(next);
-      if (snapshot === lastTodoSnapshot) return;
-      lastTodoSnapshot = snapshot;
-      setTodos(next);
-    };
-
-    refreshTodos();
-    const interval = setInterval(refreshTodos, 5000);
-    const todoFile = path.join(process.cwd(), 'aurix.md');
-    let watcher: fs.FSWatcher | undefined;
-    try {
-      watcher = fs.watch(process.cwd(), (_event, filename) => {
-        if (!filename || filename.toString() === path.basename(todoFile)) refreshTodos();
-      });
-    } catch {}
-
-    return () => {
-      clearInterval(interval);
-      watcher?.close();
-    };
+    setActiveTodoSession(activeSessionStateIdRef.current);
+    const state = loadSessionState(activeSessionStateIdRef.current);
+    setTodos(state.todos.map((todo) => ({ text: todo.text, done: todo.done })));
   }, []);
 
   const showToast = useCallback((msg: string) => {
@@ -399,7 +385,17 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
     const name = sessionNameRef.current !== 'New session' ? sessionNameRef.current : undefined;
     const saveId = resumeSessionIdRef.current || name;
+    const stateId = saveId || agentRef.current?.getSessionId() || activeSessionStateIdRef.current;
+    saveSessionState(stateId, {
+      todos: loadTodosFromFile(),
+      goal: sessionGoal,
+      rules: sessionRules,
+      btwMessages,
+    });
     const sessionId = (await agentRef.current?.saveSessionAsync(saveId)) || '';
+    if (sessionId && sessionId !== stateId) {
+      saveSessionState(sessionId, loadSessionState(stateId));
+    }
     try {
       renderer.destroy();
     } catch {}
@@ -420,10 +416,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
 
   if (!agentRef.current) {
     agentRef.current = new AgentLoop(config, registry);
-    try {
-      const { initCheckpointEngine } = require('../agent/Checkpoint.js');
-      initCheckpointEngine(resumeId || `sess_${Date.now()}`);
-    } catch {}
+    const initialStateId = resumeId || agentRef.current.getSessionId();
+    activeSessionStateIdRef.current = initialStateId;
+    setActiveTodoSession(initialStateId);
+    initCheckpointEngine(initialStateId);
   }
 
   const resumedRef = React.useRef(false);
@@ -438,6 +434,14 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       const count = (await agentRef.current?.loadSessionAsync(resumeId)) || 0;
       if (count > 0) {
         resumeSessionIdRef.current = resumeId;
+        activeSessionStateIdRef.current = resumeId;
+        setActiveTodoSession(resumeId);
+        const resumedState = loadSessionState(resumeId);
+        setTodos(resumedState.todos.map((todo) => ({ text: todo.text, done: todo.done })));
+        setSessionGoal(resumedState.goal);
+        setSessionRules(resumedState.rules);
+        setBtwMessages(resumedState.btwMessages);
+        initCheckpointEngine(resumeId);
         const store = await agentRef.current?.getSessionStore();
         const page = store?.loadSessionPage(resumeId, { limit: 80 });
         const pageMessages = page?.messages || (agentRef.current?.getMessages() || []).filter((m: any) => m.role !== 'system').slice(-80);
@@ -549,7 +553,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
   useKeyboard((evt) => {
     const name = evt.name;
 
-    if (modelPickerOpenRef.current) return;
+    if (modelPickerOpenRef.current || overlayOpenRef.current) return;
 
     if (evt.ctrl && name === 'o') {
       evt.preventDefault();
@@ -677,7 +681,7 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
       return;
     }
 
-    if (name === 'end' || (evt.ctrl && name === 'j')) {
+    if ((evt.ctrl && name === 'end') || (evt.ctrl && name === 'j')) {
       evt.preventDefault();
       chatScrollRef.current?.bottom();
       return;
@@ -782,6 +786,34 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     [cancelActiveUiRun, clearLiveToolOutput],
   );
 
+  const applySessionState = useCallback((sessionId: string) => {
+    activeSessionStateIdRef.current = sessionId;
+    setActiveTodoSession(sessionId);
+    const state = loadSessionState(sessionId);
+    setTodos(state.todos.map((todo) => ({ text: todo.text, done: todo.done })));
+    setSessionGoal(state.goal);
+    setSessionRules(state.rules);
+    setBtwMessages(state.btwMessages);
+  }, []);
+
+  const resetSessionTransientState = useCallback(() => {
+    sessionTransitionGenerationRef.current++;
+    try { agentRef.current?.interrupt(); } catch {}
+    activeAgentRunRef.current = undefined;
+    cancelActiveUiRun(false);
+    setIsProcessing(false);
+    setIsAskingUser(false);
+    setActiveTool(undefined);
+    setPermissionPrompt(null);
+    pendingImagesRef.current = [];
+    resumePageRef.current = null;
+    resumeAnchorRef.current = null;
+    clearLiveToolOutput();
+    setShowRewind(false);
+    setShowOutputPanel(false);
+    setSessionList(null);
+  }, [cancelActiveUiRun, clearLiveToolOutput]);
+
   const queueLiveToolOutput = useCallback(
     (toolName: string | undefined, chunk: string) => {
       const live = liveToolOutputRef.current;
@@ -806,11 +838,12 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
         if (requestId !== modelPickerRequestRef.current) return;
         const items = toModelPickerItems(result.models, agentRef.current?.getModel() || config.model);
         const lastFailure = [...result.attempts].reverse().find((attempt) => !attempt.ok);
-        const error = items.length
-          ? undefined
-          : lastFailure
-            ? `Could not load /models: ${lastFailure.status ? `HTTP ${lastFailure.status} ` : ''}${lastFailure.error || lastFailure.url}`
-            : 'No models returned by the configured provider.';
+        const providerModels = result.models.filter((model) => !model.id.toLowerCase().startsWith('aurix/'));
+        const error = lastFailure
+          ? `Could not load configured /models: ${lastFailure.status ? `HTTP ${lastFailure.status} ` : ''}${lastFailure.error || lastFailure.url}. Aurix Free remains available.`
+          : providerModels.length === 0
+            ? 'No models returned by the configured provider. Aurix Free remains available.'
+            : undefined;
         setModelPicker({ items, loading: false, error, initialQuery });
       } catch (e: any) {
         // A malformed baseUrl throws out of endpoint construction. Without this the
@@ -1167,8 +1200,10 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           return;
         }
 
-        if (commandName === 'context') {
-          const raw = slash.args.trim().toLowerCase();
+        if (commandName === 'context' || commandName === 'setcontext') {
+          const raw = commandName === 'setcontext'
+            ? `set ${slash.args.trim().toLowerCase()}`
+            : slash.args.trim().toLowerCase();
           if (raw === 'refresh') {
             await agent.refreshContextMetadata({ preferFreshModels: true });
           } else if (raw === 'auto') {
@@ -1932,21 +1967,26 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             target = latest.id;
           }
           try {
-            const count = await agent.loadSessionAsync(target);
+            const generation = ++sessionTransitionGenerationRef.current;
+            const nextAgent = new AgentLoop(config, registry);
+            const count = await nextAgent.loadSessionAsync(target);
+            if (generation !== sessionTransitionGenerationRef.current) return;
             if (count > 0) {
+              resetSessionTransientState();
+              agentRef.current = nextAgent;
               resumeSessionIdRef.current = target;
-              const summary = (await agent.listDurableSessions(100)).find((session) => session.id === target);
+              const summary = (await nextAgent.listDurableSessions(100)).find((session) => session.id === target);
               const title = summary?.title || target;
               setSessionName(title);
               sessionNameRef.current = title;
               let page: ReturnType<Awaited<ReturnType<typeof agent.getSessionStore>>['loadSessionPage']> | undefined;
               let toolEvents: ReturnType<Awaited<ReturnType<typeof agent.getSessionStore>>['loadToolEvents']> = [];
               try {
-                const store = await agent.getSessionStore();
+                const store = await nextAgent.getSessionStore();
                 page = store.loadSessionPage(target, { limit: 80 });
                 toolEvents = store.loadToolEvents(target);
               } catch {}
-              const fallbackLoaded = agent.getMessages().filter((m: any) => m.role !== 'system').slice(-80);
+              const fallbackLoaded = nextAgent.getMessages().filter((m: any) => m.role !== 'system').slice(-80);
               const pageMessages = page?.messages || fallbackLoaded;
               const display = buildResumedDisplayMessages(pageMessages, target, {
                 startIndex: count - pageMessages.length,
@@ -1954,6 +1994,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 toolEvents,
               });
               resumePageRef.current = createResumePageState(target, page?.oldestCursor, Boolean(page?.hasMore));
+              applySessionState(target);
+              initCheckpointEngine(target);
               presentationStateRef.current = createPresentationState(display);
               setMessages(display);
               setShowBanner(false);
@@ -1970,15 +2012,26 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
           addAssistant('Configuration snapshot saved. Use /snapshot restore <name> to restore.');
           return;
         } else if (commandName === 'new') {
-          if (isProcessing) agent.interrupt();
-          cancelActiveUiRun();
-          setIsProcessing(false);
-          setActiveTool(undefined);
-          clearLiveToolOutput();
+          resetSessionTransientState();
+          const draftId = `draft_${crypto.randomUUID()}`;
           agentRef.current = new AgentLoop(config, registry);
-          setMessages([
-            { role: 'assistant', content: 'New session started.', timestamp: new Date() },
-          ]);
+          resumeSessionIdRef.current = undefined;
+          activeSessionStateIdRef.current = draftId;
+          setActiveTodoSession(draftId);
+          saveSessionState(draftId, emptySessionState());
+          initCheckpointEngine(draftId);
+          setSessionName('New session');
+          sessionNameRef.current = 'New session';
+          setSessionGoal(null);
+          setSessionRules([]);
+          setBtwMessages([]);
+          setTodos([]);
+          const display = [
+            { role: 'assistant' as const, content: 'New session started.', timestamp: new Date() },
+          ];
+          const nextPresentation = createPresentationState(display);
+          presentationStateRef.current = nextPresentation;
+          setMessages(display);
           chatScrollRef.current?.bottom();
           setShowBanner(true);
           return;
@@ -3201,17 +3254,19 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
     ]
   ); // Keep dependencies explicit so slash commands always read current session state.
 
-  // Every modal except ModelPicker is mounted inside the non-home branch, so the
-  // home layout must yield as soon as one opens or the modal renders nowhere.
-  const modalOpen =
-    !!permissionPrompt ||
-    showVisionConfig ||
-    showLogin ||
-    showRewind ||
-    showPalette ||
-    !!sessionList ||
-    !!connectModal ||
-    !!mcpLoginPicker;
+  const modalOpen = isOverlayOpen({
+    permissionPrompt: Boolean(permissionPrompt),
+    vision: showVisionConfig,
+    login: showLogin,
+    rewind: showRewind,
+    palette: showPalette,
+    sessions: Boolean(sessionList),
+    connect: Boolean(connectModal),
+    mcpLogin: Boolean(mcpLoginPicker),
+    modelPicker: Boolean(modelPicker),
+    outputPanel: showOutputPanel,
+  });
+  overlayOpenRef.current = modalOpen;
   const isHome = showBanner && messages.length === 0 && !isProcessing && !modalOpen;
   const ctxStats = agent.getContextStats();
   const tokenStats = agent.getTokenStats(ctxStats);
@@ -3273,8 +3328,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
             <box width="100%" maxWidth={promptW} paddingTop={1} flexShrink={0}>
               <InputBox
                 onSubmit={handleSubmit}
-                disabled={false}
-                blocked={!!modelPicker}
+                disabled={modalOpen}
+                blocked={modalOpen}
                 commands={commands}
                 initialHistory={messages.filter((message) => message.role === 'user').slice(-100).map((message) => message.content)}
                 home
@@ -3430,16 +3485,24 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                       setSessionList(null);
                       (async () => {
                         try {
-                          const count = await agent.loadSessionAsync(id);
+                          const generation = ++sessionTransitionGenerationRef.current;
+                          const nextAgent = new AgentLoop(config, registry);
+                          const count = await nextAgent.loadSessionAsync(id);
+                          if (generation !== sessionTransitionGenerationRef.current) return;
                           if (count > 0) {
-                            const loaded = agent.getMessages();
-                            const store = await agent.getSessionStore();
+                            resetSessionTransientState();
+                            agentRef.current = nextAgent;
+                            const loaded = nextAgent.getMessages();
+                            const store = await nextAgent.getSessionStore();
                             const display = buildResumedDisplayMessages(loaded, id, { toolEvents: store.loadToolEvents(id) });
                             const summary = (await agent.listDurableSessions(100)).find((session) => session.id === id);
                             const title = summary?.title || id;
                             setSessionName(title);
                             sessionNameRef.current = title;
                             resumeSessionIdRef.current = id;
+                            resumePageRef.current = createResumePageState(id, undefined, false);
+                            applySessionState(id);
+                            initCheckpointEngine(id);
                             presentationStateRef.current = createPresentationState(display);
                             setMessages(display);
                             setShowBanner(false);
@@ -3533,8 +3596,8 @@ export function App({ config, registry, resumeId, cronDaemon }: AppProps) {
                 )}
                 <InputBox
                   onSubmit={handleSubmit}
-                  disabled={!!permissionPrompt || showLogin || !!connectModal}
-                  blocked={!!modelPicker}
+                  disabled={modalOpen}
+                  blocked={modalOpen}
                   commands={commands}
                   initialHistory={messages.filter((message) => message.role === 'user').slice(-100).map((message) => message.content)}
                   model={agent.getModel()}

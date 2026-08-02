@@ -13,7 +13,10 @@ export function detectTerminalCapabilities(
   const term = (env.TERM || '').toLowerCase();
   const dumb = term === 'dumb';
   const color = isTTY && !dumb && env.NO_COLOR === undefined && env.FORCE_COLOR !== '0';
-  const unicode = !dumb && (
+  const locale = `${env.LC_ALL || ''} ${env.LC_CTYPE || ''} ${env.LANG || ''}`.toLowerCase();
+  const asciiLocale = /(^|\s)(c|posix)(?:\s|$)/.test(locale.trim());
+  const forcedAscii = env.AURIX_FORCE_ASCII === '1';
+  const unicode = !dumb && !asciiLocale && !forcedAscii && (
     platform !== 'win32' ||
     Boolean(env.WT_SESSION || env.TERM_PROGRAM || env.ConEmuANSI === 'ON' || env.ANSICON)
   );

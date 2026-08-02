@@ -251,6 +251,30 @@ function formatFindingsResult(result: RecordValue): string {
   return lines.join('\n');
 }
 
+function formatGenericMcpResult(value: unknown, depth = 0): string {
+  if (value === null || value === undefined) return 'No result.';
+  if (typeof value !== 'object') return clean(value);
+  if (Array.isArray(value)) {
+    if (!value.length) return 'No items.';
+    return value.map((item, index) => {
+      const formatted = formatGenericMcpResult(item, depth + 1);
+      return typeof item === 'object' && item !== null
+        ? `${index + 1}. ${formatted.replace(/\n/g, '\n   ')}`
+        : `- ${formatted}`;
+    }).join('\n');
+  }
+  const entries = Object.entries(value as RecordValue);
+  if (!entries.length) return 'No fields.';
+  return entries.map(([key, item]) => {
+    const heading = depth === 0 ? `**${label(key)}:**` : `${label(key)}:`;
+    if (item && typeof item === 'object') {
+      const nested = formatGenericMcpResult(item, depth + 1).replace(/\n/g, '\n  ');
+      return `${heading}\n  ${nested}`;
+    }
+    return `${heading} ${clean(item)}`;
+  }).join('\n');
+}
+
 export function formatMcpTextResult(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return value;
@@ -261,7 +285,7 @@ export function formatMcpTextResult(value: string): string {
     if (isJobStatus(parsed)) return formatJobStatus(parsed);
     if (isAsyncResult(parsed)) return formatAsyncResult(parsed);
     if (isFindingsResult(parsed)) return formatFindingsResult(parsed);
-    return JSON.stringify(parsed, null, 2);
+    return formatGenericMcpResult(parsed);
   } catch {
     return value;
   }

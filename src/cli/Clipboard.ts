@@ -28,18 +28,26 @@ function runCmd(
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 
-export function isPasteKey(evt: {
+export type PasteIntent = 'image' | 'text' | null;
+
+export function pasteIntent(evt: {
   name: string;
   sequence?: string;
   ctrl?: boolean;
   meta?: boolean;
   shift?: boolean;
-}): boolean {
-  return (
-    evt.sequence === '\x16' ||
-    (!!(evt.ctrl || evt.meta) && (evt.name === 'v' || evt.name === 'V')) ||
-    (!!evt.shift && (evt.name === 'insert' || evt.name === 'Insert'))
-  );
+}, platform: NodeJS.Platform = process.platform): PasteIntent {
+  const v = evt.name === 'v' || evt.name === 'V';
+  if (evt.shift && (evt.name === 'insert' || evt.name === 'Insert')) return 'text';
+  if (platform === 'linux' && evt.ctrl && evt.shift && v) return 'text';
+  if (platform === 'linux' && ((evt.ctrl && v) || evt.sequence === '\x16')) return 'image';
+  if (platform === 'darwin' && evt.meta && v) return 'text';
+  if (platform === 'win32' && evt.ctrl && v) return 'text';
+  return null;
+}
+
+export function isPasteKey(evt: Parameters<typeof pasteIntent>[0]): boolean {
+  return pasteIntent(evt) !== null;
 }
 
 export function normalizeClipboardText(text: string): string {

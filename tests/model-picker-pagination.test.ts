@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { toModelPickerItems } from '../src/agent/ModelSelection.js';
+import { toModelPickerItems, searchModelItems } from '../src/agent/ModelSelection.js';
+import { mergeAurixFreeModel, AURIX_FREE_MODEL_ID } from '../src/agent/AurixFreeModel.js';
 import {
   MODEL_PICKER_PAGE_SIZE,
   chunkNumberButtons,
@@ -39,6 +40,13 @@ describe('gateway model picker pagination', () => {
     expect(modelAtAbsoluteIndex(items, '', 16)?.id).toBe('model-16');
     const filtered = createModelPickerView(items, 'model-2', 0);
     expect(modelAtAbsoluteIndex(items, 'model-2', 1)?.id).toBe(filtered.rows[0]?.item.id);
+  });
+
+  test('pins the built-in Aurix free model first and makes it searchable', () => {
+    const promoted = toModelPickerItems(mergeAurixFreeModel([{ id: '1-model', label: '1-model' }]));
+    expect(promoted[0]?.id).toBe(AURIX_FREE_MODEL_ID);
+    expect(searchModelItems(promoted, 'free')[0]?.id).toBe(AURIX_FREE_MODEL_ID);
+    expect(searchModelItems(promoted, 'deepseek')[0]?.id).toBe(AURIX_FREE_MODEL_ID);
   });
 
   test('Telegram number buttons form three rows of five', () => {
