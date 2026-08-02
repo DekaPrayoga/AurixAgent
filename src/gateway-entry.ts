@@ -15,6 +15,7 @@ const GATEWAY_TOOL_ALLOWLIST = new Set([
   'recovery_folder',
   'browser',
   'web_search',
+  'http_request',
   'research',
   'research_forums',
   'china_ai_research',

@@ -39,6 +39,7 @@ import { browserTool } from './tools/Browser.js';
 import { createSpawnAgentTool } from './tools/SpawnAgent.js';
 import { codeExecTool } from './tools/CodeExec.js';
 import { webSearchTool } from './tools/WebSearch.js';
+import { httpRequestTool } from './tools/Request.js';
 import { todoTool } from './tools/Todo.js';
 import { musicTool } from './tools/Music.js';
 import { memoryTool } from './tools/Memory.js';
@@ -93,6 +94,7 @@ function createRegistry(features?: string[]): ToolRegistry {
   registry.register(browserTool);
   registry.register(codeExecTool);
   registry.register(webSearchTool);
+  registry.register(httpRequestTool);
   registry.register(todoTool);
   registry.register(musicTool);
   registry.register(memoryTool);
